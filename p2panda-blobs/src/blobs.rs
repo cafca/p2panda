@@ -32,7 +32,7 @@ impl Blobs {
     pub async fn new(store: &Store, endpoint: &Endpoint, address_book: &AddressBook) -> Result<Self> {
         let blobs_proto = BlobsProtocol::new(store, None);
         endpoint
-            .accept(iroh_blobs::ALPN, blobs_proto)
+            .accept_raw(iroh_blobs::ALPN, blobs_proto)
             .await
             .map_err(|e| anyhow::anyhow!(e))?;
 

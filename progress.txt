@@ -25,3 +25,21 @@ Added dev-dependencies to `p2panda-blobs/Cargo.toml`:
   - `p2panda-net` with `test_utils` feature for `TestNode` / `setup_logging`
 
 `cargo check -p p2panda-blobs --tests` passes cleanly (no warnings).
+
+## 2026-03-03 — Fix integration test: ALPN mismatch in p2panda-blobs
+
+Root cause: `endpoint.accept()` in p2panda-net hashes the ALPN with the network ID, but
+iroh-blobs' `Downloader` hardcodes `iroh_blobs::ALPN` when connecting. The server (Penguin)
+only accepted the hashed ALPN, causing TLS handshake failure on every download attempt.
+
+Fix: Added `RegisterRawProtocol` variant to `ToIrohEndpoint` and `accept_raw()` method to
+`p2panda-net::Endpoint`. This registers a protocol under its raw ALPN without network-ID
+hashing. Changed `Blobs::new` to use `endpoint.accept_raw(iroh_blobs::ALPN, ...)` so both
+connecting (downloader) and accepting (BlobsProtocol) sides use the same ALPN.
+
+Files changed:
+- `p2panda-net/src/iroh_endpoint/actors/endpoint.rs` — new `RegisterRawProtocol` variant + handler
+- `p2panda-net/src/iroh_endpoint/api.rs` — new `accept_raw()` method
+- `p2panda-blobs/src/blobs.rs` — use `accept_raw` instead of `accept`
+
+`cargo test -p p2panda-blobs` and `cargo test -p p2panda-net` both pass cleanly.
