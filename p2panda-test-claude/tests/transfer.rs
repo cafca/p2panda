@@ -15,10 +15,11 @@ use std::time::Duration;
 use futures_util::StreamExt;
 use p2panda_blobs::{Blobs, MemStore};
 use p2panda_core::Hash;
+use p2panda_file_sharing::node::{FileSharingNode, NodeOptions};
 use p2panda_file_sharing::protocol::BlobAnnouncement;
 use p2panda_net::addrs::NodeInfo;
-use p2panda_net::iroh_endpoint::{EndpointAddr, from_public_key};
-use p2panda_net::test_utils::{TestNode, setup_logging};
+use p2panda_net::iroh_endpoint::{from_public_key, EndpointAddr};
+use p2panda_net::test_utils::{setup_logging, TestNode};
 use p2panda_net::TopicId;
 use tokio::time::timeout;
 
@@ -248,6 +249,65 @@ async fn test_relay_bootstrap_transfer() -> anyhow::Result<()> {
 
     // Verify content.
     let downloaded = blobs_b.get_bytes(received_ann.hash).await.unwrap();
+    assert_eq!(downloaded.as_ref(), content);
+
+    Ok(())
+}
+
+/// PRD task 6: receiver discovers sender via mDNS on the same network without --peer.
+///
+/// Both nodes use active mDNS (the CLI default when --peer is absent) and no
+/// address-book bootstrapping.  After mDNS populates each node's address book,
+/// gossip connects them, the announcement propagates, and the blob download
+/// succeeds — all without any manual peer exchange.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_mdns_discovery_and_transfer() -> anyhow::Result<()> {
+    setup_logging();
+
+    // Default NodeOptions: active mDNS, no relay, no explicit peer.
+    let node_a = FileSharingNode::new("test-mdns-e2e", NodeOptions::default()).await?;
+    let node_b = FileSharingNode::new("test-mdns-e2e", NodeOptions::default()).await?;
+
+    // Import file content as a blob on Node A.
+    let content = b"Hello via mDNS discovery!";
+    let tag_info = node_a.blobs.add_slice(content).await.unwrap();
+    let hash = tag_info.hash;
+
+    // B subscribes to the gossip topic first.
+    let handle_b = node_b.gossip.stream(node_b.topic_id).await.unwrap();
+    let mut sub_b = handle_b.subscribe();
+
+    // Give mDNS time to discover both nodes and populate the address books,
+    // then give gossip time to connect them on the shared topic.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    // A joins the topic and announces the blob.
+    let handle_a = node_a.gossip.stream(node_a.topic_id).await.unwrap();
+    let announcement = BlobAnnouncement::new(hash, "mdns-discovered.txt".to_string());
+    handle_a.publish(announcement.encode()).await.unwrap();
+
+    // B waits for the announcement (generous timeout to account for mDNS timing).
+    let received_ann = timeout(Duration::from_secs(30), async {
+        while let Some(Ok(bytes)) = sub_b.next().await {
+            if let Ok(ann) = BlobAnnouncement::decode(&bytes) {
+                return Some(ann);
+            }
+        }
+        None
+    })
+    .await
+    .expect("timed out waiting for mDNS-discovered announcement");
+
+    let received_ann = received_ann.expect("no announcement received via mDNS");
+    assert_eq!(received_ann.hash, hash);
+    assert_eq!(received_ann.filename, "mdns-discovered.txt");
+
+    // B downloads the blob from A.  The address book was populated by mDNS discovery,
+    // so no manual peer insertion was needed.
+    node_b.blobs.download(received_ann.hash).await.unwrap();
+
+    // Verify content.
+    let downloaded = node_b.blobs.get_bytes(received_ann.hash).await.unwrap();
     assert_eq!(downloaded.as_ref(), content);
 
     Ok(())

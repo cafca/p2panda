@@ -139,3 +139,22 @@ Key imports added to transfer.rs:
 
 `cargo test -p p2panda-file-sharing` — all 3 integration tests pass (no warnings).
 PRD task 13 updated to passes:true.
+
+## 2026-03-03 — Integration test: mDNS discovery without --peer (PRD task 6)
+
+Added `test_mdns_discovery_and_transfer` to `p2panda-test-claude/tests/transfer.rs`.
+
+Uses `FileSharingNode::new` with default `NodeOptions` (active mDNS, no relay, no
+explicit peer) for both nodes — no manual `insert_node_info` call.  The test:
+1. Imports a blob on Node A.
+2. Node B subscribes to the gossip topic.
+3. Waits 3 seconds for mDNS to discover peers and gossip to connect them.
+4. Node A announces the blob; Node B receives the announcement.
+5. Node B downloads the blob; content is verified.
+
+This mirrors the CLI scenario: `receive --topic T` (no --peer) discovers senders
+via mDNS active mode.  The mDNS actor populates the address book automatically,
+giving gossip and blobs everything they need to connect and transfer.
+
+`cargo test -p p2panda-file-sharing` — all 4 integration tests pass.
+PRD task 6 updated to passes:true.
