@@ -1,49 +1,14 @@
- {"category":"functional","description":"Send command imports a file as a blob and announces it on the specified
- topic","steps":["Run send with --topic mytopic and a test file","Verify file is imported into blob store (hash
- printed)","Verify announcement is published via gossip on the topic"],"passes":true}
- {"category":"functional","description":"Receive command listens on a topic and downloads announced
- blobs","steps":["Start receiver with --topic mytopic","Have sender announce a file on the same topic","Verify receiver
-  gets the gossip announcement","Verify receiver downloads the blob by hash","Verify file is written to the output
- directory with correct content"],"passes":false}
- {"category":"functional","description":"Topic is user-specified via --topic flag and determines gossip
- channel","steps":["Start sender with --topic alpha and a file","Start receiver with --topic alpha","Verify receiver
- gets the file","Start another receiver with --topic beta","Verify beta receiver does NOT get the
- file"],"passes":false}
- {"category":"functional","description":"Sender prints its node ID for sharing with remote receivers","steps":["Run
- send command","Verify node ID (public key hex) is printed to stdout/logs","Verify the printed ID can be used as --peer
-  argument"],"passes":false}
- {"category":"functional","description":"Receiver connects to sender via --peer flag using relay
- transport","steps":["Start two nodes on same machine with relay URL configured","Disable mDNS on both nodes (passive
- mode) to force relay usage","Sender imports file and announces on topic","Receiver uses --peer with sender node ID and
-  same topic","Verify relay-based discovery and connection","Verify file is transferred successfully via
- relay"],"passes":false}
- {"category":"functional","description":"Receiver discovers sender via mDNS on same network without
- --peer","steps":["Start two nodes on same machine with mDNS active mode","Sender announces file on --topic
- test","Receiver subscribes to --topic test without --peer flag","Verify mDNS discovery finds the sender on
- loopback","Verify file transfer completes via mDNS discovery"],"passes":false}
- {"category":"functional","description":"Received files are written to --output-dir (default
- ./received)","steps":["Start receiver with default output dir","Receive a file","Verify file appears in
- ./received/","Repeat with --output-dir /tmp/custom","Verify file appears in /tmp/custom/"],"passes":false}
- {"category":"functional","description":"Original filename is preserved in the received file","steps":["Send a file
- named test.pdf (doesnt need to be an actual pdf if you don't have one)","Receive the file","Verify the output file is named test.pdf"],"passes":false}
- {"category":"functional","description":"Multiple files can be sent on the same topic","steps":["Start receiver process
-  on topic multi on same machine","Start sender and send file1.txt on topic multi","Start another sender and send
- file2.txt on topic multi","Verify both files appear in receiver output directory"],"passes":false}
- {"category":"functional","description":"Graceful shutdown on Ctrl+C for both sender and receiver","steps":["Start
- sender","Press Ctrl+C","Verify process exits cleanly without errors","Repeat for receiver"],"passes":false}
- {"category":"functional","description":"Application builds and runs as a workspace member","steps":["Run cargo build
- -p p2panda-file-sharing","Verify build succeeds with no errors","Run cargo run -p p2panda-file-sharing --
- --help","Verify CLI help is displayed"],"passes":false}
- {"category":"functional","description":"Integration test: two in-process nodes transfer a file via
- mDNS","steps":["Spawn two TestNodes with mDNS active on same machine","Node A imports file as blob and gossips
- announcement on topic","Node B subscribes to same gossip topic","Node B receives announcement and downloads blob by
- hash","Verify downloaded content matches original file"],"passes":false}
- {"category":"functional","description":"Integration test: two in-process nodes transfer a file via relay (no
- mDNS)","steps":["Spawn two TestNodes with mDNS passive and relay URL configured","Node B adds Node A as bootstrap peer
-  with relay endpoint address","Node A imports file as blob and gossips announcement on topic","Node B subscribes to
- same gossip topic","Node B receives announcement and downloads blob by hash","Verify downloaded content matches
- original file"],"passes":false}
- {"category":"functional","description":"Integration test: topic isolation prevents cross-topic file
- leakage","steps":["Spawn three TestNodes on same machine","Node A gossips file announcement on topic alpha","Node B
- subscribes to topic alpha and receives the announcement","Node C subscribes to topic beta and does NOT receive the
- announcement","Verify Node B gets the file and Node C does not"],"passes":false}
+{"category":"functional","description":"Send command imports a file as a blob and announces it on the specified\ntopic","steps":["Run send with --topic mytopic and a test file","Verify file is imported into blob store (hash\nprinted)","Verify announcement is published via gossip on the topic"],"passes":true}
+{"category":"functional","description":"Receive command listens on a topic and downloads announced\nblobs","steps":["Start receiver with --topic mytopic","Have sender announce a file on the same topic","Verify receiver\n gets the gossip announcement","Verify receiver downloads the blob by hash","Verify file is written to the output\ndirectory with correct content"],"passes":true}
+{"category":"functional","description":"Topic is user-specified via --topic flag and determines gossip\nchannel","steps":["Start sender with --topic alpha and a file","Start receiver with --topic alpha","Verify receiver\ngets the file","Start another receiver with --topic beta","Verify beta receiver does NOT get the\nfile"],"passes":true}
+{"category":"functional","description":"Sender prints its node ID for sharing with remote receivers","steps":["Run\nsend command","Verify node ID (public key hex) is printed to stdout/logs","Verify the printed ID can be used as --peer\n argument"],"passes":true}
+{"category":"functional","description":"Receiver connects to sender via --peer flag using relay\ntransport","steps":["Start two nodes on same machine with relay URL configured","Disable mDNS on both nodes (passive\nmode) to force relay usage","Sender imports file and announces on topic","Receiver uses --peer with sender node ID and\n same topic","Verify relay-based discovery and connection","Verify file is transferred successfully via\nrelay"],"passes":false}
+{"category":"functional","description":"Receiver discovers sender via mDNS on same network without\n--peer","steps":["Start two nodes on same machine with mDNS active mode","Sender announces file on --topic\ntest","Receiver subscribes to --topic test without --peer flag","Verify mDNS discovery finds the sender on\nloopback","Verify file transfer completes via mDNS discovery"],"passes":false}
+{"category":"functional","description":"Received files are written to --output-dir (default\n./received)","steps":["Start receiver with default output dir","Receive a file","Verify file appears in\n./received/","Repeat with --output-dir /tmp/custom","Verify file appears in /tmp/custom/"],"passes":true}
+{"category":"functional","description":"Original filename is preserved in the received file","steps":["Send a file\nnamed test.pdf (doesnt need to be an actual pdf if you don't have one)","Receive the file","Verify the output file is named test.pdf"],"passes":true}
+{"category":"functional","description":"Multiple files can be sent on the same topic","steps":["Start receiver process\n on topic multi on same machine","Start sender and send file1.txt on topic multi","Start another sender and send\nfile2.txt on topic multi","Verify both files appear in receiver output directory"],"passes":true}
+{"category":"functional","description":"Graceful shutdown on Ctrl+C for both sender and receiver","steps":["Start\nsender","Press Ctrl+C","Verify process exits cleanly without errors","Repeat for receiver"],"passes":true}
+{"category":"functional","description":"Application builds and runs as a workspace member","steps":["Run cargo build\n-p p2panda-file-sharing","Verify build succeeds with no errors","Run cargo run -p p2panda-file-sharing --\n--help","Verify CLI help is displayed"],"passes":true}
+{"category":"functional","description":"Integration test: two in-process nodes transfer a file via\nmDNS","steps":["Spawn two TestNodes with mDNS active on same machine","Node A imports file as blob and gossips\nannouncement on topic","Node B subscribes to same gossip topic","Node B receives announcement and downloads blob by\nhash","Verify downloaded content matches original file"],"passes":true}
+{"category":"functional","description":"Integration test: two in-process nodes transfer a file via relay (no\nmDNS)","steps":["Spawn two TestNodes with mDNS passive and relay URL configured","Node B adds Node A as bootstrap peer\n with relay endpoint address","Node A imports file as blob and gossips announcement on topic","Node B subscribes to\nsame gossip topic","Node B receives announcement and downloads blob by hash","Verify downloaded content matches\noriginal file"],"passes":false}
+{"category":"functional","description":"Integration test: topic isolation prevents cross-topic file\nleakage","steps":["Spawn three TestNodes on same machine","Node A gossips file announcement on topic alpha","Node B\nsubscribes to topic alpha and receives the announcement","Node C subscribes to topic beta and does NOT receive the\nannouncement","Verify Node B gets the file and Node C does not"],"passes":true}
