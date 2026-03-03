@@ -88,3 +88,26 @@ Also updated PRD.jsonl to reflect all already-implemented tasks:
   8 (filename), 9 (multiple files), 10 (Ctrl+C), 11 (builds), 12 (mDNS integ test),
   14 (topic isolation integ test).
 - passes:false — tasks 5 (relay/--peer), 6 (mDNS e2e), 13 (relay integ test).
+## 2026-03-03 — Integration test: relay bootstrap transfer (PRD task 13)
+
+Added `test_relay_bootstrap_transfer` to `p2panda-test-claude/tests/transfer.rs`.
+
+Both nodes spawn with passive mDNS (default in `test_args_from_seed`), so they
+will not discover each other via mDNS.  Node B bootstraps with Node A's address
+using a manually constructed `iroh::EndpointAddr` (simulating what a relay server
+would provide):
+
+- `EndpointAddr::new(from_public_key(node_id_a)).with_ip_addr(socket_addr)`
+- Wrapped into `NodeInfo::from(endpoint_addr).bootstrap()` and inserted into B's
+  address book.
+
+Node A imports a blob and announces it on a gossip topic; Node B receives the
+announcement and downloads the blob.  All assertions pass.
+
+Key imports added to transfer.rs:
+  - `std::net::SocketAddr`
+  - `p2panda_net::addrs::NodeInfo`
+  - `p2panda_net::iroh_endpoint::{EndpointAddr, from_public_key}`
+
+`cargo test -p p2panda-file-sharing` — all 3 integration tests pass (no warnings).
+PRD task 13 updated to passes:true.

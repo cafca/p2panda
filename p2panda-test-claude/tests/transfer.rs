@@ -5,13 +5,19 @@
 //
 // test_topic_isolation: three nodes, Node A announces on topic alpha, Node B
 // (subscribed to alpha) receives it, Node C (subscribed to beta) does not.
+//
+// test_relay_bootstrap_transfer: two nodes with passive mDNS, Node B bootstraps
+// via an explicit EndpointAddr (relay-style address exchange), blob transfer succeeds.
 
+use std::net::SocketAddr;
 use std::time::Duration;
 
 use futures_util::StreamExt;
 use p2panda_blobs::{Blobs, MemStore};
 use p2panda_core::Hash;
 use p2panda_file_sharing::protocol::BlobAnnouncement;
+use p2panda_net::addrs::NodeInfo;
+use p2panda_net::iroh_endpoint::{EndpointAddr, from_public_key};
 use p2panda_net::test_utils::{TestNode, setup_logging};
 use p2panda_net::TopicId;
 use tokio::time::timeout;
@@ -161,6 +167,87 @@ async fn test_topic_isolation() -> anyhow::Result<()> {
     // B downloads the blob from A to confirm end-to-end correctness.
     blobs_b.download(received_b.hash).await.unwrap();
     let downloaded = blobs_b.get_bytes(received_b.hash).await.unwrap();
+    assert_eq!(downloaded.as_ref(), content);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_relay_bootstrap_transfer() -> anyhow::Result<()> {
+    setup_logging();
+
+    let topic_id: TopicId = Hash::new(b"test-relay-bootstrap").into();
+
+    // Both nodes use passive mDNS (default in TestNode::spawn), so they won't
+    // discover each other automatically via mDNS.  Node B must bootstrap using
+    // Node A's EndpointAddr — the same information a relay server would hand out.
+
+    let node_a = TestNode::spawn([5; 32]).await;
+    let node_b = TestNode::spawn([6; 32]).await;
+
+    let store_a = MemStore::new();
+    let blobs_a = Blobs::new(&*store_a, &node_a.endpoint, &node_a.address_book)
+        .await
+        .unwrap();
+
+    let store_b = MemStore::new();
+    let blobs_b = Blobs::new(&*store_b, &node_b.endpoint, &node_b.address_book)
+        .await
+        .unwrap();
+
+    // Import file content as a blob on Node A.
+    let content = b"Hello via relay bootstrap!";
+    let tag_info = blobs_a.add_slice(content).await.unwrap();
+    let hash = tag_info.hash;
+
+    // Build Node A's EndpointAddr from its configured bind address.
+    // In a real relay scenario this address (node id + socket addr) would be
+    // provided by the relay server rather than derived from local config.
+    let socket_addr: SocketAddr = (
+        node_a.args.iroh_config.bind_ip_v4,
+        node_a.args.iroh_config.bind_port_v4,
+    )
+        .into();
+    let endpoint_addr_a =
+        EndpointAddr::new(from_public_key(node_a.node_id())).with_ip_addr(socket_addr);
+
+    // Node B registers Node A as a bootstrap peer using the relay-style EndpointAddr.
+    node_b
+        .address_book
+        .insert_node_info(NodeInfo::from(endpoint_addr_a).bootstrap())
+        .await
+        .unwrap();
+
+    // B subscribes to gossip topic first.
+    let handle_b = node_b.gossip.stream(topic_id).await.unwrap();
+    let mut sub_b = handle_b.subscribe();
+
+    // A joins the same topic and announces the blob.
+    let handle_a = node_a.gossip.stream(topic_id).await.unwrap();
+    let announcement = BlobAnnouncement::new(hash, "relay-bootstrap.txt".to_string());
+    handle_a.publish(announcement.encode()).await.unwrap();
+
+    // B waits for the announcement (with timeout).
+    let received_ann = timeout(Duration::from_secs(15), async {
+        while let Some(Ok(bytes)) = sub_b.next().await {
+            if let Ok(ann) = BlobAnnouncement::decode(&bytes) {
+                return Some(ann);
+            }
+        }
+        None
+    })
+    .await
+    .expect("timed out waiting for relay-bootstrap announcement");
+
+    let received_ann = received_ann.expect("no announcement received via relay bootstrap");
+    assert_eq!(received_ann.hash, hash);
+    assert_eq!(received_ann.filename, "relay-bootstrap.txt");
+
+    // B downloads the blob from A.
+    blobs_b.download(received_ann.hash).await.unwrap();
+
+    // Verify content.
+    let downloaded = blobs_b.get_bytes(received_ann.hash).await.unwrap();
     assert_eq!(downloaded.as_ref(), content);
 
     Ok(())
