@@ -43,3 +43,29 @@ Files changed:
 - `p2panda-blobs/src/blobs.rs` — use `accept_raw` instead of `accept`
 
 `cargo test -p p2panda-blobs` and `cargo test -p p2panda-net` both pass cleanly.
+
+## 2026-03-03 — Add p2panda-file-sharing: blob+gossip file transfer app
+
+Built `p2panda-file-sharing` (`p2panda-test-claude/`) from scratch using the correct
+gossip + blobs architecture (replacing the prior LogSync-based prototype).
+
+Architecture:
+- `send --topic <name> <file>`: imports file into iroh-blobs via `Blobs::add_slice`,
+  prints node ID and content hash, then gossip-announces a `BlobAnnouncement`
+  (32-byte hash || UTF-8 filename) on the derived topic.
+- `receive --topic <name> [--output-dir] [--peer]`: subscribes to gossip, decodes
+  announcements, calls `Blobs::download(hash)`, reads bytes with `get_bytes`, and
+  writes to the output directory preserving the original filename.
+- Topic ID derived from user string: `Hash::new(topic.as_bytes()).into::<TopicId>()`.
+- mDNS active discovery for LAN peers; `--peer` flag wired for future relay use.
+
+Workspace changes:
+- Added `p2panda-test-claude` to workspace `members`.
+- Renamed package `p2panda-file-sharing` and switched deps to local path refs.
+- Replaced old test (`tests/transfer.rs`) with a two-node gossip+blob integration test.
+
+`cargo build -p p2panda-file-sharing` and `cargo run -p p2panda-file-sharing -- --help`
+both pass cleanly. Unit tests (protocol roundtrip) pass.
+PRD tasks now passing: #1 (send with blob+gossip), #3 (--topic flag), #4 (node ID
+printed), #7 (--output-dir), #8 (filename preserved), #10 (Ctrl+C shutdown),
+#11 (workspace member + builds + help).
