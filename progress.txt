@@ -88,6 +88,34 @@ Also updated PRD.jsonl to reflect all already-implemented tasks:
   8 (filename), 9 (multiple files), 10 (Ctrl+C), 11 (builds), 12 (mDNS integ test),
   14 (topic isolation integ test).
 - passes:false — tasks 5 (relay/--peer), 6 (mDNS e2e), 13 (relay integ test).
+## 2026-03-03 — Implement --peer / --relay-url / --passive-mdns CLI flags (PRD task 5)
+
+Completed the implementation of the three missing CLI features needed for relay-based
+peer discovery in `p2panda-file-sharing`:
+
+1. `--peer <node_id>`: previously logged but fully ignored.  Now parses the hex
+   Ed25519 public key, constructs `NodeInfo::new(node_id).bootstrap()`, and inserts
+   it into the node's address book.  When `--peer` is given mDNS is automatically
+   switched to passive mode so relay is the primary connection mechanism.
+
+2. `--relay-url <url>`: new flag on both `send` and `receive`.  Parses an
+   `iroh::RelayUrl` and passes it to the `Endpoint::builder(...).relay_url(...)`.
+   Without this the iroh endpoint has no relay map and cannot use relay transport.
+
+3. `--passive-mdns`: new flag on both `send` and `receive`.  Switches mDNS from
+   `Active` to `Passive` mode so no unsolicited mDNS announcements are made, forcing
+   connections to go through the configured relay (or explicit peer addresses).
+
+Files changed:
+- `p2panda-test-claude/src/node.rs` — `NodeOptions` struct + derive Default;
+  `FileSharingNode::new` accepts `NodeOptions` instead of no args.
+- `p2panda-test-claude/src/main.rs` — parse `--peer`, `--relay-url`, `--passive-mdns`
+  for both subcommands; insert bootstrap `NodeInfo` when `--peer` is present.
+
+All 5 tests continue to pass (`cargo test -p p2panda-file-sharing`).
+PRD task 5 remains `passes:false`: the end-to-end relay test requires a live relay
+server which is not available in this environment.
+
 ## 2026-03-03 — Integration test: relay bootstrap transfer (PRD task 13)
 
 Added `test_relay_bootstrap_transfer` to `p2panda-test-claude/tests/transfer.rs`.
