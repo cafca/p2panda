@@ -261,6 +261,17 @@ impl AddressBook {
         Ok(())
     }
 
+    /// Returns the node IDs of all known peers in the address book.
+    pub async fn node_ids(&self) -> Result<Vec<NodeId>, AddressBookError> {
+        let inner = self.inner.read().await;
+        let result = call!(
+            inner.actor_ref.as_ref().expect("actor spawned in builder"),
+            ToAddressBookActor::AllNodeIds
+        )
+        .map_err(Box::new)?;
+        Ok(result)
+    }
+
     pub(crate) async fn store(
         &self,
     ) -> Result<BoxedAddressBookStore<NodeId, NodeInfo>, AddressBookError> {

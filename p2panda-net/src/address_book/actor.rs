@@ -105,6 +105,9 @@ pub enum ToAddressBookActor {
     /// Report outcomes of incoming or outgoing connections.
     Report(NodeId, ConnectionOutcome),
 
+    /// Returns all known node ids.
+    AllNodeIds(RpcReplyPort<Vec<NodeId>>),
+
     /// Returns internal address book store.
     Store(RpcReplyPort<BoxedAddressBookStore<NodeId, NodeInfo>>),
 }
@@ -342,6 +345,10 @@ impl ThreadLocalActor for AddressBookActor {
             ToAddressBookActor::RemoveOlderThan(duration, reply) => {
                 let result = state.store.remove_older_than(duration).await?;
                 let _ = reply.send(result);
+            }
+            ToAddressBookActor::AllNodeIds(reply) => {
+                let infos = state.store.all_node_infos().await.unwrap_or_default();
+                let _ = reply.send(infos.into_iter().map(|info| info.node_id).collect());
             }
             ToAddressBookActor::Store(reply) => {
                 let _ = reply.send(state.store.clone_box());

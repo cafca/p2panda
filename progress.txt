@@ -1,0 +1,27 @@
+## 2026-03-03 — Fix compilation errors in p2panda-blobs
+
+Fixed 3 compilation errors after porting p2panda-blobs to p2panda-net v0.5 / iroh-blobs 0.98:
+
+1. blobs.rs: Used `Vec<_>` type inference instead of `Vec<iroh_base::PublicKey>` — `iroh_base` is
+   not a direct dependency, but `from_public_key` already returns the right type.
+
+2. pins.rs list_prefix: The `Tags::list_prefix` stream borrows the `&str` prefix, so returning
+   `impl Stream` while referencing a local variable failed. Switched to collecting results into
+   `Vec<TagInfo>` inside the function.
+
+3. Linker environment: SIGBUS from `ld` on the overlay filesystem. Added .cargo/config.toml with
+   `mold` linker and `/tmp/p2panda-build` as target-dir to avoid mmap issues on the mount.
+
+Both `cargo check -p p2panda-blobs` and `cargo check -p p2panda-net` pass cleanly.
+
+## 2026-03-03 — Write integration test for p2panda-blobs
+
+Added a two-node integration test (`p2panda-blobs/tests/blobs.rs`) that exercises the full
+download path: Penguin stores a blob via `add_slice`, Panda adds Penguin to its address book,
+calls `blobs.download(hash)`, then reads back with `get_bytes` and asserts the content.
+
+Added dev-dependencies to `p2panda-blobs/Cargo.toml`:
+  - `tokio` (macros + rt-multi-thread) for `#[tokio::test]`
+  - `p2panda-net` with `test_utils` feature for `TestNode` / `setup_logging`
+
+`cargo check -p p2panda-blobs --tests` passes cleanly (no warnings).
