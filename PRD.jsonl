@@ -3,7 +3,7 @@
   "category": "infrastructure",
   "title": "Project scaffold",
   "description": "Create the file-sharing crate within the p2panda workspace. This is a Bevy desktop app with egui for the UI, using p2panda for peer-to-peer networking.",
-  "depends_on": [],
+  "depends_on": [19],
   "inputs": [
     "Cargo.toml (workspace root, add new member)"
   ],
@@ -33,7 +33,7 @@
     "cargo check -p p2panda-file-sharing-gui compiles without errors",
     "Running the binary opens a native window with the correct title"
   ],
-  "passes": true
+  "passes": false
 }
 
 {
