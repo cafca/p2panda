@@ -38,3 +38,14 @@ What doesn't work:
 
 What doesn't work:
 - `cargo test -p p2panda-file-sharing-gui manifest -- --nocapture` is blocked in this environment by `.cargo/config.toml` forcing `linker = "gcc"` while no `gcc` binary is installed
+
+# 2026-03-04 16:49
+
+- checked the actual `codex-p2panda` docker sandbox instead of the desktop host to see whether `.cargo/config.toml` applies there
+- confirmed the sandbox is Linux ARM64 with Rust host triple `aarch64-unknown-linux-gnu`, so the target-specific linker config does apply inside that sandbox
+- verified that both `gcc` and `mold` were missing before installation
+- installed `gcc` and `mold` inside `codex-p2panda` via `apt-get`
+- verified afterwards that `gcc` resolves to `/usr/bin/gcc` and `mold` resolves to `/usr/bin/mold`
+
+What doesn't work:
+- I did not complete a final `cargo check` through `docker sandbox run`, because that wrapper launches the Codex agent instead of an arbitrary shell command
