@@ -126,3 +126,15 @@ What doesn't work:
 
 What doesn't work:
 - no additional blocker for Task 19 in this run
+
+# 2026-03-04 16:54
+
+- picked Task 8 (`Transfer state model`) as the highest-priority unfinished task for this run because it is already implemented, unblocked, and directly gates both the network polling system (Task 13) and the transfer UI (Task 12)
+- verified the existing `file-sharing/src/state.rs` implementation against the Task 8 acceptance criteria instead of starting a new feature branch of work
+- ran `cargo check -p p2panda-file-sharing-gui --lib`
+- ran `cargo test -p p2panda-file-sharing-gui state --lib -- --nocapture`
+- confirmed the Bevy `TransferRegistry` resource compiles cleanly and the focused state tests pass, including the required progress-fraction cases for empty, partial, and complete transfers
+- updated Task 8 `passes` to `true` in `PRD.jsonl`
+
+What doesn't work:
+- no additional blocker for Task 8 in this run
