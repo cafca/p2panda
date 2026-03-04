@@ -176,3 +176,17 @@ What doesn't work:
 
 What doesn't work:
 - no additional blocker for Task 6 in this run
+
+# 2026-03-04 17:09
+
+- picked Task 9 (`Share directory flow`) as the highest-priority unfinished feature because it is the next critical-path prerequisite for download, persistence, plugin wiring, and the transfer integration tests
+- implemented `file-sharing/src/share.rs` with deterministic recursive directory scanning, hidden/symlink filtering, streaming blob imports via `add_path`, signed manifest creation, `HashSeq` collection creation, HashSeq-aware pinning, share-code generation, gossip announcement publishing, and a background re-announcement task that stays alive with the share session
+- added focused async share-flow tests covering the Task 9 acceptance path: valid share-code generation for a nested 3-file directory, store presence for all file/manifest/collection blobs, and publication of `CollectionAnnouncement` on the topic derived from the collection hash
+- added a direct `iroh-blobs` dependency to `file-sharing/Cargo.toml` so the share flow can use `BlobFormat::HashSeq`, `HashAndFormat`, and `HashSeq` without widening other crate APIs
+- ran `cargo fmt --package p2panda-file-sharing-gui`
+- ran `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-file-sharing-gui --lib`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui share --lib -- --nocapture`
+- confirmed Task 9 acceptance in this run and updated Task 9 `passes` to `true` in `PRD.jsonl`
+
+What doesn't work:
+- no additional blocker for Task 9 in this run

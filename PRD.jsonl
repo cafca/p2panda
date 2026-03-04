@@ -259,7 +259,7 @@
     "A gossip announcement is published on the topic derived from the collection hash",
     "The share code decodes back to the correct collection hash and node ID"
   ],
-  "passes": false
+  "passes": true
 }
 
 {
