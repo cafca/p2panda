@@ -24,6 +24,7 @@ impl TransferRegistry {
     }
 
     pub fn push(&mut self, transfer: Transfer) {
+        self.next_id = self.next_id.max(transfer.id.saturating_add(1));
         self.transfers.push(transfer);
     }
 

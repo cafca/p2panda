@@ -1,6 +1,8 @@
+use std::collections::HashMap;
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::thread::{self, JoinHandle};
@@ -9,12 +11,19 @@ use anyhow::{Context, Result};
 use bevy::prelude::Resource;
 use flume::{Receiver, Sender, TryRecvError};
 
+use crate::download::{download_share_with_progress, DownloadEvent, DownloadSession};
 use crate::node::{AppNode, NodeOptions};
+use crate::persist::{
+    resume_active_transfers, DownloadRecord, RecoveredShare, ShareRecord, StateStore,
+};
+use crate::share::{share_directory, ShareSession};
+use crate::share_code::decode_share_code;
 
 type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NetworkCommand {
+    RecoverStartup,
     ShareDirectory {
         transfer_id: u64,
         directory_path: PathBuf,
@@ -32,6 +41,7 @@ pub enum NetworkCommand {
 impl NetworkCommand {
     fn transfer_id(&self) -> u64 {
         match self {
+            Self::RecoverStartup => u64::MAX,
             Self::ShareDirectory { transfer_id, .. }
             | Self::StartDownload { transfer_id, .. }
             | Self::CancelTransfer { transfer_id } => *transfer_id,
@@ -80,10 +90,17 @@ pub struct AsyncBridge {
 
 impl AsyncBridge {
     pub fn spawn(node_options: NodeOptions) -> Result<Self> {
-        Self::spawn_with_worker(
-            move || Box::pin(async move { AppNode::new(node_options).await }),
-            |_node, command, events| Box::pin(default_handle_command(command, events)),
-        )
+        let data_dir = super::plugin::resolve_data_dir()?;
+        Self::spawn_with_data_dir(node_options, data_dir)
+    }
+
+    pub fn spawn_with_data_dir(node_options: NodeOptions, data_dir: PathBuf) -> Result<Self> {
+        let bridge = Self::spawn_with_worker(
+            move || Box::pin(async move { RuntimeState::new(data_dir, node_options).await }),
+            |state, command, events| Box::pin(default_handle_command(state, command, events)),
+        )?;
+        bridge.send(NetworkCommand::RecoverStartup)?;
+        Ok(bridge)
     }
 
     pub(crate) fn spawn_with_worker<State, Init, Worker>(init: Init, worker: Worker) -> Result<Self>
@@ -208,24 +225,226 @@ async fn run_network_loop<State, Worker>(
     }
 }
 
+struct RuntimeState {
+    node: AppNode,
+    inner: tokio::sync::Mutex<RuntimeInner>,
+    next_recovery_transfer_id: AtomicU64,
+}
+
+struct RuntimeInner {
+    store: StateStore,
+    live_shares: HashMap<u64, ShareSession>,
+    recovered_shares: HashMap<u64, RecoveredShare>,
+    active_downloads: HashMap<u64, DownloadSession>,
+}
+
+impl RuntimeState {
+    async fn new(data_dir: PathBuf, node_options: NodeOptions) -> Result<Self> {
+        let node = AppNode::with_data_dir(data_dir, node_options).await?;
+        let store = StateStore::load(&node.data_dir)?;
+        Ok(Self {
+            node,
+            inner: tokio::sync::Mutex::new(RuntimeInner {
+                store,
+                live_shares: HashMap::new(),
+                recovered_shares: HashMap::new(),
+                active_downloads: HashMap::new(),
+            }),
+            next_recovery_transfer_id: AtomicU64::new(1_000_000),
+        })
+    }
+
+    fn next_recovery_transfer_id(&self) -> u64 {
+        self.next_recovery_transfer_id
+            .fetch_add(1, Ordering::Relaxed)
+    }
+}
+
 async fn default_handle_command(
+    state: Arc<RuntimeState>,
     command: NetworkCommand,
     event_tx: Sender<NetworkEvent>,
 ) -> Result<()> {
-    let transfer_id = command.transfer_id();
-    let action = match command {
-        NetworkCommand::ShareDirectory { .. } => "share",
-        NetworkCommand::StartDownload { .. } => "download",
-        NetworkCommand::CancelTransfer { .. } => "cancel",
+    match command {
+        NetworkCommand::RecoverStartup => recover_startup_state(&state, &event_tx).await,
+        NetworkCommand::ShareDirectory {
+            transfer_id,
+            directory_path,
+        } => {
+            let session = share_directory(&state.node, directory_path).await?;
+            event_tx
+                .send(NetworkEvent::ShareReady {
+                    transfer_id,
+                    share_code: session.share_code.clone(),
+                    total_bytes: session.total_bytes,
+                    file_count: session.file_count(),
+                })
+                .context("failed to send ShareReady event")?;
+
+            let mut runtime = state.inner.lock().await;
+            runtime.store.add_share(ShareRecord::from(&session))?;
+            runtime.live_shares.insert(transfer_id, session);
+            Ok(())
+        }
+        NetworkCommand::StartDownload {
+            transfer_id,
+            share_code,
+            output_directory,
+        } => {
+            let decoded = decode_share_code(&share_code)?;
+            {
+                let mut runtime = state.inner.lock().await;
+                runtime.store.add_download(DownloadRecord::new(
+                    share_code.clone(),
+                    output_directory.clone(),
+                    decoded.collection_hash(),
+                ))?;
+            }
+
+            let session = download_share_with_progress(
+                &state.node,
+                &share_code,
+                &output_directory,
+                |event| emit_download_event(&event_tx, transfer_id, event),
+            )
+            .await?;
+
+            {
+                let mut runtime = state.inner.lock().await;
+                runtime
+                    .store
+                    .remove_download_by_code(&share_code, &output_directory)?;
+                runtime.active_downloads.insert(transfer_id, session);
+            }
+            Ok(())
+        }
+        NetworkCommand::CancelTransfer { transfer_id } => {
+            let mut runtime = state.inner.lock().await;
+
+            if let Some(session) = runtime.live_shares.remove(&transfer_id) {
+                runtime.store.remove_share_by_code(&session.share_code)?;
+                return Ok(());
+            }
+
+            if let Some(session) = runtime.recovered_shares.remove(&transfer_id) {
+                runtime
+                    .store
+                    .remove_share_by_code(&session.record.share_code)?;
+                return Ok(());
+            }
+
+            if runtime.active_downloads.remove(&transfer_id).is_some() {
+                return Err(anyhow::anyhow!(
+                    "cancel for active downloads is not implemented yet"
+                ));
+            }
+
+            Err(anyhow::anyhow!("unknown transfer id {transfer_id}"))
+        }
+    }
+}
+
+fn emit_download_event(event_tx: &Sender<NetworkEvent>, transfer_id: u64, event: DownloadEvent) {
+    let network_event = match event {
+        DownloadEvent::DownloadStarted {
+            directory_name,
+            total_bytes,
+            file_count,
+        } => NetworkEvent::DownloadStarted {
+            transfer_id,
+            directory_name,
+            total_bytes,
+            file_count,
+        },
+        DownloadEvent::FileDownloadProgress {
+            file_index,
+            bytes_downloaded,
+        } => NetworkEvent::FileDownloadProgress {
+            transfer_id,
+            file_index,
+            bytes_downloaded,
+        },
+        DownloadEvent::FileCompleted { file_index } => NetworkEvent::FileCompleted {
+            transfer_id,
+            file_index,
+        },
+        DownloadEvent::FileError {
+            file_index: _,
+            error_message,
+        } => NetworkEvent::Error {
+            transfer_id,
+            error_message,
+        },
+        DownloadEvent::TransferCompleted => NetworkEvent::TransferCompleted { transfer_id },
     };
 
-    event_tx
-        .send_async(NetworkEvent::Error {
-            transfer_id,
-            error_message: format!("{action} flow is not implemented yet"),
-        })
-        .await
-        .context("failed to send placeholder bridge error event")?;
+    let _ = event_tx.send(network_event);
+}
+
+async fn recover_startup_state(
+    state: &RuntimeState,
+    event_tx: &Sender<NetworkEvent>,
+) -> Result<()> {
+    let persisted_state = {
+        let runtime = state.inner.lock().await;
+        runtime.store.state().clone()
+    };
+
+    let recovered = resume_active_transfers(&state.node, &persisted_state).await?;
+    let mut runtime = state.inner.lock().await;
+
+    for share in recovered.shares {
+        let transfer_id = state.next_recovery_transfer_id();
+        event_tx
+            .send(NetworkEvent::ShareReady {
+                transfer_id,
+                share_code: share.record.share_code.clone(),
+                total_bytes: 0,
+                file_count: 0,
+            })
+            .context("failed to send recovered ShareReady event")?;
+        runtime.recovered_shares.insert(transfer_id, share);
+    }
+
+    for download in recovered.downloads {
+        let transfer_id = state.next_recovery_transfer_id();
+        event_tx
+            .send(NetworkEvent::DownloadStarted {
+                transfer_id,
+                directory_name: download.directory_name.clone(),
+                total_bytes: download.total_bytes,
+                file_count: download.files.len(),
+            })
+            .context("failed to send recovered DownloadStarted event")?;
+
+        for (file_index, file) in download.files.iter().enumerate() {
+            event_tx
+                .send(NetworkEvent::FileDownloadProgress {
+                    transfer_id,
+                    file_index,
+                    bytes_downloaded: file.size,
+                })
+                .context("failed to send recovered FileDownloadProgress event")?;
+            event_tx
+                .send(NetworkEvent::FileCompleted {
+                    transfer_id,
+                    file_index,
+                })
+                .context("failed to send recovered FileCompleted event")?;
+        }
+
+        event_tx
+            .send(NetworkEvent::TransferCompleted { transfer_id })
+            .context("failed to send recovered TransferCompleted event")?;
+
+        runtime.store.remove_download_by_code(
+            &download.share_code.encode()?,
+            download
+                .output_root
+                .parent()
+                .unwrap_or(&download.output_root),
+        )?;
+    }
 
     Ok(())
 }
@@ -348,6 +567,7 @@ mod tests {
         let bridge = spawn_test_bridge(|_, command, events| {
             Box::pin(async move {
                 let (transfer_id, delay_ms) = match command {
+                    NetworkCommand::RecoverStartup => (u64::MAX, 0),
                     NetworkCommand::ShareDirectory { transfer_id, .. } => (transfer_id, 200),
                     NetworkCommand::StartDownload { transfer_id, .. } => (transfer_id, 20),
                     NetworkCommand::CancelTransfer { transfer_id } => (transfer_id, 0),

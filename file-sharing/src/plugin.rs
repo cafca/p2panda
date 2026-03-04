@@ -1,18 +1,38 @@
 use std::time::Duration;
 
+use anyhow::{Context, Result};
 use bevy::app::Plugin;
 use bevy::prelude::{App, Res, ResMut, Update};
+use directories::ProjectDirs;
 use flume::TryRecvError;
 
 use crate::bridge::{AsyncBridge, NetworkEvent};
-use crate::state::{FileProgress, TransferRegistry, TransferStatus};
+use crate::node::NodeOptions;
+use crate::state::{Direction, FileProgress, Transfer, TransferRegistry, TransferStatus};
+use crate::ui::UiState;
 
 pub struct FileSharingPlugin;
 
 impl Plugin for FileSharingPlugin {
     fn build(&self, app: &mut App) {
+        let bridge = AsyncBridge::spawn_with_data_dir(
+            NodeOptions::default(),
+            resolve_data_dir().expect("failed to resolve file-sharing data directory"),
+        )
+        .expect("failed to initialize async bridge");
+
+        app.insert_resource(bridge);
+        app.insert_resource(TransferRegistry::default());
+        app.insert_resource(UiState::default());
         app.add_systems(Update, poll_network_events);
     }
+}
+
+pub(crate) fn resolve_data_dir() -> Result<std::path::PathBuf> {
+    const APP_NAME: &str = "p2panda-file-sharing";
+    ProjectDirs::from("", "", APP_NAME)
+        .map(|dirs| dirs.data_dir().to_path_buf())
+        .with_context(|| format!("failed to resolve app data directory for {APP_NAME}"))
 }
 
 pub fn poll_network_events(bridge: Res<AsyncBridge>, mut transfers: ResMut<TransferRegistry>) {
@@ -43,13 +63,19 @@ fn apply_network_event(transfers: &mut TransferRegistry, event: NetworkEvent) ->
             transfer_id,
             share_code,
             total_bytes,
-            ..
+            file_count,
         } => {
-            if let Some(transfer) = transfers.get_mut(transfer_id) {
-                transfer.share_code = Some(share_code);
-                transfer.total_bytes = total_bytes;
-                transfer.status = TransferStatus::Active;
+            let transfer = get_or_insert_transfer(transfers, transfer_id, || {
+                Transfer::new(transfer_id, "Recovered share", Direction::Upload)
+            });
+            transfer.share_code = Some(share_code);
+            transfer.total_bytes = total_bytes;
+            if transfer.files.is_empty() && file_count > 0 {
+                transfer.files = (0..file_count)
+                    .map(|index| FileProgress::new(format!("file-{index}"), 0))
+                    .collect();
             }
+            transfer.status = TransferStatus::Active;
             false
         }
         NetworkEvent::DownloadStarted {
@@ -58,15 +84,16 @@ fn apply_network_event(transfers: &mut TransferRegistry, event: NetworkEvent) ->
             total_bytes,
             file_count,
         } => {
-            if let Some(transfer) = transfers.get_mut(transfer_id) {
-                transfer.name = directory_name;
-                transfer.total_bytes = total_bytes;
-                transfer.status = TransferStatus::Active;
-                transfer.files = (0..file_count)
-                    .map(|index| FileProgress::new(format!("file-{index}"), 0))
-                    .collect();
-                transfer.refresh_downloaded_bytes();
-            }
+            let transfer = get_or_insert_transfer(transfers, transfer_id, || {
+                Transfer::new(transfer_id, &directory_name, Direction::Download)
+            });
+            transfer.name = directory_name;
+            transfer.total_bytes = total_bytes;
+            transfer.status = TransferStatus::Active;
+            transfer.files = (0..file_count)
+                .map(|index| FileProgress::new(format!("file-{index}"), 0))
+                .collect();
+            transfer.refresh_downloaded_bytes();
             false
         }
         NetworkEvent::FileDownloadProgress {
@@ -102,21 +129,39 @@ fn apply_network_event(transfers: &mut TransferRegistry, event: NetworkEvent) ->
             false
         }
         NetworkEvent::TransferCompleted { transfer_id } => {
-            if let Some(transfer) = transfers.get_mut(transfer_id) {
-                transfer.status = TransferStatus::Completed;
-            }
+            let transfer = get_or_insert_transfer(transfers, transfer_id, || {
+                Transfer::new(transfer_id, "Recovered transfer", Direction::Download)
+            });
+            transfer.status = TransferStatus::Completed;
             false
         }
         NetworkEvent::Error {
             transfer_id,
             error_message,
         } => {
-            if let Some(transfer) = transfers.get_mut(transfer_id) {
-                transfer.status = TransferStatus::Error(error_message);
-            }
+            let transfer = get_or_insert_transfer(transfers, transfer_id, || {
+                Transfer::new(transfer_id, "Transfer", Direction::Download)
+            });
+            transfer.status = TransferStatus::Error(error_message);
             false
         }
     }
+}
+
+fn get_or_insert_transfer<F>(
+    transfers: &mut TransferRegistry,
+    transfer_id: u64,
+    make_transfer: F,
+) -> &mut Transfer
+where
+    F: FnOnce() -> Transfer,
+{
+    if transfers.get(transfer_id).is_none() {
+        transfers.push(make_transfer());
+    }
+    transfers
+        .get_mut(transfer_id)
+        .expect("transfer must exist after insertion")
 }
 
 fn ensure_file_slot(transfer: &mut crate::state::Transfer, file_index: usize) {

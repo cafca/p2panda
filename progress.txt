@@ -233,3 +233,19 @@ What doesn't work:
 
 What doesn't work:
 - no additional blocker for Task 12 in this run
+
+# 2026-03-04 17:45
+
+- picked Task 14 (`Bevy plugin wiring`) as the highest-priority unfinished feature because it is the integration step that connects the verified core/network/UI modules into the running app path
+- implemented the plugin-side runtime resource wiring in `file-sharing/src/plugin.rs`: it now resolves the app data directory, initializes `AsyncBridge` at startup, and inserts `AsyncBridge`, `TransferRegistry`, and `UiState` as Bevy resources
+- implemented bridge-side runtime wiring in `file-sharing/src/bridge.rs`: real command handlers now execute share/download flows, persist active transfer metadata via `StateStore`, and run startup recovery (`resume_active_transfers`) with recovered events sent back to the Bevy thread
+- extended transfer-registry behavior in `file-sharing/src/state.rs` so pushing externally-assigned/recovered transfer IDs advances `next_id`, preventing future ID collisions with UI-allocated transfers
+- ran `cargo fmt --package p2panda-file-sharing-gui`
+- ran `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-file-sharing-gui --lib`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui bridge --lib -- --nocapture`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui plugin --lib -- --nocapture`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui ui --lib -- --nocapture`
+
+What doesn't work:
+- Task 14 remains `passes: false` in this run. The full acceptance criteria require plugin registration of the UI rendering system itself, but the current dependency set is structurally inconsistent (`bevy = 0.15.x` with `bevy_egui = 0.34.x`, where `bevy_egui 0.34` uses Bevy 0.16 types). Attempting to register `render_transfer_ui` from the plugin fails at compile time due cross-version `bevy_ecs` trait incompatibility.
+- This is a missing infrastructure alignment item for manual PRD amendment: pin `bevy_egui` to a Bevy-0.15-compatible release (or upgrade `bevy` to match `bevy_egui`) before Task 14 can be fully completed and truthfully marked passing.

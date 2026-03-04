@@ -413,7 +413,7 @@
     "Sharing a directory results in a share code appearing in the UI",
     "Pasting a share code and clicking Start shows download progress"
   ],
-  "passes": false
+  "passes" : false
 }
 
 {
