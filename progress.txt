@@ -266,3 +266,18 @@ What doesn't work:
 
 What doesn't work:
 - no additional blocker for Task 15 in this run
+
+# 2026-03-04 18:06
+
+- picked Task 14 (`Bevy plugin wiring`) as the highest-priority unfinished feature because all of its dependencies are already verified and it is the runtime integration point that connects node startup/recovery, network polling, and the transfer UI loop
+- updated `file-sharing/src/plugin.rs` to wire update systems as a chained sequence `(poll_network_events, ui_system)` so network events are always applied before UI rendering each frame
+- updated `file-sharing/src/ui.rs` to expose a stable `ui_system` entrypoint (keeping `render_transfer_ui` as a compatibility wrapper)
+- ran `cargo fmt --package p2panda-file-sharing-gui`
+- ran `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-file-sharing-gui --lib`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui plugin --lib -- --nocapture`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui ui --lib -- --nocapture`
+- ran `./scripts/verify-in-sandbox.sh -- bash -lc 'timeout 8 cargo run -q -p p2panda-file-sharing-gui >/tmp/p2panda-run.log 2>&1; ec=$?; cat /tmp/p2panda-run.log; exit $ec'` and observed timeout-only exit (`124`) with no startup errors, indicating the app stayed running during the smoke window
+- confirmed Task 14 acceptance in this run and updated Task 14 `passes` to `true` in `PRD.jsonl`
+
+What doesn't work:
+- no additional blocker for Task 14 in this run

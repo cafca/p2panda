@@ -25,7 +25,7 @@ impl Default for UiState {
     }
 }
 
-pub fn render_transfer_ui(
+pub fn ui_system(
     mut egui_contexts: EguiContexts,
     mut ui_state: ResMut<UiState>,
     mut transfers: ResMut<TransferRegistry>,
@@ -65,6 +65,15 @@ pub fn render_transfer_ui(
     if ui_state.download_dialog_open {
         render_download_dialog(ctx, &mut ui_state, &mut transfers, &bridge);
     }
+}
+
+pub fn render_transfer_ui(
+    egui_contexts: EguiContexts,
+    ui_state: ResMut<UiState>,
+    transfers: ResMut<TransferRegistry>,
+    bridge: Res<AsyncBridge>,
+) {
+    ui_system(egui_contexts, ui_state, transfers, bridge);
 }
 
 fn render_download_dialog(

@@ -2,14 +2,14 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use bevy::app::Plugin;
-use bevy::prelude::{App, Res, ResMut, Update};
+use bevy::prelude::{App, IntoSystemConfigs, Res, ResMut, Update};
 use directories::ProjectDirs;
 use flume::TryRecvError;
 
 use crate::bridge::{AsyncBridge, NetworkEvent};
 use crate::node::NodeOptions;
 use crate::state::{Direction, FileProgress, Transfer, TransferRegistry, TransferStatus};
-use crate::ui::UiState;
+use crate::ui::{ui_system, UiState};
 
 pub struct FileSharingPlugin;
 
@@ -24,7 +24,7 @@ impl Plugin for FileSharingPlugin {
         app.insert_resource(bridge);
         app.insert_resource(TransferRegistry::default());
         app.insert_resource(UiState::default());
-        app.add_systems(Update, poll_network_events);
+        app.add_systems(Update, (poll_network_events, ui_system).chain());
     }
 }
 
