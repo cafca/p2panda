@@ -9,6 +9,8 @@ use p2panda_net::{AddressBook, Discovery, Endpoint, Gossip, MdnsDiscovery, Topic
 pub struct NodeOptions {
     /// Optional relay URL for relay-based peer connections.
     pub relay_url: Option<RelayUrl>,
+    /// Disable relay TLS verification for local development relays with self-signed certs.
+    pub insecure_skip_relay_cert_verify: bool,
     /// Use passive mDNS (no active announcements). Useful when `--peer` is given.
     pub passive_mdns: bool,
 }
@@ -38,6 +40,10 @@ impl FileSharingNode {
 
         if let Some(relay_url) = opts.relay_url {
             endpoint_builder = endpoint_builder.relay_url(relay_url);
+        }
+
+        if opts.insecure_skip_relay_cert_verify {
+            endpoint_builder = endpoint_builder.insecure_skip_relay_cert_verify(true);
         }
 
         let endpoint = endpoint_builder.spawn().await?;

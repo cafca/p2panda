@@ -92,6 +92,7 @@ pub struct IrohState {
     private_key: PrivateKey,
     config: IrohConfig,
     relay_map: iroh::RelayMap,
+    insecure_skip_relay_cert_verify: bool,
     address_book: AddressBook,
     endpoint: Option<iroh::Endpoint>,
     protocols: ProtocolMap,
@@ -105,6 +106,7 @@ pub type IrohEndpointArgs = (
     PrivateKey,
     IrohConfig,
     iroh::RelayMap,
+    bool,
     AddressBook,
 );
 
@@ -123,7 +125,14 @@ impl ThreadLocalActor for IrohEndpoint {
         myself: ActorRef<Self::Msg>,
         args: Self::Arguments,
     ) -> Result<Self::State, ActorProcessingErr> {
-        let (network_id, private_key, config, relay_map, address_book) = args;
+        let (
+            network_id,
+            private_key,
+            config,
+            relay_map,
+            insecure_skip_relay_cert_verify,
+            address_book,
+        ) = args;
 
         // Automatically bind iroh endpoint after actor start.
         myself.send_message(ToIrohEndpoint::Bind)?;
@@ -133,6 +142,7 @@ impl ThreadLocalActor for IrohEndpoint {
             private_key,
             config,
             relay_map,
+            insecure_skip_relay_cert_verify,
             address_book,
             endpoint: None,
             protocols: Arc::default(),
@@ -202,6 +212,7 @@ impl ThreadLocalActor for IrohEndpoint {
                 // Create and bind the endpoint to the socket.
                 let endpoint = iroh::Endpoint::empty_builder(relay_mode)
                     .address_lookup(address_book_discovery)
+                    .insecure_skip_relay_cert_verify(state.insecure_skip_relay_cert_verify)
                     .secret_key(from_private_key(state.private_key.clone()))
                     .transport_config(quic_transport_config)
                     .bind_addr(socket_address_v4)?

@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls:*)",
+      "Bash(gh api:*)",
+      "Bash(gh repo view:)",
+      "Bash(cargo check:*)"
+    ]
+  }
+}

@@ -15,31 +15,20 @@ async fn blob_download_from_peer() {
     // ฅ՞•ﻌ•՞ฅ <- Penguin (provider)
     let mut penguin = TestNode::spawn([99; 32]).await;
     let penguin_mem_store = MemStore::new();
-    let penguin_blobs = Blobs::new(
-        &penguin_mem_store,
-        &penguin.endpoint,
-        &penguin.address_book,
-    )
-    .await
-    .unwrap();
-
-    // Penguin stores a blob.
-    let tag_info = penguin_blobs
-        .add_slice(b"Hello, Panda!")
+    let penguin_blobs = Blobs::new(&penguin_mem_store, &penguin.endpoint, &penguin.address_book)
         .await
         .unwrap();
+
+    // Penguin stores a blob.
+    let tag_info = penguin_blobs.add_slice(b"Hello, Panda!").await.unwrap();
     let hash = tag_info.hash;
 
     // ฅ՞•ﻌ•՞ฅ <- Panda (downloader)
     let panda = TestNode::spawn([98; 32]).await;
     let panda_mem_store = MemStore::new();
-    let panda_blobs = Blobs::new(
-        &panda_mem_store,
-        &panda.endpoint,
-        &panda.address_book,
-    )
-    .await
-    .unwrap();
+    let panda_blobs = Blobs::new(&panda_mem_store, &panda.endpoint, &panda.address_book)
+        .await
+        .unwrap();
 
     // Panda adds Penguin to its address book so the iroh endpoint can resolve the peer address.
     panda

@@ -32,11 +32,7 @@ impl<'a> Pins<'a> {
 
     /// Get the hash for a named pin, if it exists.
     pub async fn get(&self, name: impl AsRef<str>) -> Result<Option<Hash>> {
-        Ok(self
-            .tags
-            .get(name.as_ref())
-            .await?
-            .map(|i| i.hash))
+        Ok(self.tags.get(name.as_ref()).await?.map(|i| i.hash))
     }
 
     /// Remove a named pin. The blob becomes eligible for GC if no other pins or temp pins hold it.

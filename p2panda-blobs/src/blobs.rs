@@ -29,7 +29,11 @@ impl Deref for Blobs {
 
 impl Blobs {
     /// Create a new `Blobs` instance, registering the blob protocol with the given endpoint.
-    pub async fn new(store: &Store, endpoint: &Endpoint, address_book: &AddressBook) -> Result<Self> {
+    pub async fn new(
+        store: &Store,
+        endpoint: &Endpoint,
+        address_book: &AddressBook,
+    ) -> Result<Self> {
         let blobs_proto = BlobsProtocol::new(store, None);
         endpoint
             .accept_raw(iroh_blobs::ALPN, blobs_proto)

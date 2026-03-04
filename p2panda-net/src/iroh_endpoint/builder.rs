@@ -16,6 +16,7 @@ pub struct Builder {
     private_key: Option<PrivateKey>,
     config: Option<IrohConfig>,
     relay_urls: HashSet<iroh::RelayUrl>,
+    insecure_skip_relay_cert_verify: bool,
     address_book: AddressBook,
 }
 
@@ -27,6 +28,7 @@ impl Builder {
             config: None,
             address_book,
             relay_urls: HashSet::new(),
+            insecure_skip_relay_cert_verify: false,
         }
     }
 
@@ -68,6 +70,14 @@ impl Builder {
         self
     }
 
+    /// Disables TLS verification for relay certificates.
+    ///
+    /// This is only intended for local development relays using self-signed certificates.
+    pub fn insecure_skip_relay_cert_verify(mut self, skip_verify: bool) -> Self {
+        self.insecure_skip_relay_cert_verify = skip_verify;
+        self
+    }
+
     pub(crate) fn build_args(self) -> IrohEndpointArgs {
         let network_id = self.network_id.unwrap_or(DEFAULT_NETWORK_ID);
         let private_key = self.private_key.unwrap_or_default();
@@ -78,6 +88,7 @@ impl Builder {
             private_key,
             config,
             relay_map,
+            self.insecure_skip_relay_cert_verify,
             self.address_book,
         )
     }

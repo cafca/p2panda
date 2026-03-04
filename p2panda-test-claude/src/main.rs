@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use p2panda_file_sharing::{node, receiver, sender};
 use p2panda_net::addrs::NodeInfo;
+use p2panda_net::iroh_endpoint::{from_public_key, EndpointAddr};
 use std::path::PathBuf;
 use tracing_subscriber::EnvFilter;
 
@@ -28,6 +29,10 @@ enum Command {
         #[arg(long)]
         relay_url: Option<String>,
 
+        /// Disable relay certificate verification for local development relays.
+        #[arg(long, default_value_t = false)]
+        insecure_skip_relay_cert_verify: bool,
+
         /// Use passive mDNS (no active announcements).
         #[arg(long, default_value_t = false)]
         passive_mdns: bool,
@@ -50,6 +55,10 @@ enum Command {
         /// Relay server URL (e.g. https://use1-1.relay.iroh.network.).
         #[arg(long)]
         relay_url: Option<String>,
+
+        /// Disable relay certificate verification for local development relays.
+        #[arg(long, default_value_t = false)]
+        insecure_skip_relay_cert_verify: bool,
 
         /// Use passive mDNS (no active announcements). Implied when --peer is given.
         #[arg(long, default_value_t = false)]
@@ -96,11 +105,13 @@ async fn main() -> Result<()> {
             topic,
             file,
             relay_url,
+            insecure_skip_relay_cert_verify,
             passive_mdns,
         } => {
             tracing::info!("Initializing node for topic '{}'...", topic);
             let opts = node::NodeOptions {
                 relay_url: relay_url.as_deref().map(parse_relay_url).transpose()?,
+                insecure_skip_relay_cert_verify,
                 passive_mdns,
             };
             let node = node::FileSharingNode::new(&topic, opts)
@@ -113,13 +124,22 @@ async fn main() -> Result<()> {
             output_dir,
             peer,
             relay_url,
+            insecure_skip_relay_cert_verify,
             passive_mdns,
         } => {
             tracing::info!("Initializing node for topic '{}'...", topic);
+            let relay_url = relay_url.as_deref().map(parse_relay_url).transpose()?;
+            if peer.is_some() && relay_url.is_none() {
+                anyhow::bail!(
+                    "--peer requires --relay-url because a node ID alone does not include transport addresses"
+                );
+            }
+
             // When a peer is given we default to passive mDNS to avoid mDNS taking over.
             let use_passive = passive_mdns || peer.is_some();
             let opts = node::NodeOptions {
-                relay_url: relay_url.as_deref().map(parse_relay_url).transpose()?,
+                relay_url: relay_url.clone(),
+                insecure_skip_relay_cert_verify,
                 passive_mdns: use_passive,
             };
             let node = node::FileSharingNode::new(&topic, opts)
@@ -130,7 +150,10 @@ async fn main() -> Result<()> {
                 let node_id: p2panda_net::NodeId = peer_hex
                     .parse()
                     .with_context(|| format!("Invalid peer node ID: {}", peer_hex))?;
-                let node_info = NodeInfo::new(node_id).bootstrap();
+                let relay_url = relay_url.expect("validated above when --peer is used");
+                let endpoint_addr =
+                    EndpointAddr::new(from_public_key(node_id)).with_relay_url(relay_url);
+                let node_info = NodeInfo::from(endpoint_addr).bootstrap();
                 node.address_book
                     .insert_node_info(node_info)
                     .await

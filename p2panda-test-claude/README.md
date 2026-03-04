@@ -1,144 +1,165 @@
-# p2panda File Transfer
+# p2panda File Sharing Test App
 
-A "hello world" CLI application demonstrating p2panda's core P2P capabilities for transferring files between instances on a local network.
+This directory contains a small CLI app for testing file transfer over `p2panda-net`.
 
-## Features
+It uses:
 
-- **Zero-config networking**: Automatic peer discovery via mDNS
-- **Eventual consistency**: Files are synced using p2panda's LogSync protocol
-- **Cryptographically signed**: All operations are signed with Ed25519 keys
-- **Order-independent**: Sender and receiver can start in any order
+- gossip to announce files on a topic
+- `iroh-blobs` to transfer the file contents
+- mDNS for LAN discovery by default
+- relay bootstrap via `--peer` and `--relay-url` when testing through an Iroh relay
 
-## Architecture
+## Build
 
-This application uses p2panda v0.5.1 to create a decentralized file transfer system:
-
-- **p2panda-core**: Operations with cryptographic signatures and BLAKE3 hashing
-- **p2panda-net**: Networking stack (Endpoint, mDNS, Discovery, Gossip, LogSync)
-- **p2panda-store**: In-memory operation storage
-- **p2panda-sync**: Eventually consistent log synchronization
-
-Files are encoded as CBOR messages in operation bodies and synced via LogSync. The receiver subscribes to a shared topic and automatically receives files as operations are published.
-
-## Building
+From the workspace root:
 
 ```bash
-cargo build --release
+cargo build -p p2panda-file-sharing
 ```
 
-## Usage
-
-### Sending a file
+Show CLI help:
 
 ```bash
-./target/release/p2panda-file-transfer send <file-path>
+cargo run -p p2panda-file-sharing -- --help
 ```
 
-Example:
-```bash
-./target/release/p2panda-file-transfer send ~/Documents/sample.txt
-```
+## Commands
 
-### Receiving files
+Send a file:
 
 ```bash
-./target/release/p2panda-file-transfer receive --output-dir <directory>
+cargo run -p p2panda-file-sharing -- \
+  send \
+  --topic mytopic \
+  ./example.txt
 ```
 
-Example:
-```bash
-./target/release/p2panda-file-transfer receive --output-dir ./received
-```
-
-The receiver will wait for incoming files and save them to the specified directory. Default output directory is `./received`.
-
-## Testing
-
-### Unit Tests
-
-Test protocol encoding/decoding and topic map functionality:
+Receive files:
 
 ```bash
-cargo test --lib
+cargo run -p p2panda-file-sharing -- \
+  receive \
+  --topic mytopic \
+  --output-dir ./received
 ```
 
-### Integration Test
+Important flags:
 
-Test file transfer between two in-process nodes:
+- `--topic <name>`: sender and receiver must use the same topic
+- `--output-dir <dir>`: where received files are written, default `./received`
+- `--relay-url <url>`: configures a relay/home relay for the node
+- `--peer <node-id>`: bootstrap from a sender node ID through the relay
+- `--passive-mdns`: disables active mDNS announcements
+- `--insecure-skip-relay-cert-verify`: only for local/dev relays with self-signed certs
+
+## LAN Test Without Relay
+
+Receiver:
 
 ```bash
-cargo test --test transfer
+cargo run -p p2panda-file-sharing -- \
+  receive \
+  --topic demo \
+  --output-dir ./received
 ```
 
-### End-to-End Test
-
-Test file transfer between two separate processes:
+Sender:
 
 ```bash
-bash scripts/test-transfer.sh
+cargo run -p p2panda-file-sharing -- \
+  send \
+  --topic demo \
+  ./sample.txt
 ```
 
-This script:
-1. Builds the release binary
-2. Creates a temporary sample file
-3. Starts a receiver process
-4. Starts a sender process
-5. Verifies the file is transferred and content matches
-6. Reports PASS/FAIL with logs
+The sender prints its node ID on startup. The receiver writes the file to the output directory using the original filename.
 
-## How It Works
+## Local Relay Setup
 
-1. **Initialization**: Each instance creates a p2panda node with:
-   - A new Ed25519 private key
-   - An in-memory operation store
-   - A topic map for tracking logs
-   - Network stack (mDNS, Discovery, Gossip, LogSync)
+This repo includes a helper script for running a local `iroh-relay` in `--dev` mode with QUIC address discovery enabled:
 
-2. **Discovery**: Nodes discover each other via mDNS on the local network
-
-3. **Sending**: The sender:
-   - Reads the file from disk
-   - Creates a `FileMessage` with filename and content
-   - Encodes it as CBOR
-   - Creates a signed p2panda operation
-   - Publishes it via LogSync
-
-4. **Receiving**: The receiver:
-   - Subscribes to the shared topic
-   - Receives operations via LogSync
-   - Decodes the `FileMessage`
-   - Writes the file to disk
-
-5. **Sync**: LogSync provides eventual consistency, so operations are synced regardless of startup order
-
-## Project Structure
-
-```
-p2panda-file-transfer/
-├── src/
-│   ├── lib.rs          # Library exports
-│   ├── main.rs         # CLI entry point
-│   ├── node.rs         # Network stack setup
-│   ├── protocol.rs     # FileMessage encode/decode
-│   ├── sender.rs       # Send mode implementation
-│   └── receiver.rs     # Receive mode implementation
-├── tests/
-│   └── transfer.rs     # Integration test
-├── scripts/
-│   └── test-transfer.sh  # End-to-end test script
-├── Cargo.toml
-└── README.md
+```bash
+bash /Users/pv/code/p2panda/p2panda-test-claude/scripts/start-dev-relay.sh
 ```
 
-## Limitations
+What the script does:
 
-- Files are embedded in operation bodies, suitable for small files (<1MB)
-- For larger files, p2panda-blobs would be more appropriate (when ready)
-- LAN-only (no relay server configured)
-- In-memory storage only (not persisted)
+- finds the cached `iroh-relay` source in Cargo's registry
+- generates self-signed localhost certificates with `openssl`
+- writes relay config to `p2panda-test-claude/.local/iroh-relay/config.toml`
+- starts the relay on `http://localhost:3340`
+- enables QUIC address discovery on port `7824`
 
-## References
+Because the relay uses self-signed certs for local testing, the app must be run with:
 
-- [p2panda.org](https://p2panda.org/) - p2panda documentation
-- [p2panda reflection app](https://github.com/p2panda/reflection) - Full app example
-- [p2panda chat example](https://github.com/p2panda/p2panda/blob/main/p2panda-net/examples/chat.rs) - Reference implementation
+```bash
+--relay-url http://localhost:3340 --insecure-skip-relay-cert-verify
+```
+
+## Relay Test Flow
+
+Start the relay in one terminal:
+
+```bash
+bash /Users/pv/code/p2panda/p2panda-test-claude/scripts/start-dev-relay.sh
+```
+
+Start the sender in a second terminal:
+
+```bash
+cargo run -p p2panda-file-sharing -- \
+  send \
+  --topic relay-demo \
+  --relay-url http://localhost:3340 \
+  --insecure-skip-relay-cert-verify \
+  --passive-mdns \
+  ./sample.txt
+```
+
+Copy the sender node ID from the logs, then start the receiver in a third terminal:
+
+```bash
+cargo run -p p2panda-file-sharing -- \
+  receive \
+  --topic relay-demo \
+  --peer <sender-node-id> \
+  --relay-url http://localhost:3340 \
+  --insecure-skip-relay-cert-verify \
+  --output-dir ./received
+```
+
+Notes:
+
+- `--peer` requires `--relay-url`
+- when `--peer` is supplied, the receiver automatically uses passive mDNS
+- a bare node ID is not enough by itself; relay bootstrap depends on the relay URL
+
+## Test Scripts
+
+Quick end-to-end LAN test:
+
+```bash
+bash /Users/pv/code/p2panda/p2panda-test-claude/scripts/test-transfer.sh
+```
+
+Rust tests:
+
+```bash
+cargo test -p p2panda-file-sharing
+```
+
+Relay-focused tests only:
+
+```bash
+cargo test -p p2panda-file-sharing relay -- --nocapture
+```
+
+## Files
+
+- `src/main.rs`: CLI entry point
+- `src/node.rs`: node and network setup
+- `src/sender.rs`: sender flow
+- `src/receiver.rs`: receiver flow
+- `tests/transfer.rs`: integration tests, including relay-backed tests
+- `scripts/start-dev-relay.sh`: local relay launcher
+- `scripts/test-transfer.sh`: simple end-to-end process test

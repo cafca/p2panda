@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls)",
+      "Write(/Users/pv/code/p2panda/**)"
+    ]
+  }
+}

@@ -16,5 +16,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
 tempfile = "3"
+iroh = { version = "0.96.1", default-features = false, features = ["test-utils"] }
 p2panda-net = { path = "../p2panda-net", features = ["test_utils"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

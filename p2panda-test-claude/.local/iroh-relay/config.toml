@@ -1,0 +1,6 @@
+enable_quic_addr_discovery = true
+
+[tls]
+cert_mode = "Manual"
+manual_cert_path = "/Users/pv/code/p2panda/p2panda-test-claude/.local/iroh-relay/certs/cert.pem"
+manual_key_path = "/Users/pv/code/p2panda/p2panda-test-claude/.local/iroh-relay/certs/cert.key.pem"
