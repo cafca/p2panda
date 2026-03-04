@@ -16,3 +16,14 @@ What doesn't work: everything does. Append new logs below.
 
 What doesn't work:
 - `cargo check -p p2panda-blobs` and `cargo test -p p2panda-blobs --test blobs` are blocked in this environment by `.cargo/config.toml` forcing `linker = "gcc"` while `gcc` is not installed
+
+# 2026-03-04 16:36
+
+- picked Task 1 (`Project scaffold`) as the highest-priority remaining feature because every file-sharing task depends on a real GUI crate entrypoint and dependency scaffold
+- updated `file-sharing/Cargo.toml` to add the missing Bevy/egui GUI stack plus the remaining scaffold dependencies called out in the PRD (`flume`, `rfd`, `directories`)
+- replaced the `main.rs` print stub with a Bevy app using `DefaultPlugins`, `EguiPlugin`, a 900x600 primary window, and the required title `p2panda File Sharing`
+- implemented a minimal `FileSharingPlugin` so the app has the placeholder plugin hook required by the scaffold spec
+- ran `cargo fmt --package p2panda-file-sharing-gui`
+
+What doesn't work:
+- `cargo check -p p2panda-file-sharing-gui` could not complete in this environment because fetching the new crates.io dependencies for Bevy/bevy_egui repeatedly timed out while updating the crates index

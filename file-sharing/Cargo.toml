@@ -13,8 +13,13 @@ p2panda-blobs = { path = "../p2panda-blobs", features = ["fs-store"] }
 p2panda-core = { path = "../p2panda-core" }
 p2panda-net = { path = "../p2panda-net" }
 
+# GUI
+bevy = { version = "0.15", default-features = false, features = ["bevy_core_pipeline", "bevy_render", "bevy_text", "bevy_ui", "bevy_window", "bevy_winit", "multi_threaded", "x11", "wayland"] }
+bevy_egui = { version = "0.34", default-features = false, features = ["default_fonts", "render"] }
+
 # Async
 tokio = { version = "1", features = ["full"] }
+flume = "0.11"
 futures-util = "0.3"
 
 # Serialization
@@ -25,6 +30,10 @@ bytes = "1"
 
 # CLI
 clap = { version = "4", features = ["derive"] }
+
+# Platform
+rfd = "0.15"
+directories = "5"
 
 # Observability
 tracing = "0.1"
