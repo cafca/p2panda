@@ -443,7 +443,7 @@
     "Byte-level progress events are received during download",
     "Test completes within 30 seconds"
   ],
-  "passes": false
+  "passes": true
 }
 
 {
