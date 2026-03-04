@@ -61,3 +61,16 @@ What doesn't work:
 
 What doesn't work:
 - `cargo test -p p2panda-file-sharing-gui share_code -- --nocapture` is blocked in this environment because the configured Linux linker toolchain cannot find startup objects like `Scrt1.o` and `crti.o`
+
+# 2026-03-04 17:05
+
+- picked Task 5 (`Gossip protocol messages`) as the highest-priority remaining feature because it is still a direct dependency of both the share and download flows and `file-sharing/src/protocol.rs` was only a stub
+- implemented `file-sharing/src/protocol.rs` with a typed `CollectionAnnouncement` message using the specified one-byte type tag (`0x01`) plus 32-byte collection hash wire format
+- added unit tests covering encode/decode roundtrip, wrong type-tag rejection, and too-short input rejection
+- ran `cargo fmt --package p2panda-file-sharing-gui`
+- attempted `cargo test -p p2panda-file-sharing-gui protocol -- --nocapture` and `cargo test -p p2panda-file-sharing-gui protocol --target $(rustc -vV | sed -n 's/^host: //p') -- --nocapture` as the feedback loop for this feature
+- left Task 5 `passes` as `false`; the acceptance criteria could not be verified end-to-end in this run
+
+What doesn't work:
+- Rust linking in this sandbox is still blocked before the file-sharing crate tests run because `/usr/bin/ld` cannot find target startup objects `Scrt1.o` and `crti.o`
+- `PRD.jsonl` already contains unrelated uncommitted user edits (new Task 19), so I did not make any non-`passes` changes there; Task 5 remains `passes: false`
