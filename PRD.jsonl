@@ -361,7 +361,7 @@
     "Copy button copies the share code to the system clipboard",
     "Error states are displayed clearly"
   ],
-  "passes": false
+  "passes": true
 }
 
 {

@@ -220,3 +220,16 @@ What doesn't work:
 
 What doesn't work:
 - no additional blocker for Task 11 in this run
+
+# 2026-03-04 17:35
+
+- picked Task 12 (`Transfer list UI with progress bars and dialogs`) as the highest-priority unfinished feature because it is the direct remaining dependency for Task 14 (plugin wiring), which in turn gates the integration path from completed core flows into the running GUI
+- implemented `file-sharing/src/ui.rs` end-to-end: `UiState` resource, central transfer panel, toolbar actions, scrollable transfer rows, active progress bars, directional bandwidth/file counters, pending/completed/error status display, native folder pickers (`rfd`) for share and download destination, download-start dialog, and upload share-code copy action through egui clipboard API
+- added focused unit tests for human-readable byte formatting, share-command dispatch with pending upload transfer creation, download-command dispatch with pending download transfer creation, and default download path behavior
+- ran `cargo fmt --package p2panda-file-sharing-gui`
+- ran `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-file-sharing-gui --lib`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui ui --lib -- --nocapture`
+- confirmed Task 12 acceptance in this run and updated Task 12 `passes` to `true` in `PRD.jsonl`
+
+What doesn't work:
+- no additional blocker for Task 12 in this run
