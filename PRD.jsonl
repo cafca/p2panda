@@ -299,7 +299,7 @@
     "Already-downloaded blobs (from a previous crashed run using the same FsStore) are skipped without re-downloading",
     "Nested subdirectories are created correctly"
   ],
-  "passes": false
+  "passes": true
 }
 
 {

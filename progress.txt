@@ -190,3 +190,18 @@ What doesn't work:
 
 What doesn't work:
 - no additional blocker for Task 9 in this run
+
+# 2026-03-04 17:23
+
+- picked Task 10 (`Download flow with byte-level progress`) as the highest-priority unfinished feature because it is the critical-path dependency for both crash-recovery persistence (Task 11) and the end-to-end transfer tests (Task 15+)
+- fully implemented `file-sharing/src/download.rs` with share-code decoding/bootstrap, collection + manifest retrieval, signed manifest verification, manifest/collection consistency checks, per-file download+write flow, path traversal sanitization, and completion/error event emission
+- wired byte-level progress reporting via `DownloadProgressItem::Progress(u64)` and added deterministic handling for blobs that were already present before transfer start vs. blobs fetched while resolving the collection
+- preserved existing address-book transport records during bootstrap so share-code bootstrap does not overwrite known endpoint transport data
+- added focused async tests covering nested-directory download correctness, byte-level progress/event behavior, and skip-without-re-download semantics for pre-existing blobs
+- ran `cargo fmt --package p2panda-file-sharing-gui`
+- ran `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-file-sharing-gui --lib`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui download --lib -- --nocapture`
+- confirmed Task 10 acceptance in this run and updated Task 10 `passes` to `true` in `PRD.jsonl`
+
+What doesn't work:
+- no additional blocker for Task 10 in this run
