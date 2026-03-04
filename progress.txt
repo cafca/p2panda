@@ -27,3 +27,14 @@ What doesn't work:
 
 What doesn't work:
 - `cargo check -p p2panda-file-sharing-gui` could not complete in this environment because fetching the new crates.io dependencies for Bevy/bevy_egui repeatedly timed out while updating the crates index
+
+# 2026-03-04 16:16
+
+- picked Task 3 (`Manifest format as signed p2panda Operation`) as the highest-priority remaining feature because the signed manifest is the authenticated core data structure that later share and download flows depend on
+- implemented `file-sharing/src/manifest.rs` with CBOR manifest encoding/decoding, signed p2panda header/body construction, a length-prefixed blob serialization format, and verification that returns the authenticated public key plus decoded manifest data
+- added unit tests covering signed roundtrip, tampered-body rejection, and nested path preservation
+- ran `cargo fmt --package p2panda-file-sharing-gui`
+- attempted `cargo test -p p2panda-file-sharing-gui manifest -- --nocapture` as the feedback loop for this feature
+
+What doesn't work:
+- `cargo test -p p2panda-file-sharing-gui manifest -- --nocapture` is blocked in this environment by `.cargo/config.toml` forcing `linker = "gcc"` while no `gcc` binary is installed

@@ -89,7 +89,7 @@
     "Unit test: a tampered body (modified after signing) fails verification",
     "Unit test: a manifest with nested subdirectory paths encodes/decodes correctly"
   ],
-  "passes": false
+  "passes": true
 }
 
 {
