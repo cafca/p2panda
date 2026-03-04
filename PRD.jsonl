@@ -221,7 +221,7 @@
     "Structs compile and are usable as Bevy Resources",
     "Progress fraction returns 0.0 when no bytes downloaded, 1.0 when complete"
   ],
-  "passes": false
+  "passes" : false
 }
 
 {

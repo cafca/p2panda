@@ -86,3 +86,16 @@ What doesn't work:
 What doesn't work:
 - Task 6 remains `passes: false`; verification is still blocked because the sandbox image is missing the glibc startup objects `Scrt1.o` and `crti.o`, so even build scripts fail to link before Rust can finish `cargo check`
 - I confirmed `gcc` and `mold` are installed, but `libc6-dev` is not; installing it with `apt-get install -y libc6-dev` is blocked here by lack of permission to acquire the apt lock under `/var/lib/apt/lists/`
+
+# 2026-03-04 18:24
+
+- picked Task 8 (`Transfer state model`) as the highest-priority remaining feature because it has no unfinished dependencies and unblocks both the network polling system and the UI task chain
+- implemented `file-sharing/src/state.rs` with a Bevy `TransferRegistry` resource, `Transfer`/`FileProgress` data models, directional status enums, ID allocation and lookup helpers, aggregate byte tracking, progress-fraction calculation, and directional bandwidth calculation
+- added focused unit tests for resource usability, registry ID allocation and lookup, progress-fraction edge cases, aggregate file-progress accounting, and bandwidth assignment semantics
+- ran `cargo fmt --package p2panda-file-sharing-gui`
+- installed the missing host build prerequisites needed to get a real Rust feedback loop in this sandbox (`libc6-dev`, `pkg-config`, `libwayland-dev`, `libx11-dev`, `libxkbcommon-dev`, `libasound2-dev`, `libudev-dev`)
+- ran `cargo check -p p2panda-file-sharing-gui --lib` successfully
+- attempted `cargo test -p p2panda-file-sharing-gui state --lib -- --nocapture` as the acceptance feedback loop for Task 8
+
+What doesn't work:
+- Task 8 remains `passes: false`; the crate now compiles, but the focused lib test run is blocked by an unrelated pre-existing compile error in `file-sharing/src/share_code.rs` test code (`E0283` ambiguous `.into()` in `derived_topic_is_deterministic`), so the new state tests could not complete in this run
