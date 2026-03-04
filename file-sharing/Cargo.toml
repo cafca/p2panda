@@ -1,0 +1,40 @@
+[package]
+name = "p2panda-file-sharing-gui"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "p2panda-file-sharing-gui"
+path = "src/main.rs"
+
+[dependencies]
+# p2panda
+p2panda-blobs = { path = "../p2panda-blobs", features = ["fs-store"] }
+p2panda-core = { path = "../p2panda-core" }
+p2panda-net = { path = "../p2panda-net" }
+
+# Async
+tokio = { version = "1", features = ["full"] }
+futures-util = "0.3"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+ciborium = "0.2"
+data-encoding = "2"
+bytes = "1"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Error handling
+anyhow = "1"
+
+[dev-dependencies]
+tempfile = "3"
+iroh = { version = "0.96.1", default-features = false, features = ["test-utils"] }
+p2panda-net = { path = "../p2panda-net", features = ["test_utils"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

@@ -60,6 +60,7 @@ sync = [
 supervisor = []
 test_utils = [
   "dep:tracing-subscriber",
+  "iroh/test-utils",
 ]
 
 [dependencies]

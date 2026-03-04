@@ -92,6 +92,7 @@ pub struct IrohState {
     private_key: PrivateKey,
     config: IrohConfig,
     relay_map: iroh::RelayMap,
+    #[cfg_attr(not(feature = "test_utils"), allow(dead_code))]
     insecure_skip_relay_cert_verify: bool,
     address_book: AddressBook,
     endpoint: Option<iroh::Endpoint>,
@@ -210,13 +211,20 @@ impl ThreadLocalActor for IrohEndpoint {
                 );
 
                 // Create and bind the endpoint to the socket.
-                let endpoint = iroh::Endpoint::empty_builder(relay_mode)
+                let builder = iroh::Endpoint::empty_builder(relay_mode)
                     .address_lookup(address_book_discovery)
-                    .insecure_skip_relay_cert_verify(state.insecure_skip_relay_cert_verify)
                     .secret_key(from_private_key(state.private_key.clone()))
                     .transport_config(quic_transport_config)
                     .bind_addr(socket_address_v4)?
-                    .bind_addr(socket_address_v6)?
+                    .bind_addr(socket_address_v6)?;
+
+                // insecure_skip_relay_cert_verify is only available when the test_utils
+                // feature is enabled (it enables iroh/test-utils which unlocks the method).
+                #[cfg(feature = "test_utils")]
+                let builder =
+                    builder.insecure_skip_relay_cert_verify(state.insecure_skip_relay_cert_verify);
+
+                let endpoint = builder
                     .bind()
                     .await
                     // In the event of failure, this error is not included
