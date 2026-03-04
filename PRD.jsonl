@@ -329,7 +329,7 @@
     "After simulating a crash (kill process), restarting the app resumes incomplete downloads",
     "Shares are re-announced on gossip after restart"
   ],
-  "passes": false
+  "passes": true
 }
 
 {

@@ -205,3 +205,18 @@ What doesn't work:
 
 What doesn't work:
 - no additional blocker for Task 10 in this run
+
+# 2026-03-04 17:31
+
+- picked Task 11 (`Crash recovery persistence`) as the highest-priority unfinished feature because it is the reliability layer on top of the now-verified share/download flows and directly gates crash-recovery integration coverage
+- implemented `file-sharing/src/persist.rs` with JSON-backed transfer metadata persistence at `data_dir/state.json`, atomic writes via temp-file + rename, typed share/download records, and mutation helpers that save on add/remove
+- added startup recovery helpers to resume active shares (re-join topic + publish `CollectionAnnouncement`) and resume active downloads (re-run download flow against persisted share code/output directory)
+- added async tests in `persist.rs` covering default load for missing state, state-file writes for new share/download records, download resume after restart with persistent FsStore data, and share re-announcement after restart
+- added `serde_json` to `file-sharing/Cargo.toml`
+- ran `cargo fmt --package p2panda-file-sharing-gui`
+- ran `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-file-sharing-gui --lib`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui persist --lib -- --nocapture`
+- confirmed Task 11 acceptance criteria in this run and updated Task 11 `passes` to `true` in `PRD.jsonl`
+
+What doesn't work:
+- no additional blocker for Task 11 in this run
