@@ -185,9 +185,7 @@ mod tests {
     fn derived_topic_is_deterministic() {
         let share_code = sample_share_code(None);
 
-        assert_eq!(
-            share_code.topic_id(),
-            CoreHash::new(share_code.collection_hash).into()
-        );
+        let expected_topic: TopicId = CoreHash::new(share_code.collection_hash).into();
+        assert_eq!(share_code.topic_id(), expected_topic);
     }
 }

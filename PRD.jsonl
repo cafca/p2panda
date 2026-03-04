@@ -197,7 +197,7 @@
     "Events sent from the network thread are receivable via try_recv on the Bevy side",
     "Multiple concurrent share/download operations can run simultaneously"
   ],
-  "passes": false
+  "passes": true
 }
 
 {

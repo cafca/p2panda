@@ -99,3 +99,16 @@ What doesn't work:
 
 What doesn't work:
 - Task 8 remains `passes: false`; the crate now compiles, but the focused lib test run is blocked by an unrelated pre-existing compile error in `file-sharing/src/share_code.rs` test code (`E0283` ambiguous `.into()` in `derived_topic_is_deterministic`), so the new state tests could not complete in this run
+
+# 2026-03-04 18:47
+
+- picked Task 7 (`Async bridge between Bevy and Tokio`) as the highest-priority next feature because it unblocks both the network polling system (Task 13) and the transfer UI work (Task 12) while staying narrow enough to verify cleanly in this run
+- implemented `file-sharing/src/bridge.rs` with a Bevy `AsyncBridge` resource, typed command/event enums, a dedicated Tokio runtime thread, synchronous startup error reporting, nonblocking event draining via `try_recv`, and per-command task spawning so multiple operations can run concurrently
+- added focused bridge unit tests covering Bevy-thread-to-network-thread command delivery, nonblocking event receipt/draining, and concurrent command execution ordering
+- fixed the pre-existing `file-sharing/src/share_code.rs` test-only type inference error so the `p2panda-file-sharing-gui` lib test target compiles again
+- ran `cargo fmt --package p2panda-file-sharing-gui`
+- ran `cargo check -p p2panda-file-sharing-gui --lib`
+- ran `cargo test -p p2panda-file-sharing-gui bridge --lib -- --nocapture`
+
+What doesn't work:
+- no additional blocker for Task 7 in this run
