@@ -524,3 +524,40 @@
   ],
   "passes": false
 }
+
+{
+  "id": 19,
+  "category": "infrastructure",
+  "title": "Make sandboxed Rust verification environment reliable",
+  "description": "Harden the local/docker sandbox workflow so PRD acceptance checks can run reproducibly for Rust tasks without manual apt installs or host-specific workarounds. This task exists because recent progress was blocked by missing linker/toolchain components, missing startup objects, and unreliable dependency fetching, which caused tasks to be marked passed without actually completing their feedback loops.",
+  "depends_on": [],
+  "inputs": [
+    ".cargo/config.toml",
+    "ralph.sh",
+    "watch-ralph.sh",
+    "docker sandbox configuration or template build inputs used for codex-p2panda/claude-p2panda"
+  ],
+  "outputs": [
+    ".cargo/config.toml",
+    "ralph.sh",
+    "scripts/verify-in-sandbox.sh",
+    "scripts/bootstrap-sandbox-toolchain.sh",
+    "docs/dev-environment.md"
+  ],
+  "spec": {
+    "toolchain_baseline": "Ensure the sandbox image or bootstrap script installs the full linker/runtime toolchain required by the configured Rust target, including gcc, mold, and the target's startup objects/libc development packages so linking no longer fails with missing Scrt1.o/crti.o errors.",
+    "config_alignment": "Either keep `.cargo/config.toml` aligned with tools guaranteed to exist in the sandbox, or adjust the config to use a linker setup that is actually present by default. The configured linker and rustflags must be valid inside the sandbox without manual intervention.",
+    "dependency_fetching": "Provide a reliable path for fetching crates in the sandbox, with documentation or scripting for cache reuse/prewarming where helpful, so new crates like Bevy can be resolved without ad hoc retries.",
+    "verification_entrypoint": "Add a repo-local command or script that runs cargo check/test inside the existing sandbox non-interactively. Do not rely on `docker sandbox run` launching the agent; use an explicit shell-command path such as `docker sandbox exec` against an existing sandbox.",
+    "developer_workflow": "Document the expected verification workflow: how to bootstrap the sandbox, how to run checks/tests, and how Ralph iterations should verify acceptance criteria once the environment is ready.",
+    "non_goal": "This task does not implement product features. It exists only to make task acceptance checks trustworthy and repeatable."
+  },
+  "acceptance": [
+    "Repo-local bootstrap and verification scripts exist for preparing and checking the Rust sandbox environment",
+    "The documented verification path uses a non-interactive sandbox command path and does not depend on launching the agent itself",
+    "When run in a prepared sandbox with required privileges and network access, `cargo check -p p2panda-blobs` succeeds",
+    "When run in the same prepared sandbox, a targeted `p2panda-file-sharing-gui` test command no longer fails due to missing linker or startup-object errors",
+    "docs/dev-environment.md explains the preparation assumptions the agent cannot guarantee itself"
+  ],
+  "passes": false
+}

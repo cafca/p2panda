@@ -10,8 +10,12 @@ This should be the one YOU decide has the highest priority,
 - not necessarily the first in the list.
 2. Check any feedback loops, such as types and tests.
 3. Append your progress to the progress.txt file.
-4. Update the PRD.jsonl file and make sure to ONLY change the `passes` field of a SINGLE task. Dont make any other edits.
-4. Make a git commit of that feature.
+4. Update the PRD.jsonl file and make sure to ONLY change the `passes` field of a SINGLE task. Do not make any other edits.
+Set `passes` to `true` only if that tasks acceptance criteria actually passed in this run.
+If verification is blocked or incomplete, leave `passes` as `false` and record the blocker in progress.txt.
+If you discover a missing infrastructure/task that should be added to PRD.jsonl, do not edit PRD.jsonl beyond the single `passes` field change;
+instead, record the learning clearly in progress.txt for a manual PRD amendment later.
+5. Make a git commit of that feature.
 ONLY WORK ON A SINGLE FEATURE.
 If, while implementing the feature, you notice that all work
 is complete, output <promise>COMPLETE</promise>.'
