@@ -1,3 +1,43 @@
+## 2026-03-04 — Real relay bootstrap for p2panda-file-sharing task 5
+
+Closed the gap between the PRD/task wording and the actual implementation in
+`p2panda-test-claude/`:
+
+1. `--peer` now requires `--relay-url` and inserts a bootstrap `NodeInfo`
+   carrying a real relay endpoint (`EndpointAddr::with_relay_url(...)`) instead
+   of a bare node id with no transport addresses.
+
+2. Added dev-only relay TLS bypass support end-to-end:
+   - `p2panda-net::Endpoint::builder(...).insecure_skip_relay_cert_verify(true)`
+   - new CLI flag on both subcommands:
+     `--insecure-skip-relay-cert-verify`
+   This is required for local `iroh-relay --dev` setups that use self-signed
+   certs for QUIC address discovery.
+
+3. Replaced the previous "relay" stand-ins in
+   `p2panda-test-claude/tests/transfer.rs` with actual relay-backed tests using
+   `iroh::test_utils::run_relay_server()`:
+   - `test_relay_bootstrap_transfer`
+   - `test_peer_flag_passive_mdns_transfer`
+   Both run with passive mDNS, bootstrap using only node id + relay URL, and
+   complete blob transfer through a real relay setup.
+
+4. Added local relay launcher:
+   - `p2panda-test-claude/scripts/start-dev-relay.sh`
+   The script generates localhost certs via `openssl`, writes a config with
+   `enable_quic_addr_discovery = true`, and runs the cached `iroh-relay` binary
+   in `--dev` mode on `http://localhost:3340`.
+
+5. Fixed stale app docs and scripts:
+   - `README.md` now documents the current CLI and local relay flow.
+   - `scripts/test-transfer.sh` now uses the current binary name and `--topic`.
+
+Verification:
+- `cargo test -p p2panda-file-sharing` passes (run outside the sandbox because
+  the relay and discovery tests need real local socket binding).
+- `bash p2panda-test-claude/scripts/start-dev-relay.sh` builds and starts the
+  local relay successfully.
+
 ## 2026-03-03 — Fix compilation errors in p2panda-blobs
 
 Fixed 3 compilation errors after porting p2panda-blobs to p2panda-net v0.5 / iroh-blobs 0.98:
@@ -139,6 +179,27 @@ Key imports added to transfer.rs:
 
 `cargo test -p p2panda-file-sharing` — all 3 integration tests pass (no warnings).
 PRD task 13 updated to passes:true.
+
+## 2026-03-03 — Integration test: --peer flag with passive mDNS (PRD task 5)
+
+Added `test_peer_flag_passive_mdns_transfer` to `p2panda-test-claude/tests/transfer.rs`.
+
+Both nodes use passive mDNS so no automatic discovery occurs. Node B bootstraps
+with Node A's directly-fetched bound socket address via `iroh_ep.bound_sockets()`,
+then replaces `0.0.0.0` with `127.0.0.1` (loopback) to enable direct connection.
+This simulates the `--peer <node_id>` CLI flow: a relay server normally provides
+the peer's address; the test uses the actual bound address instead to stay
+self-contained (no external relay server required).
+
+Key steps:
+- Get inner iroh endpoint: `node_a.endpoint.endpoint().await`
+- Call `bound_sockets()` and find the IPv4 socket
+- Construct `EndpointAddr` with loopback IP and actual port
+- Insert `NodeInfo::from(endpoint_addr).bootstrap()` into Node B's address book
+- Gossip + blob transfer verifies the end-to-end path works without mDNS
+
+`cargo test -p p2panda-file-sharing` — all 5 integration tests pass.
+PRD task 5 updated to passes:true.
 
 ## 2026-03-03 — Integration test: mDNS discovery without --peer (PRD task 6)
 
