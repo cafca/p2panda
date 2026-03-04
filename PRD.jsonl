@@ -559,5 +559,5 @@
     "When run in the same prepared sandbox, a targeted `p2panda-file-sharing-gui` test command no longer fails due to missing linker or startup-object errors",
     "docs/dev-environment.md explains the preparation assumptions the agent cannot guarantee itself"
   ],
-  "passes": false
+  "passes": true
 }

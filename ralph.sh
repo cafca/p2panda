@@ -32,6 +32,8 @@ Options:
 EOF
 }
 
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 PROVIDER="claude"
 SANDBOX=""
 TEMPLATE=""
@@ -112,6 +114,25 @@ case "$PROVIDER" in
     ;;
 esac
 
+ensure_sandbox() {
+  if docker ps --format '{{.Names}}' | grep -Fxq "$SANDBOX"; then
+    return 0
+  fi
+
+  if docker ps -a --format '{{.Names}}' | grep -Fxq "$SANDBOX"; then
+    docker start "$SANDBOX" >/dev/null
+    return 0
+  fi
+
+  docker run -d \
+    --name "$SANDBOX" \
+    -v "$REPO_ROOT:$REPO_ROOT" \
+    -v /var/run/docker.sock:/var/run/docker.sock \
+    -w "$REPO_ROOT" \
+    "$TEMPLATE" \
+    sleep infinity >/dev/null
+}
+
 set -x
 
 for ((i=1; i<=ITERATIONS; i++)); do
@@ -121,14 +142,16 @@ for ((i=1; i<=ITERATIONS; i++)); do
   echo "Template: $TEMPLATE"
   echo "======================================"
 
-  # Use the template only when creating a new sandbox; reuse existing one as-is.
-  if docker sandbox ls | grep -q "^${SANDBOX} "; then
-    RUN_CMD=(docker sandbox run "$SANDBOX")
-  else
-    RUN_CMD=(docker sandbox run -t "$TEMPLATE" --name "$SANDBOX" "$AGENT_BIN")
-  fi
+  ensure_sandbox
 
-  result=$("${RUN_CMD[@]}" -- "${AGENT_ARGS[@]}" 2>&1 | tee /dev/tty)
+  result=$(
+    docker exec \
+      -i \
+      -e CODEX_PROMPT="$PROMPT" \
+      "$SANDBOX" \
+      bash -lc "cd $(printf '%q' "$REPO_ROOT") && exec $(printf '%q ' "$AGENT_BIN" "${AGENT_ARGS[@]}") \"\$CODEX_PROMPT\"" \
+      2>&1 | tee /dev/tty
+  )
 
   echo ""
   echo "======================================"

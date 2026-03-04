@@ -112,3 +112,17 @@ What doesn't work:
 
 What doesn't work:
 - no additional blocker for Task 7 in this run
+
+# 2026-03-04 19:06
+
+- picked Task 19 (`Make sandboxed Rust verification environment reliable`) as the highest-priority next feature because repeated linker/startup-object failures were invalidating acceptance checks across otherwise-finished Rust tasks
+- replaced the repo's broken `docker sandbox ...` assumption with a plain-Docker sandbox workflow: `ralph.sh` and `watch-ralph.sh` now reuse or create the named sandbox container and interact with it through `docker exec`
+- added `scripts/bootstrap-sandbox-toolchain.sh` to provision the sandbox's Rust verification baseline (`gcc`, `mold`, `libc6-dev`, `pkg-config`, `libwayland-dev`, `libx11-dev`, `libxkbcommon-dev`, `libasound2-dev`, `libudev-dev`) and optionally prefetch crates with `cargo fetch --locked`
+- added `scripts/verify-in-sandbox.sh` as a repo-local non-interactive verification entrypoint for arbitrary cargo commands inside the running sandbox
+- documented the expected bootstrap/verification workflow, assumptions, and Ralph iteration path in `docs/dev-environment.md`
+- verified the new workflow with `./scripts/bootstrap-sandbox-toolchain.sh --skip-fetch`
+- verified `cargo check -p p2panda-blobs` via `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-blobs`
+- verified a targeted GUI test via `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui bridge --lib -- --nocapture`
+
+What doesn't work:
+- no additional blocker for Task 19 in this run

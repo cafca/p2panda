@@ -5,7 +5,7 @@
 #
 # Usage: ./watch-ralph.sh [--provider claude|codex] [sandbox-name]
 #
-# Requires: jq, docker sandbox
+# Requires: jq, docker
 
 set -euo pipefail
 
@@ -152,19 +152,19 @@ GREEN='\033[32m'
 DIM='\033[2m'
 
 echo -e "${CYAN}Waiting for sandbox '${SANDBOX}' (${PROVIDER})...${RESET}"
-until docker sandbox exec "$SANDBOX" bash -c "test -d '$LOG_ROOT'" 2>/dev/null; do
+until docker exec "$SANDBOX" bash -c "test -d '$LOG_ROOT'" 2>/dev/null; do
   sleep 1
 done
 
 echo -e "${CYAN}${WAIT_MESSAGE}${RESET}"
 LOGFILE=""
 until [[ -n "$LOGFILE" ]]; do
-  LOGFILE=$(docker sandbox exec "$SANDBOX" bash -lc "$FIND_LOGFILE_CMD")
+  LOGFILE=$(docker exec "$SANDBOX" bash -lc "$FIND_LOGFILE_CMD")
   sleep 1
 done
 
 echo -e "${GREEN}${BOLD}Watching:${RESET} ${LOGFILE}"
 echo -e "${DIM}────────────────────────────────────────────────────────────${RESET}"
 
-docker sandbox exec "$SANDBOX" bash -lc "tail -n +1 -f '$LOGFILE'" | \
+docker exec "$SANDBOX" bash -lc "tail -n +1 -f '$LOGFILE'" | \
 jq -r --unbuffered "$JQ_FILTER" 2>/dev/null
