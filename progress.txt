@@ -74,3 +74,15 @@ What doesn't work:
 What doesn't work:
 - Rust linking in this sandbox is still blocked before the file-sharing crate tests run because `/usr/bin/ld` cannot find target startup objects `Scrt1.o` and `crti.o`
 - `PRD.jsonl` already contains unrelated uncommitted user edits (new Task 19), so I did not make any non-`passes` changes there; Task 5 remains `passes: false`
+
+# 2026-03-04 17:23
+
+- picked Task 6 (`Node module with FsStore and persistent identity`) as the highest-priority remaining feature because both the share and download flows depend on a real persistent node with stable identity and on-disk blob storage
+- implemented `file-sharing/src/node.rs` with `AppNode`/`FileSharingNode`, platform data-dir resolution via `directories::ProjectDirs`, persistent `node.key` seed loading/creation, `FsStore::load(data_dir/blobs)`, and the required AddressBook → Endpoint → active mDNS → Discovery → Gossip → Blobs initialization order
+- added a test-friendly `AppNode::with_data_dir(...)` constructor plus async tests covering key reuse across restarts and joining multiple gossip topics from the same node instance
+- ran `cargo fmt --package p2panda-file-sharing-gui`
+- attempted `cargo check -p p2panda-file-sharing-gui` and a second check with an overridden linker to verify Task 6 acceptance
+
+What doesn't work:
+- Task 6 remains `passes: false`; verification is still blocked because the sandbox image is missing the glibc startup objects `Scrt1.o` and `crti.o`, so even build scripts fail to link before Rust can finish `cargo check`
+- I confirmed `gcc` and `mold` are installed, but `libc6-dev` is not; installing it with `apt-get install -y libc6-dev` is blocked here by lack of permission to acquire the apt lock under `/var/lib/apt/lists/`
