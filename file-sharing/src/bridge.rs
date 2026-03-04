@@ -86,7 +86,7 @@ impl AsyncBridge {
         )
     }
 
-    fn spawn_with_worker<State, Init, Worker>(init: Init, worker: Worker) -> Result<Self>
+    pub(crate) fn spawn_with_worker<State, Init, Worker>(init: Init, worker: Worker) -> Result<Self>
     where
         State: Send + Sync + 'static,
         Init: FnOnce() -> BoxFuture<Result<State>> + Send + 'static,

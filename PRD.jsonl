@@ -387,7 +387,7 @@
     "Bandwidth values are reasonable (not NaN, not negative)",
     "All NetEvent variants are handled"
   ],
-  "passes": false
+  "passes": true
 }
 
 {
