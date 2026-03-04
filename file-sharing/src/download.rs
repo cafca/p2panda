@@ -85,10 +85,11 @@ where
         .await
         .context("failed to bootstrap sharer from share code")?;
     tokio::time::sleep(Duration::from_millis(500)).await;
+    let providers = download_providers(node, sharer_node_id).await?;
 
     let collection_hash = share_code.collection_hash();
     retry_download("collection blob", || {
-        download_collection(node, collection_hash, sharer_node_id)
+        download_collection(node, collection_hash, &providers)
     })
     .await
     .context("failed to download collection blob")?;
@@ -105,7 +106,7 @@ where
         .ok_or_else(|| anyhow!("collection hash sequence does not contain a manifest hash"))?;
 
     retry_download("manifest blob", || {
-        download_blob_from_sharer(node, manifest_hash, sharer_node_id)
+        download_blob_from_providers(node, manifest_hash, &providers)
     })
     .await
     .context("failed to download manifest blob")?;
@@ -172,10 +173,10 @@ where
 
         match download_one_file(
             node,
-            sharer_node_id,
             file_index,
             manifest_file,
             &output_root,
+            &providers,
             &preexisting_hashes,
             &mut on_event,
         )
@@ -234,10 +235,23 @@ async fn bootstrap_sharer(node: &AppNode, share_code: &ShareCode) -> Result<()> 
     Ok(())
 }
 
+async fn download_providers(node: &AppNode, sharer_node_id: PublicKey) -> Result<Vec<PublicKey>> {
+    let mut providers = node
+        .address_book
+        .node_ids()
+        .await
+        .context("failed to read provider node ids from address book")?;
+    providers.retain(|node_id| *node_id != node.node_id());
+    if !providers.contains(&sharer_node_id) {
+        providers.push(sharer_node_id);
+    }
+    Ok(providers)
+}
+
 async fn download_collection(
     node: &AppNode,
     collection_hash: BlobHash,
-    sharer_node_id: PublicKey,
+    providers: &[PublicKey],
 ) -> Result<()> {
     let endpoint = node
         .endpoint
@@ -251,7 +265,11 @@ async fn download_collection(
         .downloader(&endpoint)
         .download(
             iroh_blobs::HashAndFormat::hash_seq(collection_hash),
-            vec![from_public_key(sharer_node_id)],
+            providers
+                .iter()
+                .copied()
+                .map(from_public_key)
+                .collect::<Vec<_>>(),
         )
         .await
         .map_err(|err| anyhow!(err))
@@ -260,20 +278,20 @@ async fn download_collection(
     Ok(())
 }
 
-async fn download_blob_from_sharer(
+async fn download_blob_from_providers(
     node: &AppNode,
     hash: BlobHash,
-    sharer_node_id: PublicKey,
+    providers: &[PublicKey],
 ) -> Result<()> {
-    let progress = download_blob_with_progress_from_sharer(node, hash, sharer_node_id).await?;
+    let progress = download_blob_with_progress_from_providers(node, hash, providers).await?;
     progress.await.map_err(|err| anyhow!(err))?;
     Ok(())
 }
 
-async fn download_blob_with_progress_from_sharer(
+async fn download_blob_with_progress_from_providers(
     node: &AppNode,
     hash: BlobHash,
-    sharer_node_id: PublicKey,
+    providers: &[PublicKey],
 ) -> Result<DownloadProgress> {
     let endpoint = node
         .endpoint
@@ -281,11 +299,14 @@ async fn download_blob_with_progress_from_sharer(
         .await
         .map_err(|err| anyhow!(err))
         .context("failed to access iroh endpoint for blob download")?;
-    Ok(node
-        .blobs
-        .store()
-        .downloader(&endpoint)
-        .download(hash, vec![from_public_key(sharer_node_id)]))
+    Ok(node.blobs.store().downloader(&endpoint).download(
+        hash,
+        providers
+            .iter()
+            .copied()
+            .map(from_public_key)
+            .collect::<Vec<_>>(),
+    ))
 }
 
 async fn retry_download<T, F, Fut>(label: &str, mut operation: F) -> Result<T>
@@ -315,10 +336,10 @@ where
 
 async fn download_one_file<F>(
     node: &AppNode,
-    sharer_node_id: PublicKey,
     file_index: usize,
     manifest_file: &crate::manifest::ManifestFile,
     output_root: &Path,
+    providers: &[PublicKey],
     preexisting_hashes: &HashSet<BlobHash>,
     on_event: &mut F,
 ) -> Result<DownloadedFile>
@@ -332,7 +353,7 @@ where
 
     if !present_now {
         let progress = retry_download("file blob", || {
-            download_blob_with_progress_from_sharer(node, file_hash, sharer_node_id)
+            download_blob_with_progress_from_providers(node, file_hash, providers)
         })
         .await
         .with_context(|| {

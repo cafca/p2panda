@@ -313,3 +313,18 @@ What doesn't work:
 
 What doesn't work:
 - no additional blocker for Task 17 in this run
+
+# 2026-03-04 18:26
+
+- picked Task 18 (`Integration test: multi-source download`) as the highest-priority unfinished feature because it is the last remaining transfer integration behavior in the PRD critical path
+- updated `file-sharing/src/download.rs` so collection/manifest/file downloads use all known address-book providers (plus the sharer from the share code) instead of hardcoding a single provider
+- added `multi_source_download_from_two_seeders` to `file-sharing/tests/transfer.rs` with the required three-node scenario: A shares, B downloads and becomes a seeder, C downloads with both A and B in its address book
+- verified output correctness by byte-comparing source and destination trees for node C
+- ran `cargo fmt --package p2panda-file-sharing-gui`
+- ran `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-file-sharing-gui --tests --locked --offline`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui --test transfer multi_source_download_from_two_seeders --locked --offline -- --nocapture`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui --test transfer --locked --offline -- --nocapture`
+- confirmed Task 18 acceptance in this run and updated Task 18 `passes` to `true` in `PRD.jsonl`
+
+What doesn't work:
+- no additional blocker for Task 18 in this run

@@ -522,7 +522,7 @@
     "Downloaded files are byte-identical to the originals",
     "Test completes (proving the multi-source path works end-to-end)"
   ],
-  "passes": false
+  "passes": true
 }
 
 {

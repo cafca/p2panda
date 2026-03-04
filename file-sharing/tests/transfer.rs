@@ -134,6 +134,75 @@ async fn relay_based_transfer() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn multi_source_download_from_two_seeders() -> Result<()> {
+    timeout(Duration::from_secs(30), async {
+        let node_a_dir = tempdir()?;
+        let node_b_dir = tempdir()?;
+        let node_c_dir = tempdir()?;
+        let source_dir = tempdir()?;
+        let node_b_output_dir = tempdir()?;
+        let node_c_output_dir = tempdir()?;
+
+        let source_root = source_dir.path().join("source");
+        fs::create_dir_all(source_root.join("nested"))?;
+
+        let large: Vec<u8> = (0..1024 * 1024).map(|idx| (idx % 251) as u8).collect();
+        let nested: Vec<u8> = (0..500).map(|idx| (idx % 199) as u8).collect();
+        fs::write(source_root.join("large.bin"), &large)?;
+        fs::write(source_root.join("nested").join("inside.dat"), &nested)?;
+
+        let node_a = AppNode::with_data_dir(node_a_dir.path(), NodeOptions::default()).await?;
+        let node_b = AppNode::with_data_dir(node_b_dir.path(), NodeOptions::default()).await?;
+        let node_c = AppNode::with_data_dir(node_c_dir.path(), NodeOptions::default()).await?;
+
+        let node_a_addr: EndpointAddr = node_a.endpoint.endpoint().await?.addr();
+        let node_b_addr: EndpointAddr = node_b.endpoint.endpoint().await?.addr();
+
+        node_b
+            .address_book
+            .insert_node_info(NodeInfo::from(node_a_addr.clone()).bootstrap())
+            .await?;
+
+        let share = share_directory(&node_a, &source_root).await?;
+        let _session_b = download_share_with_progress(
+            &node_b,
+            &share.share_code,
+            node_b_output_dir.path(),
+            |_| {},
+        )
+        .await?;
+
+        node_c
+            .address_book
+            .insert_node_info(NodeInfo::from(node_a_addr).bootstrap())
+            .await?;
+        node_c
+            .address_book
+            .insert_node_info(NodeInfo::from(node_b_addr).bootstrap())
+            .await?;
+
+        let known_provider_ids = node_c.address_book.node_ids().await?;
+        assert!(known_provider_ids.contains(&node_a.node_id()));
+        assert!(known_provider_ids.contains(&node_b.node_id()));
+
+        let session_c = download_share_with_progress(
+            &node_c,
+            &share.share_code,
+            node_c_output_dir.path(),
+            |_| {},
+        )
+        .await?;
+
+        compare_tree_bytes(&source_root, &session_c.output_root)?;
+        Ok::<(), anyhow::Error>(())
+    })
+    .await
+    .context("multi-source transfer test timed out after 30 seconds")??;
+
+    Ok(())
+}
+
 fn relay_bootstrap_node_info(node_id: p2panda_core::PublicKey, relay_url: RelayUrl) -> NodeInfo {
     let endpoint_addr = EndpointAddr::new(from_public_key(node_id)).with_relay_url(relay_url);
     NodeInfo::from(endpoint_addr).bootstrap()
