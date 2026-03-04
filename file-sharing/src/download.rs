@@ -17,6 +17,7 @@ use crate::share_code::{decode_share_code, ShareCode};
 
 const DOWNLOAD_ATTEMPTS: usize = 5;
 const DOWNLOAD_RETRY_DELAY: Duration = Duration::from_millis(250);
+const DOWNLOAD_BLOB_PIN_PREFIX: &str = "downloaded/";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DownloadEvent {
@@ -400,6 +401,17 @@ where
         .await
         .with_context(|| format!("failed to write {}", destination.display()))?;
 
+    node.blobs
+        .pins()
+        .set(download_blob_pin_name(file_hash), file_hash)
+        .await
+        .with_context(|| {
+            format!(
+                "failed to pin downloaded blob for {}",
+                manifest_file.relative_path
+            )
+        })?;
+
     on_event(DownloadEvent::FileCompleted { file_index });
 
     Ok(DownloadedFile {
@@ -408,6 +420,10 @@ where
         hash: file_hash,
         skipped_download,
     })
+}
+
+fn download_blob_pin_name(hash: BlobHash) -> String {
+    format!("{DOWNLOAD_BLOB_PIN_PREFIX}{hash}")
 }
 
 fn sanitize_relative_path(path: &str) -> Result<PathBuf> {

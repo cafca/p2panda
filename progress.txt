@@ -294,3 +294,22 @@ What doesn't work:
 
 What doesn't work:
 - no additional blocker for Task 16 in this run
+
+# 2026-03-04 18:21
+
+- picked Task 17 (`Integration test: crash recovery`) as the highest-priority unfinished feature because it is the next reliability-critical integration dependency after Task 15/16 and directly validates restart behavior with persistent data
+- added `file-sharing/tests/recovery.rs` with an end-to-end crash-recovery integration test that:
+  - shares a 3-file directory from node A
+  - starts a first download run on node B that is intentionally interrupted mid-transfer after `FileCompleted { file_index: 0 }` via an output-path conflict
+  - restarts node B with the same data directory
+  - re-runs the same share code and verifies all files are reconstructed byte-identically
+  - asserts no `FileDownloadProgress` events are emitted for file index 0 during the resumed run
+- fixed recovery durability in `file-sharing/src/download.rs` by pinning each successfully downloaded file blob (`downloaded/<hash>`) after write, ensuring completed blobs survive node restart and can be skipped on resume
+- ran `cargo fmt --package p2panda-file-sharing-gui`
+- ran `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-file-sharing-gui --tests --locked --offline`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui --test recovery --locked --offline -- --nocapture`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui download --lib --locked --offline -- --nocapture`
+- confirmed Task 17 acceptance in this run and updated Task 17 `passes` to `true` in `PRD.jsonl`
+
+What doesn't work:
+- no additional blocker for Task 17 in this run

@@ -495,7 +495,7 @@
     "All 3 files are present and correct in the output directory after recovery",
     "No byte-level progress events for the skipped file during the second run"
   ],
-  "passes": false
+  "passes": true
 }
 
 {
