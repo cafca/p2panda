@@ -61,7 +61,7 @@
     "Existing p2panda-blobs tests still pass",
     "DownloadProgress and DownloadProgressItem are publicly importable from p2panda_blobs"
   ],
-  "passes": false
+  "passes": true
 }
 
 {

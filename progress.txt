@@ -1,0 +1,18 @@
+# 2026-03-04 14:07
+
+Sample progress
+
+- created this file
+
+What doesn't work: everything does. Append new logs below.
+
+# 2026-03-04 16:11
+
+- picked Task 2 (`Add download_with_progress to p2panda-blobs`) as the highest-priority next feature because it is a narrow dependency for the byte-progress download path used by later file-sharing tasks
+- added `Blobs::download_with_progress(hash)` and refactored `Blobs::download(hash)` to call it so the old behavior stays intact
+- re-exported `DownloadProgress` and `DownloadProgressItem` from `p2panda-blobs`
+- extended the `p2panda-blobs` integration test to exercise the new method
+- ran `cargo fmt --package p2panda-blobs`
+
+What doesn't work:
+- `cargo check -p p2panda-blobs` and `cargo test -p p2panda-blobs --test blobs` are blocked in this environment by `.cargo/config.toml` forcing `linker = "gcc"` while `gcc` is not installed

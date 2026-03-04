@@ -7,6 +7,7 @@ mod pins;
 
 pub use blobs::Blobs;
 pub use iroh_blobs::Hash;
+pub use iroh_blobs::api::downloader::{DownloadProgress, DownloadProgressItem};
 pub use iroh_blobs::store::mem::MemStore;
 pub use pins::Pins;
 

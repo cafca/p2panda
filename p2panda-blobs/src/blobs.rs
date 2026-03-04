@@ -6,6 +6,7 @@ use anyhow::Result;
 use iroh_blobs::BlobsProtocol;
 use iroh_blobs::Hash;
 use iroh_blobs::api::Store;
+use iroh_blobs::api::downloader::DownloadProgress;
 use p2panda_net::iroh_endpoint::from_public_key;
 use p2panda_net::{AddressBook, Endpoint};
 use tracing::warn;
@@ -52,14 +53,19 @@ impl Blobs {
 
     /// Download a blob from all currently known peers in the address book.
     pub async fn download(&self, hash: Hash) -> Result<()> {
+        self.download_with_progress(hash).await?.await?;
+        Ok(())
+    }
+
+    /// Download a blob from all currently known peers in the address book and return the progress handle.
+    pub async fn download_with_progress(&self, hash: Hash) -> Result<DownloadProgress> {
         let node_ids = self.address_book.node_ids().await?;
         if node_ids.is_empty() {
             warn!("no known peers to download blob from");
             anyhow::bail!("no known peers");
         }
         let providers: Vec<_> = node_ids.into_iter().map(from_public_key).collect();
-        self.downloader.download(hash, providers).await?;
-        Ok(())
+        Ok(self.downloader.download(hash, providers))
     }
 
     /// Access the pinning API for managing blob GC lifecycle.
