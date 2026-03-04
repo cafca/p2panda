@@ -140,7 +140,7 @@
     "Unit test: encode then decode roundtrip",
     "Unit test: decode rejects wrong type tag and too-short input"
   ],
-  "passes": false
+  "passes": true
 }
 
 {

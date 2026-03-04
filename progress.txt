@@ -138,3 +138,15 @@ What doesn't work:
 
 What doesn't work:
 - no additional blocker for Task 8 in this run
+
+# 2026-03-04 19:14
+
+- picked Task 5 (`Gossip protocol messages`) as the highest-priority unfinished feature for this run because it is still a hard prerequisite for both the share flow (Task 9) and the download flow (Task 10), and its implementation was already in place but not yet re-verified after the sandbox-tooling fix
+- verified `file-sharing/src/protocol.rs` against the Task 5 acceptance criteria without widening scope to any other feature
+- ran `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-file-sharing-gui --lib`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui protocol --lib -- --nocapture`
+- confirmed the protocol unit tests pass for encode/decode roundtrip, wrong type-tag rejection, and too-short input rejection
+- updated Task 5 `passes` to `true` in `PRD.jsonl`
+
+What doesn't work:
+- no additional blocker for Task 5 in this run
