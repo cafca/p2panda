@@ -155,6 +155,7 @@ mod tests {
 
     use p2panda_core::Hash;
     use tempfile::tempdir;
+    use tokio::time::{timeout, Duration};
 
     #[tokio::test]
     async fn reuses_private_key_for_same_data_dir() -> Result<()> {
@@ -168,7 +169,16 @@ mod tests {
 
         drop(node_a);
 
-        let node_b = AppNode::with_data_dir(temp_dir.path(), NodeOptions::default()).await?;
+        // Endpoint and store shutdown happen asynchronously after the last handle drops.
+        // Give teardown a short window before reopening the same data directory.
+        tokio::time::sleep(Duration::from_millis(250)).await;
+
+        let node_b = timeout(
+            Duration::from_secs(5),
+            AppNode::with_data_dir(temp_dir.path(), NodeOptions::default()),
+        )
+        .await
+        .context("timed out reopening the same node data directory")??;
 
         assert_eq!(node_a_id, node_b.node_id());
 

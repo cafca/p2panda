@@ -164,3 +164,15 @@ What doesn't work:
 
 What doesn't work:
 - no additional blocker for Task 13 in this run
+
+# 2026-03-04 17:06
+
+- picked Task 6 (`Node module with FsStore and persistent identity`) as the highest-priority unfinished dependency because both the share flow (Task 9) and download flow (Task 10) still depend on it
+- tightened the restart acceptance test in `file-sharing/src/node.rs` so reopening the same data directory is verified with a bounded timeout and a short async teardown window instead of hanging indefinitely on background actor/store shutdown
+- ran `cargo fmt --package p2panda-file-sharing-gui`
+- ran `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-file-sharing-gui --lib`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui node --lib -- --nocapture`
+- confirmed Task 6 acceptance in this run: startup creates `node.key` and `blobs/`, the same data dir reuses the same node ID, and one node instance can join multiple gossip topics
+
+What doesn't work:
+- no additional blocker for Task 6 in this run
