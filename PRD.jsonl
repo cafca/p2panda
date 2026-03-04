@@ -469,7 +469,7 @@
     "Test passes: files transfer correctly via relay",
     "No direct address exchange between nodes (only relay-mediated)"
   ],
-  "passes": false
+  "passes": true
 }
 
 {

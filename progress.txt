@@ -281,3 +281,16 @@ What doesn't work:
 
 What doesn't work:
 - no additional blocker for Task 14 in this run
+
+# 2026-03-04 18:09
+
+- picked Task 16 (`Integration test: relay-based transfer`) as the highest-priority unfinished feature because it is the first blocked dependency in the remaining acceptance chain (Tasks 17/18 depend on transfer-test coverage and stable relay connectivity)
+- implemented the missing relay-based integration test in `file-sharing/tests/transfer.rs` (`relay_based_transfer`) using `iroh::test_utils::run_relay_server`, relay-configured `AppNode` instances, and relay-only bootstrap addressing (`node_id + relay_url`)
+- verified end-to-end relay transfer by sharing a nested test directory from node A and downloading via share code on node B, then byte-comparing source/output trees
+- ran `cargo fmt --package p2panda-file-sharing-gui`
+- ran `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-file-sharing-gui --test transfer`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui --test transfer relay_based_transfer -- --nocapture`
+- updated Task 16 `passes` to `true` in `PRD.jsonl`
+
+What doesn't work:
+- no additional blocker for Task 16 in this run

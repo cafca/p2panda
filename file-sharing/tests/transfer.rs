@@ -4,11 +4,12 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use iroh::test_utils::run_relay_server;
 use p2panda_file_sharing_gui::download::{download_share_with_progress, DownloadEvent};
 use p2panda_file_sharing_gui::node::{AppNode, NodeOptions};
 use p2panda_file_sharing_gui::share::share_directory;
 use p2panda_net::addrs::NodeInfo;
-use p2panda_net::iroh_endpoint::EndpointAddr;
+use p2panda_net::iroh_endpoint::{from_public_key, EndpointAddr, RelayUrl};
 use tempfile::tempdir;
 use tokio::time::timeout;
 
@@ -82,6 +83,60 @@ async fn local_two_node_directory_transfer() -> Result<()> {
     .context("local transfer test timed out after 30 seconds")??;
 
     Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn relay_based_transfer() -> Result<()> {
+    timeout(Duration::from_secs(30), async {
+        let (_relay_map, relay_url, _relay_server) = run_relay_server().await?;
+        let node_a_dir = tempdir()?;
+        let node_b_dir = tempdir()?;
+        let source_dir = tempdir()?;
+        let output_dir = tempdir()?;
+
+        let source_root = source_dir.path().join("source");
+        fs::create_dir_all(source_root.join("nested"))?;
+
+        let small = b"relay-small".repeat(10);
+        let medium: Vec<u8> = (0..32 * 1024).map(|idx| (idx % 251) as u8).collect();
+        let nested: Vec<u8> = (0..500).map(|idx| (idx % 199) as u8).collect();
+
+        fs::write(source_root.join("small.txt"), &small)?;
+        fs::write(source_root.join("medium.bin"), &medium)?;
+        fs::write(source_root.join("nested").join("inside.dat"), &nested)?;
+
+        let opts = NodeOptions {
+            relay_url: Some(relay_url.clone()),
+            insecure_skip_relay_cert_verify: true,
+        };
+        let node_a = AppNode::with_data_dir(node_a_dir.path(), opts.clone()).await?;
+        let node_b = AppNode::with_data_dir(node_b_dir.path(), opts).await?;
+
+        node_b
+            .address_book
+            .insert_node_info(relay_bootstrap_node_info(node_a.node_id(), relay_url))
+            .await?;
+
+        tokio::time::sleep(Duration::from_secs(1)).await;
+
+        let share = share_directory(&node_a, &source_root).await?;
+        let session =
+            download_share_with_progress(&node_b, &share.share_code, output_dir.path(), |_| {})
+                .await?;
+
+        compare_tree_bytes(&source_root, &session.output_root)?;
+
+        Ok::<(), anyhow::Error>(())
+    })
+    .await
+    .context("relay transfer test timed out after 30 seconds")??;
+
+    Ok(())
+}
+
+fn relay_bootstrap_node_info(node_id: p2panda_core::PublicKey, relay_url: RelayUrl) -> NodeInfo {
+    let endpoint_addr = EndpointAddr::new(from_public_key(node_id)).with_relay_url(relay_url);
+    NodeInfo::from(endpoint_addr).bootstrap()
 }
 
 fn compare_tree_bytes(source_root: &Path, destination_root: &Path) -> Result<()> {
