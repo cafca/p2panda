@@ -115,7 +115,7 @@
     "Unit test: decode rejects invalid base32 and truncated data",
     "Share codes are reasonable length (under ~120 chars for relay URLs, ~60 chars without)"
   ],
-  "passes": false
+  "passes": true
 }
 
 {

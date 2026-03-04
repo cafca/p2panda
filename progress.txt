@@ -49,3 +49,15 @@ What doesn't work:
 
 What doesn't work:
 - I did not complete a final `cargo check` through `docker sandbox run`, because that wrapper launches the Codex agent instead of an arbitrary shell command
+
+# 2026-03-04 16:52
+
+- picked Task 4 (`Share code format`) as the highest-priority remaining feature because it is a direct prerequisite for the end-to-end share/download flow and was still only a stub module
+- implemented `file-sharing/src/share_code.rs` with CBOR + base32 share-code encoding/decoding, exact `p2p-` prefix validation, collection-hash/topic derivation, and typed helpers for `BlobHash` and `PublicKey`
+- used a compact tuple CBOR wire format via `serde_bytes` so the encoded share codes avoid field-name overhead and stay reasonably short
+- added unit tests covering roundtrip preservation, invalid prefix rejection, invalid base32/truncated payload rejection, compactness bounds, and deterministic topic derivation
+- ran `cargo fmt --package p2panda-file-sharing-gui`
+- attempted `cargo test -p p2panda-file-sharing-gui share_code -- --nocapture` as the feedback loop for this feature
+
+What doesn't work:
+- `cargo test -p p2panda-file-sharing-gui share_code -- --nocapture` is blocked in this environment because the configured Linux linker toolchain cannot find startup objects like `Scrt1.o` and `crti.o`
