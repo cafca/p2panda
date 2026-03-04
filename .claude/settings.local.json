@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:docs.iroh.computer)",
+      "Bash(ls:*)"
+    ]
+  }
+}

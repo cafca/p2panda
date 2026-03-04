@@ -1,14 +1,526 @@
-{"category":"functional","description":"Send command imports a file as a blob and announces it on the specified\ntopic","steps":["Run send with --topic mytopic and a test file","Verify file is imported into blob store (hash\nprinted)","Verify announcement is published via gossip on the topic"],"passes":true}
-{"category":"functional","description":"Receive command listens on a topic and downloads announced\nblobs","steps":["Start receiver with --topic mytopic","Have sender announce a file on the same topic","Verify receiver\n gets the gossip announcement","Verify receiver downloads the blob by hash","Verify file is written to the output\ndirectory with correct content"],"passes":true}
-{"category":"functional","description":"Topic is user-specified via --topic flag and determines gossip\nchannel","steps":["Start sender with --topic alpha and a file","Start receiver with --topic alpha","Verify receiver\ngets the file","Start another receiver with --topic beta","Verify beta receiver does NOT get the\nfile"],"passes":true}
-{"category":"functional","description":"Sender prints its node ID for sharing with remote receivers","steps":["Run\nsend command","Verify node ID (public key hex) is printed to stdout/logs","Verify the printed ID can be used as --peer\n argument"],"passes":true}
-{"category":"functional","description":"Receiver connects to sender via --peer flag using relay\ntransport","steps":["Start two nodes on same machine with relay URL configured","Disable mDNS on both nodes (passive\nmode) to force relay usage","Sender imports file and announces on topic","Receiver uses --peer with sender node ID and\n same topic","Verify relay-based discovery and connection","Verify file is transferred successfully via\nrelay"],"passes":true}
-{"category":"functional","description":"Receiver discovers sender via mDNS on same network without\n--peer","steps":["Start two nodes on same machine with mDNS active mode","Sender announces file on --topic\ntest","Receiver subscribes to --topic test without --peer flag","Verify mDNS discovery finds the sender on\nloopback","Verify file transfer completes via mDNS discovery"],"passes":true}
-{"category":"functional","description":"Received files are written to --output-dir (default\n./received)","steps":["Start receiver with default output dir","Receive a file","Verify file appears in\n./received/","Repeat with --output-dir /tmp/custom","Verify file appears in /tmp/custom/"],"passes":true}
-{"category":"functional","description":"Original filename is preserved in the received file","steps":["Send a file\nnamed test.pdf (doesnt need to be an actual pdf if you don't have one)","Receive the file","Verify the output file is named test.pdf"],"passes":true}
-{"category":"functional","description":"Multiple files can be sent on the same topic","steps":["Start receiver process\n on topic multi on same machine","Start sender and send file1.txt on topic multi","Start another sender and send\nfile2.txt on topic multi","Verify both files appear in receiver output directory"],"passes":true}
-{"category":"functional","description":"Graceful shutdown on Ctrl+C for both sender and receiver","steps":["Start\nsender","Press Ctrl+C","Verify process exits cleanly without errors","Repeat for receiver"],"passes":true}
-{"category":"functional","description":"Application builds and runs as a workspace member","steps":["Run cargo build\n-p p2panda-file-sharing","Verify build succeeds with no errors","Run cargo run -p p2panda-file-sharing --\n--help","Verify CLI help is displayed"],"passes":true}
-{"category":"functional","description":"Integration test: two in-process nodes transfer a file via\nmDNS","steps":["Spawn two TestNodes with mDNS active on same machine","Node A imports file as blob and gossips\nannouncement on topic","Node B subscribes to same gossip topic","Node B receives announcement and downloads blob by\nhash","Verify downloaded content matches original file"],"passes":true}
-{"category":"functional","description":"Integration test: two in-process nodes transfer a file via relay (no\nmDNS)","steps":["Spawn two TestNodes with mDNS passive and relay URL configured","Node B adds Node A as bootstrap peer\n with relay endpoint address","Node A imports file as blob and gossips announcement on topic","Node B subscribes to\nsame gossip topic","Node B receives announcement and downloads blob by hash","Verify downloaded content matches\noriginal file"],"passes":true}
-{"category":"functional","description":"Integration test: topic isolation prevents cross-topic file\nleakage","steps":["Spawn three TestNodes on same machine","Node A gossips file announcement on topic alpha","Node B\nsubscribes to topic alpha and receives the announcement","Node C subscribes to topic beta and does NOT receive the\nannouncement","Verify Node B gets the file and Node C does not"],"passes":true}
+{
+  "id": 1,
+  "category": "infrastructure",
+  "title": "Project scaffold",
+  "description": "Create the file-sharing crate within the p2panda workspace. This is a Bevy desktop app with egui for the UI, using p2panda for peer-to-peer networking.",
+  "depends_on": [],
+  "inputs": [
+    "Cargo.toml (workspace root, add new member)"
+  ],
+  "outputs": [
+    "file-sharing/Cargo.toml",
+    "file-sharing/src/main.rs",
+    "file-sharing/src/lib.rs"
+  ],
+  "spec": {
+    "crate_name": "p2panda-file-sharing-gui",
+    "workspace_integration": "Add \"file-sharing\" to the members array in the workspace root Cargo.toml.",
+    "dependencies": {
+      "p2panda": "p2panda-blobs (with fs-store feature), p2panda-core, p2panda-net \u2014 all via path deps",
+      "gui": "bevy (0.15, minimal features for windowed app), bevy_egui (0.34 for egui integration)",
+      "async": "tokio (full features), flume (mpmc channels for async bridge), futures-util",
+      "serialization": "serde (with derive), ciborium (maintained CBOR implementation, replaces serde_cbor), data-encoding (base32 for share codes), bytes",
+      "cli": "clap with derive",
+      "platform": "rfd (native file dialogs on macOS), directories (XDG/macOS app data paths)",
+      "observability": "tracing, tracing-subscriber with env-filter",
+      "error_handling": "anyhow"
+    },
+    "dev_dependencies": "tempfile, iroh (with test-utils feature for dev relay), p2panda-net (with test_utils feature), tokio (with macros + rt-multi-thread)",
+    "main_rs": "Bevy App with DefaultPlugins (window title \"p2panda File Sharing\", 900x600), EguiPlugin, and a placeholder FileSharingPlugin. All module declarations in lib.rs.",
+    "modules": "node, bridge, manifest, share_code, protocol, share, download, persist, state, plugin, ui"
+  },
+  "acceptance": [
+    "cargo check -p p2panda-file-sharing-gui compiles without errors",
+    "Running the binary opens a native window with the correct title"
+  ],
+  "passes": false
+}
+
+{
+  "id": 2,
+  "category": "infrastructure",
+  "title": "Add download_with_progress to p2panda-blobs",
+  "description": "The current Blobs::download() method awaits completion internally, discarding the byte-level progress stream from iroh-blobs. Add a method that returns the DownloadProgress handle so callers can consume the stream of DownloadProgressItem events, which include Progress(u64) for byte counts.",
+  "depends_on": [],
+  "inputs": [
+    "p2panda-blobs/src/blobs.rs",
+    "p2panda-blobs/src/lib.rs"
+  ],
+  "outputs": [
+    "p2panda-blobs/src/blobs.rs",
+    "p2panda-blobs/src/lib.rs"
+  ],
+  "spec": {
+    "new_method": "Add an async method download_with_progress(hash) to Blobs that resolves the provider list from the address book (same as existing download()), then returns the DownloadProgress struct from iroh_blobs::api::downloader instead of awaiting it. The existing download() should be refactored to call the new method internally.",
+    "re_exports": "Re-export DownloadProgress and DownloadProgressItem from the p2panda-blobs public API so downstream crates don't need to depend on iroh-blobs directly.",
+    "iroh_blobs_internals": "The Downloader::download(request, providers) method returns a DownloadProgress struct. Calling .await on it runs complete() which drains the stream. Calling .stream().await instead yields a Stream<Item = DownloadProgressItem>. DownloadProgressItem::Progress(u64) gives cumulative bytes downloaded. DownloadProgressItem::Error reports failures. The downloader supports SplitStrategy::Split for multi-source parallel downloads via .buffered_unordered(32).",
+    "backward_compatibility": "The existing download() method must continue to work identically. Refactor it to call download_with_progress().await?.await? internally."
+  },
+  "acceptance": [
+    "cargo check -p p2panda-blobs compiles",
+    "Existing p2panda-blobs tests still pass",
+    "DownloadProgress and DownloadProgressItem are publicly importable from p2panda_blobs"
+  ],
+  "passes": false
+}
+
+{
+  "id": 3,
+  "category": "core",
+  "title": "Manifest format as signed p2panda Operation",
+  "description": "Define the directory manifest that describes a shared directory's contents. The manifest is a signed p2panda Operation: a Header with the sharer's public key and Ed25519 signature, and a Body containing CBOR-encoded directory metadata. This provides cryptographic proof of who created the share.",
+  "depends_on": [1],
+  "inputs": [
+    "p2panda-core/src/operation.rs (Header, Body, sign/verify API)",
+    "p2panda-core/src/cbor.rs (encode_cbor, decode_cbor helpers)"
+  ],
+  "outputs": [
+    "file-sharing/src/manifest.rs"
+  ],
+  "spec": {
+    "manifest_data_structure": "A ManifestData struct with: version (u8, always 1), name (String, the directory's base name), and files (Vec of entries). Each file entry has: relative_path (String, forward-slash separated, relative to the shared directory root), size (u64, file size in bytes), and hash ([u8; 32], the iroh-blobs BLAKE3 hash of the file's content).",
+    "cbor_encoding": "Use ciborium for CBOR serialization of ManifestData. Provide encode and decode functions.",
+    "operation_construction": "Create a p2panda Operation with: Header (version=1, public_key from the sharer's PrivateKey, payload_size and payload_hash from the Body, timestamp from system clock as unix seconds, seq_num=0, no backlink, no previous, empty extensions) and Body (the CBOR-encoded ManifestData bytes). Sign the header with the sharer's private key.",
+    "blob_serialization": "The manifest is stored as a single blob. Define a serialization format that packs the CBOR-encoded header and the body bytes into one byte sequence with an unambiguous separator (e.g. 4-byte length prefix for the header, then header bytes, then body bytes). Provide serialize and deserialize functions.",
+    "verification": "On the download side, deserialize the blob, verify the header signature, and check that the body hash matches the header's payload_hash. Return both the authenticated public key and the decoded ManifestData."
+  },
+  "acceptance": [
+    "Unit test: create a manifest, sign it, serialize to blob, deserialize, verify signature, data roundtrips correctly",
+    "Unit test: a tampered body (modified after signing) fails verification",
+    "Unit test: a manifest with nested subdirectory paths encodes/decodes correctly"
+  ],
+  "passes": false
+}
+
+{
+  "id": 4,
+  "category": "core",
+  "title": "Share code format",
+  "description": "A share code is a compact, human-copyable string that encodes everything a downloader needs to find and retrieve a shared directory. It is exchanged out-of-band (copy-paste, chat message, etc).",
+  "depends_on": [1],
+  "inputs": [],
+  "outputs": [
+    "file-sharing/src/share_code.rs"
+  ],
+  "spec": {
+    "contents": "A share code encodes three fields: collection_hash ([u8; 32], the HashSeq root hash identifying the collection), node_id ([u8; 32], the sharer's Ed25519 public key for address book bootstrap), and relay_url (Option<String>, the relay server URL if the sharer is using one).",
+    "encoding": "CBOR-serialize the struct, then base32-encode (RFC 4648, uppercase, no padding) using data_encoding::BASE32_NOPAD, then prepend the prefix \"p2p-\".",
+    "decoding": "Strip the \"p2p-\" prefix, base32-decode, CBOR-deserialize. Return clear errors for invalid prefix, invalid base32, or malformed CBOR.",
+    "topic_derivation": "The gossip topic is derived deterministically from the collection hash: TopicId = Hash::new(collection_hash_bytes).into(). This is a helper function in this module so both share and download flows use the same derivation. The topic does not need to be encoded in the share code because it can always be recomputed.",
+    "design_rationale": "The share code is intentionally minimal. The sharer's node_id lets the downloader bootstrap into the address book. The relay_url enables NAT traversal. The collection_hash identifies the content. Everything else (manifest, file list, individual file hashes) is discovered after connecting."
+  },
+  "acceptance": [
+    "Unit test: encode then decode roundtrip preserves all fields exactly",
+    "Unit test: decode rejects strings without the p2p- prefix",
+    "Unit test: decode rejects invalid base32 and truncated data",
+    "Share codes are reasonable length (under ~120 chars for relay URLs, ~60 chars without)"
+  ],
+  "passes": false
+}
+
+{
+  "id": 5,
+  "category": "core",
+  "title": "Gossip protocol messages",
+  "description": "Define the binary message format for gossip announcements. When a sharer publishes a directory, they announce the collection hash on the gossip topic so that subscribers (downloaders already on the topic) learn about the content.",
+  "depends_on": [1],
+  "inputs": [
+    "p2panda-test-claude/src/protocol.rs (reference pattern: BlobAnnouncement with type-tag + hash + payload)"
+  ],
+  "outputs": [
+    "file-sharing/src/protocol.rs"
+  ],
+  "spec": {
+    "message_format": "A CollectionAnnouncement containing the collection_hash (iroh_blobs::Hash, 32 bytes). Binary encoding: one-byte type tag (0x01) followed by the 32-byte hash. Total: 33 bytes.",
+    "encode_decode": "Provide encode (to Vec<u8>) and decode (from &[u8]) functions. Decode validates minimum length and correct type tag.",
+    "extensibility": "The type tag byte allows adding other message types later (e.g. 0x02 for peer-has-content announcements) without breaking existing messages.",
+    "pattern_reference": "This follows the exact same pattern as p2panda-test-claude's BlobAnnouncement but carries a collection hash instead of a single blob hash."
+  },
+  "acceptance": [
+    "Unit test: encode then decode roundtrip",
+    "Unit test: decode rejects wrong type tag and too-short input"
+  ],
+  "passes": false
+}
+
+{
+  "id": 6,
+  "category": "core",
+  "title": "Node module with FsStore and persistent identity",
+  "description": "A long-lived p2panda node that persists blob data and node identity across app restarts. Unlike the test-claude app which uses MemStore and generates a new key each run, this node uses FsStore for crash-recoverable blob storage and saves its Ed25519 private key to disk.",
+  "depends_on": [1, 2],
+  "inputs": [
+    "p2panda-test-claude/src/node.rs (reference pattern for component initialization order)",
+    "p2panda-blobs/src/blobs.rs (Blobs::new takes &Store; both MemStore and FsStore implement Deref<Target=Store>)",
+    "p2panda-blobs/src/lib.rs (FsStore re-exported when fs-store feature is enabled, which is the default)"
+  ],
+  "outputs": [
+    "file-sharing/src/node.rs"
+  ],
+  "spec": {
+    "persistent_key": "On first run, generate a new PrivateKey and write the raw 32-byte seed to data_dir/node.key. On subsequent runs, read the file and reconstruct the key. This gives the node a stable identity across restarts, which matters for address book entries other peers hold.",
+    "fs_store": "Use FsStore::load(data_dir/blobs).await to create or open the persistent blob store. FsStore implements Deref<Target=Store> so it passes directly to Blobs::new(&fs_store, ...). The fs-store feature is already the default in p2panda-blobs.",
+    "component_initialization_order": "Same as test-claude: AddressBook \u2192 Endpoint (with private key, optional relay URL, optional insecure cert verify) \u2192 MdnsDiscovery (always Active mode for the GUI app) \u2192 Discovery \u2192 Gossip \u2192 Blobs. All components except Blobs take address_book and endpoint clones.",
+    "configuration": "NodeOptions struct with optional relay_url and insecure_skip_relay_cert_verify flag. No per-topic binding: the node handles multiple topics over its lifetime.",
+    "data_directory": "Use the directories crate's ProjectDirs to locate the platform-appropriate data directory (~/Library/Application Support/p2panda-file-sharing on macOS).",
+    "key_difference_from_test_app": "The test-claude node is ephemeral (MemStore, random key per run, single topic). This node is persistent (FsStore, saved key, multi-topic). The node struct should not hold a topic_id since it handles multiple shares."
+  },
+  "acceptance": [
+    "Node starts successfully, creates data directory and key file on first run",
+    "Restarting with the same data directory loads the same private key (verified by comparing node_id)",
+    "FsStore directory exists at data_dir/blobs/ after startup",
+    "Node can join multiple gossip topics simultaneously"
+  ],
+  "passes": false
+}
+
+{
+  "id": 7,
+  "category": "core",
+  "title": "Async bridge between Bevy and Tokio",
+  "description": "Bevy runs its own event loop on the main thread. The p2panda networking stack is async (tokio). Bridge them with a dedicated network thread running a tokio Runtime, communicating via flume channels. This is a well-established pattern for Bevy apps with async backends.",
+  "depends_on": [1],
+  "inputs": [],
+  "outputs": [
+    "file-sharing/src/bridge.rs"
+  ],
+  "spec": {
+    "architecture": "Spawn a dedicated std::thread running a tokio::runtime::Runtime. The Bevy main thread and the network thread communicate through two flume channels: one for commands (UI \u2192 network) and one for events (network \u2192 UI). The Bevy side holds the command sender and event receiver as a Resource.",
+    "command_types": "ShareDirectory (with transfer id and directory path), StartDownload (with transfer id, share code string, and output directory path), CancelTransfer (with transfer id).",
+    "event_types": "ShareReady (transfer id, share code string, total bytes, file count), DownloadStarted (transfer id, directory name, total bytes, file count), FileDownloadProgress (transfer id, file index, bytes downloaded \u2014 this is the byte-level progress from iroh-blobs), FileCompleted (transfer id, file index), TransferCompleted (transfer id), Error (transfer id, error message string).",
+    "transfer_id": "A simple u64 counter assigned by the UI thread when creating a new transfer. Used to correlate commands and events.",
+    "network_loop": "The network thread initializes the AppNode, then enters a loop that selects on incoming commands from the channel. Share and download operations are spawned as separate tokio tasks so they run concurrently. Each task sends events back through the event channel.",
+    "nonblocking_polling": "The Bevy side uses try_recv() to drain all pending events each frame without blocking the render loop."
+  },
+  "acceptance": [
+    "Commands sent from the Bevy thread are received by the network thread",
+    "Events sent from the network thread are receivable via try_recv on the Bevy side",
+    "Multiple concurrent share/download operations can run simultaneously"
+  ],
+  "passes": false
+}
+
+{
+  "id": 8,
+  "category": "core",
+  "title": "Transfer state model",
+  "description": "Bevy ECS resource tracking all active and completed transfers. Updated by the network polling system and read by the UI system each frame.",
+  "depends_on": [1],
+  "inputs": [],
+  "outputs": [
+    "file-sharing/src/state.rs"
+  ],
+  "spec": {
+    "transfer_registry": "A Bevy Resource containing a Vec of transfers and a monotonic ID counter. Provides methods to allocate a new ID, and to look up transfers by ID (both shared and mutable references).",
+    "transfer_struct": "Each transfer has: id, name (directory name), direction (Upload or Download), status (Pending, Active, Completed, or Error with message), files (Vec of per-file progress), share_code (Option, set once sharing is ready), total_bytes, downloaded_bytes, start_time (Instant), and bandwidth rates for inbound and outbound data.",
+    "file_progress": "Each file tracks: relative path, total size, bytes downloaded so far, and a completed flag.",
+    "progress_calculation": "Transfer.progress_fraction() returns downloaded_bytes / total_bytes as f32 in [0, 1]. Bandwidth is calculated as downloaded_bytes / elapsed_seconds, updated each frame when new progress events arrive.",
+    "direction_semantics": "Upload means this node is sharing (seeding). Download means this node is fetching. Both are displayed in the transfer list with different icons."
+  },
+  "acceptance": [
+    "Structs compile and are usable as Bevy Resources",
+    "Progress fraction returns 0.0 when no bytes downloaded, 1.0 when complete"
+  ],
+  "passes": false
+}
+
+{
+  "id": 9,
+  "category": "core",
+  "title": "Share directory flow",
+  "description": "The complete flow for sharing a local directory: scan files, import into blob store, create signed manifest, build a HashSeq collection, pin it, announce on gossip, and produce a share code. The sharer must remain online so peers can download blobs from them.",
+  "depends_on": [2, 3, 4, 5, 6],
+  "inputs": [
+    "file-sharing/src/node.rs",
+    "file-sharing/src/manifest.rs",
+    "file-sharing/src/share_code.rs",
+    "file-sharing/src/protocol.rs",
+    "iroh-blobs Store API: add_path() streams a file from disk into the blob store (returns hash and size), add_bytes_with_opts() with BlobFormat::HashSeq creates a collection blob",
+    "iroh-blobs HashSeq: constructed from an iterator of hashes, serialized via into_inner() to Bytes, represents an ordered sequence of blob hashes",
+    "p2panda-blobs Pins: set(name, hash) pins a blob to prevent garbage collection"
+  ],
+  "outputs": [
+    "file-sharing/src/share.rs"
+  ],
+  "spec": {
+    "directory_scanning": "Recursively walk the directory. Collect each regular file's absolute path, relative path (from the shared directory root, forward-slash separated), and size. Skip hidden files (starting with dot), symlinks, and empty directories. Sort files by relative path for deterministic ordering.",
+    "file_import": "Import each file into the blob store using Store::add_path() which streams from disk without loading the full file into memory. This is essential for large files. Collect the returned hash and size for each file.",
+    "manifest_creation": "Build a ManifestData with version 1, the directory's base name, and the list of file entries with their relative paths, sizes, and blob hashes. Create a signed p2panda Operation from this data (task 3). Serialize the operation to bytes and import it as a blob.",
+    "collection_building": "Build a HashSeq from: [manifest_blob_hash, file1_hash, file2_hash, ...] in the same order as the manifest's file list. Import the HashSeq as a blob with BlobFormat::HashSeq format. The resulting hash is the collection root hash.",
+    "pinning": "Pin the collection blob to prevent garbage collection. Note: the current Pins API uses BlobFormat::Raw. For HashSeq blobs, use the underlying Tags API directly with BlobFormat::HashSeq to ensure the collection and all its referenced blobs are protected from GC.",
+    "gossip_announcement": "Derive the topic from the collection hash (task 4's topic derivation helper). Join the gossip topic via node.gossip.stream(topic_id). Publish a CollectionAnnouncement (task 5) with the collection hash. Keep the gossip handle alive so the node stays in the overlay.",
+    "share_code_generation": "Encode the collection hash, node ID, and relay URL (if any) into a share code (task 4). Send a ShareReady event with the code, total bytes, and file count.",
+    "re_announcement": "Periodically re-announce the collection (e.g. every 30 seconds) so peers who join the topic later discover the content.",
+    "error_handling": "If any file import fails, report the error but continue with remaining files. If the gossip join fails, report error to UI."
+  },
+  "acceptance": [
+    "Sharing a directory with 3 files (including a nested subdirectory) produces a valid share code",
+    "All file blobs, the manifest blob, and the HashSeq collection blob are present in the store",
+    "A gossip announcement is published on the topic derived from the collection hash",
+    "The share code decodes back to the correct collection hash and node ID"
+  ],
+  "passes": false
+}
+
+{
+  "id": 10,
+  "category": "core",
+  "title": "Download flow with byte-level progress",
+  "description": "The complete flow for downloading a shared directory: decode the share code, bootstrap into the peer network, download the collection and manifest, then download each file with byte-level progress reporting. Supports crash recovery by skipping already-downloaded blobs.",
+  "depends_on": [2, 3, 4, 5, 6],
+  "inputs": [
+    "file-sharing/src/node.rs",
+    "file-sharing/src/manifest.rs",
+    "file-sharing/src/share_code.rs",
+    "file-sharing/src/protocol.rs",
+    "p2panda-blobs Blobs: download_with_progress() returns DownloadProgress, .stream().await yields DownloadProgressItem::Progress(u64)",
+    "p2panda-blobs Blobs (via Deref<Target=Store>): has(hash) checks if blob exists, get_bytes(hash) reads complete blob content",
+    "p2panda-net AddressBook: insert_node_info(NodeInfo::from(EndpointAddr).bootstrap()) adds a bootstrap peer",
+    "p2panda-net iroh_endpoint: from_public_key() converts PublicKey to iroh NodeId, EndpointAddr::new().with_relay_url() builds address with relay"
+  ],
+  "outputs": [
+    "file-sharing/src/download.rs"
+  ],
+  "spec": {
+    "share_code_decoding": "Decode the share code to get collection_hash, node_id, and optional relay_url.",
+    "peer_bootstrap": "Convert the node_id to an EndpointAddr. If a relay_url is present, attach it. Insert into the address book as a bootstrap node. This tells the networking stack how to reach the sharer.",
+    "collection_download": "Download the HashSeq collection blob by its hash. Parse it into a HashSeq to get the ordered list of blob hashes.",
+    "manifest_download": "The first hash in the HashSeq is the manifest blob. Download it, deserialize the p2panda Operation, verify the signature, and decode the ManifestData to get the file list.",
+    "file_download_with_progress": "For each file in the manifest (corresponding to hashes at indices 1..N in the HashSeq): first check if the blob already exists locally via has(hash) \u2014 if so, skip it and emit a FileCompleted event (this is the crash recovery mechanism since FsStore persists to disk). Otherwise, call download_with_progress(hash) and consume the .stream() to get byte-level progress. Forward each Progress(u64) event as a FileDownloadProgress event to the UI. After download completes, read the blob content via get_bytes(hash) and write to the output directory, preserving the relative path from the manifest.",
+    "directory_creation": "Create parent directories as needed when writing files. Sanitize relative paths to prevent directory traversal attacks (reject paths containing .., absolute paths, etc).",
+    "multi_source": "The iroh-blobs downloader automatically contacts all known peers in the address book. If multiple peers have the same content (e.g. the original sharer plus another downloader who already has it), the downloader splits the request across them using SplitStrategy and buffered_unordered(32). No special handling needed \u2014 just ensure all relevant peers are in the address book.",
+    "completion": "After all files are downloaded and written, emit a TransferCompleted event.",
+    "error_handling": "If a single file download fails, report the error but continue with remaining files. Emit per-file errors so the UI can show partial completion."
+  },
+  "acceptance": [
+    "Downloads all files from a share code and writes them to the output directory with correct relative paths",
+    "Byte-level progress events (FileDownloadProgress) fire with increasing byte counts during each file download",
+    "Files in the output directory are byte-identical to the originals",
+    "Already-downloaded blobs (from a previous crashed run using the same FsStore) are skipped without re-downloading",
+    "Nested subdirectories are created correctly"
+  ],
+  "passes": false
+}
+
+{
+  "id": 11,
+  "category": "core",
+  "title": "Crash recovery persistence",
+  "description": "Persist enough state to disk so that incomplete transfers can resume after the app exits or crashes. Blob data is already persisted by FsStore; this task handles the transfer metadata (which shares are active, which downloads are in progress, what share codes and output directories are being used).",
+  "depends_on": [8, 9, 10],
+  "inputs": [
+    "file-sharing/src/share.rs",
+    "file-sharing/src/download.rs"
+  ],
+  "outputs": [
+    "file-sharing/src/persist.rs"
+  ],
+  "spec": {
+    "state_file": "A JSON file at data_dir/state.json containing the list of active downloads and active shares.",
+    "download_record": "Each download record stores: share_code, output_dir path, and collection_hash. The list of completed files does not need explicit tracking because the download flow already checks blobs.has(hash) for each file \u2014 FsStore persistence handles this automatically.",
+    "share_record": "Each share record stores: source_dir path, share_code, and collection_hash. On restart, the share's blobs are already in FsStore; the app just needs to re-join gossip and re-announce.",
+    "save_points": "Save state.json whenever: a new share is created, a new download starts, a transfer completes (remove from active list). Use atomic write (write to temp file, then rename) to prevent corruption.",
+    "startup_recovery": "On app startup, load state.json. For each share record: re-derive the gossip topic, re-join, and re-announce the collection. For each download record: call the download flow which will skip already-present blobs and download only the missing ones.",
+    "cleanup": "When a transfer completes, remove it from the active list in state.json. Optionally unpin completed downloads' blobs after files are written to disk (the files are now on the filesystem, the blobs can be GC'd)."
+  },
+  "acceptance": [
+    "state.json is written to data_dir after creating a share",
+    "state.json is written after starting a download",
+    "After simulating a crash (kill process), restarting the app resumes incomplete downloads",
+    "Shares are re-announced on gossip after restart"
+  ],
+  "passes": false
+}
+
+{
+  "id": 12,
+  "category": "ui",
+  "title": "Transfer list UI with progress bars and dialogs",
+  "description": "The main application UI rendered with bevy_egui. Shows a scrollable list of all transfers with real-time progress, plus dialogs for creating shares and starting downloads.",
+  "depends_on": [7, 8],
+  "inputs": [
+    "file-sharing/src/bridge.rs (AsyncBridge resource, NetCommand)",
+    "file-sharing/src/state.rs (TransferRegistry, Transfer, Direction, TransferStatus)"
+  ],
+  "outputs": [
+    "file-sharing/src/ui.rs"
+  ],
+  "spec": {
+    "main_panel": "An egui CentralPanel with: a heading, a toolbar row with \"Share Directory...\" and \"Download\" buttons, a separator, and a vertically scrollable area listing all transfers.",
+    "transfer_row": "Each transfer is rendered as a group containing: a direction indicator (up arrow for upload, down arrow for download) and the directory name; a progress bar (egui::ProgressBar) showing downloaded_bytes/total_bytes with percentage text; a bandwidth display (formatted as KB/s or MB/s); a file completion count (e.g. \"3/7 files\"); and for uploads, the share code in a selectable text field with a Copy button that writes to the system clipboard via egui's clipboard API.",
+    "share_dialog": "When \"Share Directory...\" is clicked, open a native macOS folder picker using rfd::FileDialog. If a folder is selected, allocate a new transfer ID, add a Pending upload to the registry, and send a ShareDirectory command through the bridge. Show a brief \"Importing...\" status while pending.",
+    "download_dialog": "When \"Download\" is clicked, show an egui::Window with a single-line text input for pasting the share code. Optionally allow choosing an output directory (default: ~/Downloads/p2panda/). A \"Start\" button allocates a transfer ID, adds a Pending download to the registry, and sends a StartDownload command.",
+    "status_display": "Pending transfers show \"Waiting...\" text. Active transfers show the progress bar and bandwidth. Completed transfers show \"Done\". Error transfers show the error message in red.",
+    "bytes_formatting": "A helper function that formats byte counts as human-readable strings: bytes < 1024 as B, < 1MB as KB, < 1GB as MB, else GB.",
+    "ui_state_resource": "A Bevy Resource holding ephemeral UI state: whether each dialog is open, the current text input value for the share code field, the pending share path if a folder was just selected."
+  },
+  "acceptance": [
+    "Transfer list renders with correct progress bars and bandwidth for each transfer",
+    "Share dialog opens a native macOS folder picker and creates a transfer on selection",
+    "Download dialog accepts a pasted share code and starts a download",
+    "Copy button copies the share code to the system clipboard",
+    "Error states are displayed clearly"
+  ],
+  "passes": false
+}
+
+{
+  "id": 13,
+  "category": "core",
+  "title": "Network polling system",
+  "description": "A Bevy system that runs each frame to drain all pending network events from the async bridge and update the transfer registry. This is the glue between the async network thread and the synchronous ECS world.",
+  "depends_on": [7, 8],
+  "inputs": [
+    "file-sharing/src/bridge.rs (AsyncBridge, NetEvent variants)",
+    "file-sharing/src/state.rs (TransferRegistry)"
+  ],
+  "outputs": [
+    "file-sharing/src/plugin.rs (contains the system function)"
+  ],
+  "spec": {
+    "polling_pattern": "Use a while-let loop with try_recv() to drain all pending events non-blockingly in a single frame. This ensures the UI stays responsive even during rapid progress updates.",
+    "event_handling": "For each NetEvent variant, find the corresponding transfer by ID and update it: ShareReady sets the share code and marks Active. DownloadStarted sets the name, total_bytes, initializes file progress entries, marks Active. FileDownloadProgress updates the specific file's downloaded byte count and recalculates the transfer's total downloaded_bytes as the sum across all files. FileCompleted marks the file as done and sets its downloaded count to its full size. TransferCompleted marks the transfer as Completed. Error sets the error status.",
+    "bandwidth_calculation": "Each frame when progress events are processed, recalculate bytes_per_sec as downloaded_bytes / elapsed_seconds (from start_time). Only update when at least 0.5 seconds have elapsed to avoid noisy initial values."
+  },
+  "acceptance": [
+    "Progress events update the transfer registry within one frame",
+    "Bandwidth values are reasonable (not NaN, not negative)",
+    "All NetEvent variants are handled"
+  ],
+  "passes": false
+}
+
+{
+  "id": 14,
+  "category": "integration",
+  "title": "Bevy plugin wiring",
+  "description": "Wire all components together into a Bevy Plugin: spawn the network thread, insert resources, register systems in the correct order.",
+  "depends_on": [6, 7, 8, 12, 13],
+  "inputs": [
+    "All previous modules"
+  ],
+  "outputs": [
+    "file-sharing/src/plugin.rs",
+    "file-sharing/src/main.rs (update to use the plugin)"
+  ],
+  "spec": {
+    "plugin_build": "In the Plugin::build method: determine the data directory using the directories crate, create flume channel pairs, spawn the network thread (which initializes the AppNode and enters the network loop), insert AsyncBridge, TransferRegistry, and UiState as Bevy Resources, and register the poll_network_events and ui_system as Update systems. Systems should be chained so polling runs before UI rendering.",
+    "startup_recovery": "During the network thread's initialization, after creating the AppNode, load the persisted state and resume any active shares/downloads. Send appropriate events back through the channel so the UI populates.",
+    "main_rs_update": "Replace the placeholder plugin with the real FileSharingPlugin."
+  },
+  "acceptance": [
+    "App starts without errors, shows the UI, network thread is running",
+    "Sharing a directory results in a share code appearing in the UI",
+    "Pasting a share code and clicking Start shows download progress"
+  ],
+  "passes": false
+}
+
+{
+  "id": 15,
+  "category": "test",
+  "title": "Integration test: local two-node directory transfer",
+  "description": "End-to-end test verifying that a directory shared by one node can be downloaded by another node, with all files arriving correctly and byte-level progress events firing.",
+  "depends_on": [9, 10],
+  "inputs": [
+    "file-sharing/src/share.rs",
+    "file-sharing/src/download.rs",
+    "file-sharing/src/node.rs",
+    "p2panda-test-claude/tests/transfer.rs (reference for test setup patterns)"
+  ],
+  "outputs": [
+    "file-sharing/tests/transfer.rs"
+  ],
+  "spec": {
+    "test_setup": "Create separate temp directories for: node A's data, node B's data, the source directory, and the output directory. Populate the source directory with test files of varying sizes and nesting: a small text file (~100 bytes), a medium binary file (~100 KB of random data), and a file inside a subdirectory (~500 bytes).",
+    "node_setup": "Create two AppNodes with separate data directories. Add node A to node B's address book using endpoint address information (same pattern as test-claude tests). No relay needed for local tests.",
+    "share_and_download": "Node A shares the source directory, producing a share code. Node B downloads using that share code into the output directory. Both flows use flume channels to capture events.",
+    "verification": "Walk the source directory and for each file, read the corresponding file from the output directory and assert byte-equality. Also verify that FileDownloadProgress events with increasing byte counts were received during the download.",
+    "timeout": "Wrap the entire test in tokio::time::timeout (30 seconds) to prevent hanging."
+  },
+  "acceptance": [
+    "All three test files (including the nested one) transfer correctly",
+    "Byte-level progress events are received during download",
+    "Test completes within 30 seconds"
+  ],
+  "passes": false
+}
+
+{
+  "id": 16,
+  "category": "test",
+  "title": "Integration test: relay-based transfer",
+  "description": "Test that two nodes can share and download a directory when connected only through an Iroh relay server, verifying NAT-traversal capability.",
+  "depends_on": [15],
+  "inputs": [
+    "file-sharing/tests/transfer.rs",
+    "p2panda-test-claude/tests/transfer.rs (test_relay_bootstrap_transfer pattern: run_relay_server(), relay_url, insecure cert verify)"
+  ],
+  "outputs": [
+    "file-sharing/tests/transfer.rs (additional test function)"
+  ],
+  "spec": {
+    "relay_setup": "Start an in-process Iroh dev relay server using iroh::test_utils (same as the test-claude relay tests). This gives a relay_url for both nodes.",
+    "node_setup": "Both nodes are configured with the relay_url and insecure_skip_relay_cert_verify=true (since the dev relay uses self-signed certs). Node A is added to node B's address book with the relay URL attached to the EndpointAddr.",
+    "transfer_verification": "Same as the local test: share a directory from A, download on B via share code, verify all files match.",
+    "relay_significance": "This test proves the app works over the internet (not just LAN) by forcing all traffic through the relay. Without the relay, the nodes have no way to discover each other's direct addresses."
+  },
+  "acceptance": [
+    "Test passes: files transfer correctly via relay",
+    "No direct address exchange between nodes (only relay-mediated)"
+  ],
+  "passes": false
+}
+
+{
+  "id": 17,
+  "category": "test",
+  "title": "Integration test: crash recovery",
+  "description": "Verify that a download interrupted mid-transfer can resume after restarting the node with the same FsStore data directory, without re-downloading already-completed files.",
+  "depends_on": [11, 15],
+  "inputs": [
+    "file-sharing/src/persist.rs",
+    "file-sharing/src/download.rs"
+  ],
+  "outputs": [
+    "file-sharing/tests/recovery.rs"
+  ],
+  "spec": {
+    "test_scenario": "Node A shares a directory with 3 files. Node B begins downloading. After the first file completes (verified by receiving a FileCompleted event for file index 0), drop node B entirely (simulating a crash). Then create a new AppNode for B using the SAME data directory (so FsStore retains the downloaded blob). Run the download flow again with the same share code.",
+    "verification_criteria": "The resumed download should skip the first file (blobs.has() returns true), download only the remaining files, and produce FileCompleted events for all files. The output directory should contain all 3 files, byte-identical to the originals. Verify that no FileDownloadProgress events were emitted for the first file during the second run (proving it was skipped, not re-downloaded).",
+    "implementation_note": "The crash recovery mechanism is inherent in the download flow: it calls blobs.has(hash) before each file download. FsStore persists completed blobs to disk. No explicit checkpoint file is needed for this test \u2014 the blobs themselves are the checkpoint."
+  },
+  "acceptance": [
+    "Second download run skips the already-completed file",
+    "All 3 files are present and correct in the output directory after recovery",
+    "No byte-level progress events for the skipped file during the second run"
+  ],
+  "passes": false
+}
+
+{
+  "id": 18,
+  "category": "test",
+  "title": "Integration test: multi-source download",
+  "description": "Verify that a downloader can fetch content from multiple peers simultaneously, which is the BitTorrent-style swarming behavior enabled by iroh-blobs' Downloader.",
+  "depends_on": [15],
+  "inputs": [
+    "file-sharing/src/download.rs",
+    "file-sharing/src/node.rs"
+  ],
+  "outputs": [
+    "file-sharing/tests/transfer.rs (additional test function)"
+  ],
+  "spec": {
+    "test_scenario": "Three nodes: A (original sharer), B (first downloader who becomes a seeder), C (second downloader who should use both A and B as sources). Node A shares a directory with at least one large file (e.g. 1 MB) to make parallelism meaningful. Node B downloads the share from A completely. Then node C starts downloading the same share, with both A and B in its address book.",
+    "multi_source_mechanism": "The iroh-blobs Downloader's download() method accepts a list of providers (all node IDs from the address book). It uses SplitStrategy and buffered_unordered(32) to download different parts from different providers. Both A and B serve the same content, so the downloader can split the work. The key setup step is ensuring both A and B are in C's address book before C starts downloading.",
+    "verification": "All files on C match the originals. The download succeeds (proving multi-source works). Optionally, inspect DownloadProgressItem::TryProvider events to confirm both providers were contacted.",
+    "design_note": "This test validates that the architecture choice of using iroh-blobs (rather than a custom Merkle tree) still gives us the multi-source downloading behavior required for BitTorrent-style transfers."
+  },
+  "acceptance": [
+    "Node C successfully downloads from a swarm of two peers",
+    "Downloaded files are byte-identical to the originals",
+    "Test completes (proving the multi-source path works end-to-end)"
+  ],
+  "passes": false
+}
