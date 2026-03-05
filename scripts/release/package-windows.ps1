@@ -8,6 +8,7 @@ $ErrorActionPreference = "Stop"
 $RootDir = (Resolve-Path "$PSScriptRoot/../..").Path
 $DistDir = Join-Path $RootDir "dist"
 $BinName = "p2panda-file-sharing-gui"
+$AssetsDir = Join-Path $RootDir "file-sharing/assets"
 $Arch = if ($env:ARCH) { $env:ARCH } else { "x86_64" }
 
 Set-Location $RootDir
@@ -22,6 +23,7 @@ $ExePath = Join-Path $RootDir "target/release/$BinName.exe"
 $ZipDir = Join-Path $DistDir "windows/p2panda-file-sharing-$Version-windows-$Arch"
 New-Item -ItemType Directory -Force -Path $ZipDir | Out-Null
 Copy-Item $ExePath (Join-Path $ZipDir "$BinName.exe")
+Copy-Item (Join-Path $AssetsDir "icon.svg") (Join-Path $ZipDir "icon.svg")
 
 @"
 p2panda File Sharing $Version

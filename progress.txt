@@ -883,3 +883,23 @@ What doesn't work:
 What doesn't work:
 - local PowerShell syntax validation for `scripts/release/package-windows.ps1` is blocked in this environment because `pwsh` is not installed (`/bin/bash: pwsh: command not found`)
 - Task 31 acceptance cannot be fully proven locally; artifact build/install behavior must be validated by GitHub Actions tag-run outputs (especially AppImage runtime compatibility and Windows MSI install behavior on clean systems)
+
+# 2026-03-06 02:30 UTC
+
+- picked Task 31 (`Multi-platform packaging and release builds`) as the highest-priority unfinished feature because it is one of the two remaining tasks and directly affects end-user installability
+- hardened packaging metadata/assets in this run:
+  - added placeholder app assets at `file-sharing/assets/icon.svg` and `file-sharing/assets/p2panda-file-sharing.desktop`
+  - wired icon/desktop assets into release packaging scripts:
+    - Linux tarball now includes desktop entry + icon (`scripts/release/package-linux.sh`)
+    - macOS app bundle now includes icon asset in `Contents/Resources` (`scripts/release/package-macos.sh`)
+    - Windows portable zip now includes icon asset (`scripts/release/package-windows.ps1`)
+  - added package metadata for packaging tools in `file-sharing/Cargo.toml` (`package.metadata.appimage`, `package.metadata.bundle`, `package.metadata.wix`)
+- ran feedback loops:
+  - `bash -n scripts/release/check-version.sh scripts/release/package-macos.sh scripts/release/package-linux.sh`
+  - `bash scripts/release/check-version.sh v0.1.0`
+  - `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-file-sharing-gui --locked`
+  - `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui ui --lib --locked -- --nocapture`
+- kept Task 31 `passes` as `false` in this run
+
+What doesn't work:
+- Task 31 acceptance still cannot be fully proven locally in this environment because cross-platform packaging behavior (macOS `.dmg` launch on clean macOS, Linux AppImage launch on Ubuntu 22.04+, Windows `.msi` install on Windows 10+) and GitHub Release upload must be validated by an actual tag-triggered GitHub Actions run on native runners

@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
 BIN_NAME="p2panda-file-sharing-gui"
+ASSETS_DIR="$ROOT_DIR/file-sharing/assets"
 VERSION="${1:?usage: package-linux.sh <version>}"
 ARCH="${ARCH:-x86_64}"
 
@@ -17,6 +18,8 @@ TAR_STAGING="$DIST_DIR/linux-tar/p2panda-file-sharing-${VERSION}-linux-${ARCH}"
 mkdir -p "$TAR_STAGING"
 cp "$ROOT_DIR/target/release/$BIN_NAME" "$TAR_STAGING/"
 chmod +x "$TAR_STAGING/$BIN_NAME"
+cp "$ASSETS_DIR/p2panda-file-sharing.desktop" "$TAR_STAGING/"
+cp "$ASSETS_DIR/icon.svg" "$TAR_STAGING/p2panda-file-sharing.svg"
 
 cat >"$TAR_STAGING/README.txt" <<EOF
 p2panda File Sharing $VERSION

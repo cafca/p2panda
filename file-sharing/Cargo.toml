@@ -51,3 +51,16 @@ tempfile = "3"
 iroh = { version = "0.96.1", default-features = false, features = ["test-utils"] }
 p2panda-net = { path = "../p2panda-net", features = ["test_utils"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[package.metadata.appimage]
+auto_link = true
+
+[package.metadata.bundle]
+name = "p2panda File Sharing"
+identifier = "org.p2panda.file-sharing"
+icon = ["assets/icon.svg"]
+
+[package.metadata.wix]
+upgrade-guid = "B318E301-86C2-4B96-9186-587DFF5E4B5F"
+path-guid = "43D13EF2-9FA1-43F3-B356-B8CC009993E5"
+license = false

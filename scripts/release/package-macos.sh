@@ -5,6 +5,7 @@ ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
 APP_NAME="p2panda File Sharing"
 BIN_NAME="p2panda-file-sharing-gui"
+ASSETS_DIR="$ROOT_DIR/file-sharing/assets"
 VERSION="${1:?usage: package-macos.sh <version>}"
 
 cd "$ROOT_DIR"
@@ -17,6 +18,7 @@ APP_DIR="$DIST_DIR/macos/$APP_NAME.app"
 mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 cp "$ROOT_DIR/target/release/$BIN_NAME" "$APP_DIR/Contents/MacOS/$BIN_NAME"
 chmod +x "$APP_DIR/Contents/MacOS/$BIN_NAME"
+cp "$ASSETS_DIR/icon.svg" "$APP_DIR/Contents/Resources/AppIcon.svg"
 
 cat >"$APP_DIR/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>

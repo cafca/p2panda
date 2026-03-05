@@ -729,7 +729,7 @@
     "The app version is visible within the application",
     "Artifacts are automatically uploaded to a GitHub Release"
   ],
-  "passes":  false
+  "passes": false
 }
 {
   "id": 32,
