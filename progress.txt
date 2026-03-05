@@ -482,3 +482,29 @@ What doesn't work:
 
 What doesn't work:
 - no additional blocker for Task 22 in this run
+
+# 2026-03-05 20:03
+
+- picked Task 33 (`Settings UI with default download directory`) as the highest-priority unfinished feature because it is the next dependency gate for Task 34 (`Relay server configuration settings`) and introduces persistent user preferences needed for runtime behavior
+- implemented `file-sharing/src/settings.rs` with `AppSettings` + `SettingsStore`, persisted to `settings.json` in the app data directory using serde defaults and atomic temp-file rename writes
+- wired startup settings load into plugin/runtime:
+  - `file-sharing/src/plugin.rs` now loads `SettingsStore` from the resolved app data dir, inserts it as a Bevy resource, and initializes `UiState` from persisted `default_download_dir` (or platform fallback)
+  - `file-sharing/src/bridge.rs` now loads settings before runtime recovery initialization so settings are available before startup transfer resume flow executes
+- updated `file-sharing/src/ui.rs` to add a toolbar-accessible Settings view and Task-33 directory controls:
+  - added a Settings toggle in the main toolbar
+  - added "Default download directory" row with `Browse...` folder picker and `Reset to default`
+  - persisted settings immediately on change and surfaced save failures inline in the UI
+  - kept per-download override behavior via `Download to...` in the download dialog while default directory remains the no-picker baseline
+- exposed the new module in `file-sharing/src/lib.rs` and added focused tests:
+  - `settings` tests for default load + persistence writes/reset
+  - UI test for initializing state from persisted default directory
+- ran `cargo fmt --package p2panda-file-sharing-gui`
+- ran `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-file-sharing-gui --lib --locked`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui settings --lib --locked -- --nocapture`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui ui --lib --locked -- --nocapture`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui plugin --lib --locked -- --nocapture`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui bridge --lib --locked -- --nocapture`
+- confirmed Task 33 acceptance criteria in this run and updated Task 33 `passes` to `true` in `PRD.jsonl`
+
+What doesn't work:
+- no additional blocker for Task 33 in this run

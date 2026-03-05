@@ -5,6 +5,7 @@ pub mod node;
 pub mod persist;
 pub mod plugin;
 pub mod protocol;
+pub mod settings;
 pub mod share;
 pub mod share_code;
 pub mod state;

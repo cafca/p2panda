@@ -4,6 +4,7 @@ use bevy::prelude::{Res, ResMut, Resource};
 use bevy_egui::{egui, EguiContexts};
 
 use crate::bridge::{AsyncBridge, NetworkCommand};
+use crate::settings::SettingsStore;
 use crate::state::{Direction, Transfer, TransferRegistry, TransferStatus};
 
 /// Which file dialog is currently open.
@@ -11,6 +12,7 @@ use crate::state::{Direction, Transfer, TransferRegistry, TransferStatus};
 enum PendingDialog {
     Share,
     DownloadDestination,
+    SettingsDefaultDownloadDirectory,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,21 +25,31 @@ enum TransferAction {
 #[derive(Debug, Resource)]
 pub struct UiState {
     pub global_paused: bool,
+    pub show_settings_view: bool,
     pub download_dialog_open: bool,
     pub download_share_code_input: String,
     pub pending_share_path: Option<PathBuf>,
     pub selected_download_directory: PathBuf,
+    pub settings_error: Option<String>,
     folder_dialog: Option<(PendingDialog, flume::Receiver<Option<PathBuf>>)>,
 }
 
 impl Default for UiState {
     fn default() -> Self {
+        Self::with_default_download_directory(default_download_directory())
+    }
+}
+
+impl UiState {
+    pub fn with_default_download_directory(default_download_directory: PathBuf) -> Self {
         Self {
             global_paused: false,
+            show_settings_view: false,
             download_dialog_open: false,
             download_share_code_input: String::new(),
             pending_share_path: None,
-            selected_download_directory: default_download_directory(),
+            selected_download_directory: default_download_directory,
+            settings_error: None,
             folder_dialog: None,
         }
     }
@@ -60,6 +72,7 @@ pub fn ui_system(
     mut ui_state: ResMut<UiState>,
     mut transfers: ResMut<TransferRegistry>,
     bridge: Res<AsyncBridge>,
+    mut settings_store: ResMut<SettingsStore>,
 ) {
     // Check if a pending folder dialog has completed.
     if let Some((purpose, rx)) = &ui_state.folder_dialog {
@@ -74,6 +87,14 @@ pub fn ui_system(
                     }
                     PendingDialog::DownloadDestination => {
                         ui_state.selected_download_directory = path;
+                    }
+                    PendingDialog::SettingsDefaultDownloadDirectory => {
+                        ui_state.selected_download_directory = path.clone();
+                        if let Err(err) = settings_store.set_default_download_dir(Some(path)) {
+                            ui_state.settings_error = Some(err.to_string());
+                        } else {
+                            ui_state.settings_error = None;
+                        }
                     }
                 }
             }
@@ -121,26 +142,39 @@ pub fn ui_system(
                     ui_state.global_paused = !ui_state.global_paused;
                 }
             }
+
+            ui.separator();
+            if ui
+                .selectable_label(ui_state.show_settings_view, "Settings")
+                .clicked()
+            {
+                ui_state.show_settings_view = !ui_state.show_settings_view;
+            }
         });
 
         ui.separator();
 
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            if transfers.transfers().is_empty() {
-                ui.label("No active transfers");
-            }
-
-            let mut pending_actions = Vec::new();
-            for transfer in transfers.transfers() {
-                if let Some(action) = render_transfer_row(ui, transfer, ui_state.global_paused) {
-                    pending_actions.push(action);
+        if ui_state.show_settings_view {
+            render_settings_view(ui, &mut ui_state, &mut settings_store, dialog_busy);
+        } else {
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                if transfers.transfers().is_empty() {
+                    ui.label("No active transfers");
                 }
-            }
 
-            for action in pending_actions {
-                apply_transfer_action(&mut transfers, &bridge, action);
-            }
-        });
+                let mut pending_actions = Vec::new();
+                for transfer in transfers.transfers() {
+                    if let Some(action) = render_transfer_row(ui, transfer, ui_state.global_paused)
+                    {
+                        pending_actions.push(action);
+                    }
+                }
+
+                for action in pending_actions {
+                    apply_transfer_action(&mut transfers, &bridge, action);
+                }
+            });
+        }
     });
 
     if ui_state.download_dialog_open {
@@ -153,8 +187,9 @@ pub fn render_transfer_ui(
     ui_state: ResMut<UiState>,
     transfers: ResMut<TransferRegistry>,
     bridge: Res<AsyncBridge>,
+    settings_store: ResMut<SettingsStore>,
 ) {
-    ui_system(egui_contexts, ui_state, transfers, bridge);
+    ui_system(egui_contexts, ui_state, transfers, bridge, settings_store);
 }
 
 fn render_download_dialog(
@@ -188,7 +223,7 @@ fn render_download_dialog(
                 ui.label("Destination:");
                 ui.label(ui_state.selected_download_directory.display().to_string());
                 if ui
-                    .add_enabled(!dialog_busy, egui::Button::new("Choose..."))
+                    .add_enabled(!dialog_busy, egui::Button::new("Download to..."))
                     .clicked()
                 {
                     let rx = open_folder_dialog();
@@ -215,6 +250,41 @@ fn render_download_dialog(
     }
 
     ui_state.download_dialog_open = is_open;
+}
+
+fn render_settings_view(
+    ui: &mut egui::Ui,
+    ui_state: &mut UiState,
+    settings_store: &mut SettingsStore,
+    dialog_busy: bool,
+) {
+    ui.heading("Settings");
+    ui.label("Default download directory");
+    ui.horizontal(|ui| {
+        ui.label(ui_state.selected_download_directory.display().to_string());
+        if ui
+            .add_enabled(!dialog_busy, egui::Button::new("Browse..."))
+            .clicked()
+        {
+            let rx = open_folder_dialog();
+            ui_state.folder_dialog = Some((PendingDialog::SettingsDefaultDownloadDirectory, rx));
+        }
+        if ui.button("Reset to default").clicked() {
+            ui_state.selected_download_directory = default_download_directory();
+            if let Err(err) = settings_store.set_default_download_dir(None) {
+                ui_state.settings_error = Some(err.to_string());
+            } else {
+                ui_state.settings_error = None;
+            }
+        }
+    });
+
+    if let Some(error) = &ui_state.settings_error {
+        ui.colored_label(
+            egui::Color32::RED,
+            format!("Failed to save settings: {error}"),
+        );
+    }
 }
 
 fn render_transfer_row(
@@ -302,10 +372,7 @@ fn render_transfer_row(
                 ui.horizontal(|ui| {
                     ui.label("Share code:");
                     let mut share_code_text = code.clone();
-                    ui.add(
-                        egui::TextEdit::singleline(&mut share_code_text)
-                            .desired_width(280.0),
-                    );
+                    ui.add(egui::TextEdit::singleline(&mut share_code_text).desired_width(280.0));
                     if ui.button("Copy").clicked() {
                         copy_text(ui.ctx(), code);
                     }
@@ -466,7 +533,7 @@ fn transfer_name_from_path(path: &std::path::Path, fallback: &str) -> String {
         .to_owned()
 }
 
-fn default_download_directory() -> PathBuf {
+pub fn default_download_directory() -> PathBuf {
     let base = directories::UserDirs::new()
         .and_then(|dirs| dirs.download_dir().map(ToOwned::to_owned))
         .unwrap_or_else(|| PathBuf::from("Downloads"));
@@ -628,6 +695,13 @@ mod tests {
     #[test]
     fn default_download_directory_appends_p2panda_folder() {
         assert!(default_download_directory().ends_with("p2panda"));
+    }
+
+    #[test]
+    fn ui_state_can_start_with_persisted_default_download_directory() {
+        let path = PathBuf::from("/tmp/p2panda-settings-downloads");
+        let state = UiState::with_default_download_directory(path.clone());
+        assert_eq!(state.selected_download_directory, path);
     }
 
     #[test]

@@ -21,6 +21,7 @@ use crate::persist::{
     resume_active_transfers, resume_share_record, DownloadRecord, RecoveredShare, ShareRecord,
     StateStore,
 };
+use crate::settings::load_settings;
 use crate::share::{share_directory, ShareSession};
 use crate::share_code::decode_share_code;
 
@@ -288,6 +289,7 @@ async fn run_network_loop<State, Worker>(
 struct RuntimeState {
     node: AppNode,
     inner: tokio::sync::Mutex<RuntimeInner>,
+    _settings: crate::settings::AppSettings,
     next_recovery_transfer_id: AtomicU64,
 }
 
@@ -310,6 +312,7 @@ struct ActiveDownload {
 
 impl RuntimeState {
     async fn new(data_dir: PathBuf, node_options: NodeOptions) -> Result<Self> {
+        let settings = load_settings(&data_dir)?;
         let node = AppNode::with_data_dir(data_dir, node_options).await?;
         let store = StateStore::load(&node.data_dir)?;
         Ok(Self {
@@ -325,6 +328,7 @@ impl RuntimeState {
                 globally_paused_downloads: HashMap::new(),
                 paused_downloads: HashMap::new(),
             }),
+            _settings: settings,
             next_recovery_transfer_id: AtomicU64::new(1_000_000),
         })
     }

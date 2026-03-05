@@ -8,8 +8,9 @@ use flume::TryRecvError;
 
 use crate::bridge::{AsyncBridge, NetworkEvent};
 use crate::node::NodeOptions;
+use crate::settings::SettingsStore;
 use crate::state::{Direction, FileProgress, Transfer, TransferRegistry, TransferStatus};
-use crate::ui::{ui_system, UiState};
+use crate::ui::{default_download_directory, ui_system, UiState};
 
 pub struct FileSharingPlugin;
 const RELAY_URL_ENV: &str = "P2PANDA_FILE_SHARING_RELAY_URL";
@@ -18,15 +19,26 @@ const INSECURE_SKIP_RELAY_CERT_VERIFY_ENV: &str =
 
 impl Plugin for FileSharingPlugin {
     fn build(&self, app: &mut App) {
+        let data_dir = resolve_data_dir().expect("failed to resolve file-sharing data directory");
+        let settings_store =
+            SettingsStore::load(&data_dir).expect("failed to load app settings from disk");
+        let ui_state = UiState::with_default_download_directory(
+            settings_store
+                .settings()
+                .default_download_dir
+                .clone()
+                .unwrap_or_else(default_download_directory),
+        );
         let bridge = AsyncBridge::spawn_with_data_dir(
             resolve_node_options().expect("failed to resolve node options"),
-            resolve_data_dir().expect("failed to resolve file-sharing data directory"),
+            data_dir,
         )
         .expect("failed to initialize async bridge");
 
         app.insert_resource(bridge);
         app.insert_resource(TransferRegistry::default());
-        app.insert_resource(UiState::default());
+        app.insert_resource(settings_store);
+        app.insert_resource(ui_state);
         app.add_systems(Update, (poll_network_events, ui_system).chain());
     }
 }
