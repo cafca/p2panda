@@ -384,3 +384,19 @@ What doesn't work:
   - no integration assertion yet proving that a paused seeding share stops gossip announcements end-to-end (the current re-announce cadence and existing tests do not directly validate this)
   - no integration assertion yet proving resume of a mid-flight paused download skips already-completed files in a pause/resume cycle
   - no direct two-share independence integration test yet (`pause A` leaves `B` unaffected)
+
+# 2026-03-05 15:18
+
+- picked Task 21 (`Per-share pause and resume`) as the highest-priority unfinished feature because it is the direct gate for Task 22 and was already partially implemented
+- added a focused integration suite at `file-sharing/tests/pause_resume.rs` covering:
+  - per-share independence + resumed-share downloadability
+  - paused download resume behavior with proof that already-completed file index 0 does not emit new `FileDownloadProgress` events after resume
+  - paused share persistence across bridge/app restart (recovered share emits `ShareReady` + `TransferPaused`)
+- kept implementation scope to Task 21 codepaths; no feature work was started for other tasks
+- ran `cargo fmt --package p2panda-file-sharing-gui`
+- ran `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-file-sharing-gui --tests --locked --offline`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui --test pause_resume --locked --offline -- --nocapture`
+- updated Task 21 `passes` field in `PRD.jsonl` and left it `false` for this run
+
+What doesn't work:
+- Task 21 acceptance is still incomplete: pausing a seeding share does not currently stop it from serving blobs to downloaders (I validated this during this run with a relay-backed integration attempt; a paused share remained downloadable). This blocks truthfully setting Task 21 to passing until share-level serving can be disabled while paused.
