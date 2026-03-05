@@ -665,3 +665,20 @@ What doesn't work:
 - full integration-test verification for Task 32 is blocked in this sandbox by linker OOM (`collect2: fatal error: ld terminated with signal 9 [Killed]`) while linking heavy Bevy integration test binaries (e.g. `recovery`)
 - Task 32 acceptance item `cargo audit reports no known vulnerabilities` is not met yet because audit currently reports at least one vulnerability (`RUSTSEC-2023-0071`) and additional unmaintained-crate warnings
 - workspace-wide `cargo outdated --workspace` output remains incomplete due the transitive version-resolution conflict above, so the acceptance item about no remaining patch/minor upgrades cannot be fully proven in this run
+
+# 2026-03-05 21:18
+
+- picked Task 35 (`Remove a share and purge all associated data`) as the highest-priority unfinished feature because it is a data-lifecycle and correctness requirement (stop serving + reclaim blob-store data) rather than a cosmetic enhancement
+- fixed `file-sharing/src/bridge.rs` share-removal internals to be reference-aware across all remaining active share states (`live_shares`, `recovered_shares`, `paused_shares`, `globally_paused_shares`) before purging
+- changed removal so hashes still referenced by other active shares are preserved (not blocked/purged), preventing cross-share regressions when different shares reuse the same file blob
+- implemented ordered purge plumbing for unshared hashes (files -> manifest -> collection) by removing tags for those hashes and syncing/waiting for store idleness so GC can finalize deletion
+- kept persistence cleanup in place (`state.json` ShareRecord removal) and network teardown behavior (share session/gossip task drop + stop serving removed hashes)
+- added integration test `removing_one_share_does_not_break_another_share_with_shared_file_blob` to verify that removing one share does not break downloads from a second active share that reuses a file blob
+- ran `cargo fmt --package p2panda-file-sharing-gui`
+- ran `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-file-sharing-gui --tests`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui --test transfer -- --nocapture`
+- confirmed transfer integration coverage passed, including `removed_share_is_not_downloadable` and the new shared-blob preservation test
+- updated Task 35 `passes` to `true` in `PRD.jsonl`
+
+What doesn't work:
+- no additional blocker for Task 35 in this run

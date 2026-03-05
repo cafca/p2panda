@@ -271,6 +271,72 @@ async fn removed_share_is_not_downloadable() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn removing_one_share_does_not_break_another_share_with_shared_file_blob() -> Result<()> {
+    timeout(Duration::from_secs(40), async {
+        let (_relay_map, relay_url, _relay_server) = run_relay_server().await?;
+        let bridge_data_dir = tempdir()?;
+        let node_b_dir = tempdir()?;
+        let source_dir = tempdir()?;
+        let output_b = tempdir()?;
+
+        let source_a = source_dir.path().join("source-a");
+        let source_b = source_dir.path().join("source-b");
+        fs::create_dir_all(&source_a)?;
+        fs::create_dir_all(&source_b)?;
+        let shared_payload = b"shared blob payload";
+        fs::write(source_a.join("shared.bin"), shared_payload)?;
+        fs::write(source_b.join("shared.bin"), shared_payload)?;
+        fs::write(source_a.join("unique-a.txt"), b"only in A")?;
+        fs::write(source_b.join("unique-b.txt"), b"only in B")?;
+
+        let bridge = AsyncBridge::spawn_with_data_dir(
+            NodeOptions {
+                relay_url: Some(relay_url.clone()),
+                insecure_skip_relay_cert_verify: true,
+            },
+            bridge_data_dir.path().to_path_buf(),
+        )?;
+
+        bridge.send(NetworkCommand::ShareDirectory {
+            transfer_id: 1,
+            directory_path: source_a.clone(),
+        })?;
+        let _share_code_a = wait_for_share_ready(&bridge, 1).await?;
+
+        bridge.send(NetworkCommand::ShareDirectory {
+            transfer_id: 2,
+            directory_path: source_b.clone(),
+        })?;
+        let share_code_b = wait_for_share_ready(&bridge, 2).await?;
+
+        bridge.send(NetworkCommand::RemoveShare { transfer_id: 1 })?;
+        wait_for_transfer_cancelled(&bridge, 1).await?;
+
+        let node_b = AppNode::with_data_dir(
+            node_b_dir.path(),
+            NodeOptions {
+                relay_url: Some(relay_url.clone()),
+                insecure_skip_relay_cert_verify: true,
+            },
+        )
+        .await?;
+        let session_b = timeout(
+            Duration::from_secs(10),
+            download_share_with_progress(&node_b, &share_code_b, output_b.path(), |_| {}),
+        )
+        .await
+        .context("timed out waiting for second share download after first share removal")??;
+        compare_tree_bytes(&source_b, &session_b.output_root)?;
+
+        Ok::<(), anyhow::Error>(())
+    })
+    .await
+    .context("shared-blob share-removal test timed out")??;
+
+    Ok(())
+}
+
 async fn wait_for_share_ready(bridge: &AsyncBridge, transfer_id: u64) -> Result<String> {
     let started = tokio::time::Instant::now();
     loop {

@@ -841,5 +841,5 @@
     "The share code no longer works for new download attempts after removal",
     "The original source directory is not modified"
   ],
-  "passes":  false
+  "passes":  true
 }

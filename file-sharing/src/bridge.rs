@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -11,6 +11,7 @@ use tokio::task::JoinHandle as TokioJoinHandle;
 use anyhow::{Context, Result};
 use bevy::prelude::Resource;
 use flume::{Receiver, Sender, TryRecvError};
+use futures_util::StreamExt;
 use iroh_blobs::hashseq::HashSeq;
 use p2panda_blobs::Hash as BlobHash;
 use tracing::warn;
@@ -1092,52 +1093,55 @@ struct RemovedShare {
 }
 
 async fn remove_share_and_purge(state: &RuntimeState, transfer_id: u64) -> Result<()> {
-    let removed = {
+    let (removed, remaining_live_share_hashes, remaining_share_records) = {
         let mut runtime = state.inner.lock().await;
         let removed = if let Some(session) = runtime.live_shares.remove(&transfer_id) {
             let hashes = share_hashes_for_session(&session);
-            state
-                .node
-                .blobs
-                .block_serving_hashes(hashes.iter().copied());
             runtime.store.remove_share_by_code(&session.share_code)?;
             Some(RemovedShare {
                 record: ShareRecord::from(&session),
                 hashes,
             })
         } else if let Some(recovered) = runtime.recovered_shares.remove(&transfer_id) {
-            let hashes = share_hashes_for_record(&state.node, &recovered.record).await;
-            state
-                .node
-                .blobs
-                .block_serving_hashes(hashes.iter().copied());
             runtime
                 .store
                 .remove_share_by_code(&recovered.record.share_code)?;
             Some(RemovedShare {
                 record: recovered.record,
-                hashes,
+                hashes: Vec::new(),
             })
         } else if let Some(record) = runtime.paused_shares.remove(&transfer_id) {
-            let hashes = share_hashes_for_record(&state.node, &record).await;
-            state
-                .node
-                .blobs
-                .block_serving_hashes(hashes.iter().copied());
             runtime.store.remove_share_by_code(&record.share_code)?;
-            Some(RemovedShare { record, hashes })
+            Some(RemovedShare {
+                record,
+                hashes: Vec::new(),
+            })
         } else if let Some(record) = runtime.globally_paused_shares.remove(&transfer_id) {
-            let hashes = share_hashes_for_record(&state.node, &record).await;
-            state
-                .node
-                .blobs
-                .block_serving_hashes(hashes.iter().copied());
             runtime.store.remove_share_by_code(&record.share_code)?;
-            Some(RemovedShare { record, hashes })
+            Some(RemovedShare {
+                record,
+                hashes: Vec::new(),
+            })
         } else {
             None
         };
-        removed
+        let remaining_live_share_hashes = runtime
+            .live_shares
+            .values()
+            .map(share_hashes_for_session)
+            .collect::<Vec<_>>();
+        let mut remaining_share_records = runtime
+            .recovered_shares
+            .values()
+            .map(|share| share.record.clone())
+            .collect::<Vec<_>>();
+        remaining_share_records.extend(runtime.paused_shares.values().cloned());
+        remaining_share_records.extend(runtime.globally_paused_shares.values().cloned());
+        (
+            removed,
+            remaining_live_share_hashes,
+            remaining_share_records,
+        )
     };
 
     let Some(mut removed) = removed else {
@@ -1148,17 +1152,68 @@ async fn remove_share_and_purge(state: &RuntimeState, transfer_id: u64) -> Resul
         removed.hashes = share_hashes_for_record(&state.node, &removed.record).await;
     }
 
-    if let Err(err) = state
-        .node
-        .blobs
-        .store()
-        .tags()
-        .delete(share_pin_name(removed.record.collection_hash()?))
-        .await
+    let mut hashes_referenced_elsewhere = HashSet::new();
+    for hashes in remaining_live_share_hashes {
+        hashes_referenced_elsewhere.extend(hashes);
+    }
+    for record in &remaining_share_records {
+        hashes_referenced_elsewhere.extend(share_hashes_for_record(&state.node, record).await);
+    }
+
+    let collection_hash = removed.record.collection_hash()?;
+    let (manifest_hash, file_hashes) = split_share_hashes(collection_hash, &removed.hashes);
+
+    let removable_files: Vec<BlobHash> = file_hashes
+        .into_iter()
+        .filter(|hash| !hashes_referenced_elsewhere.contains(hash))
+        .collect();
+    let removable_manifest =
+        manifest_hash.filter(|hash| !hashes_referenced_elsewhere.contains(hash));
+    let collection_removable = !hashes_referenced_elsewhere.contains(&collection_hash);
+
+    let mut removable_hashes = removable_files.clone();
+    if let Some(manifest_hash) = removable_manifest {
+        removable_hashes.push(manifest_hash);
+    }
+    if collection_removable {
+        removable_hashes.push(collection_hash);
+    }
+
+    if !removable_hashes.is_empty() {
+        state
+            .node
+            .blobs
+            .block_serving_hashes(removable_hashes.iter().copied());
+    }
+
+    if collection_removable {
+        if let Err(err) = state
+            .node
+            .blobs
+            .store()
+            .tags()
+            .delete(share_pin_name(collection_hash))
+            .await
+        {
+            warn!(
+                "failed to delete share pin for {}: {err}",
+                removed.record.collection_hash
+            );
+        }
+    }
+
+    if let Err(err) = delete_tags_for_hashes_in_order(
+        &state.node,
+        &removable_files,
+        removable_manifest,
+        collection_removable,
+        collection_hash,
+    )
+    .await
     {
         warn!(
-            "failed to delete share pin for {}: {err}",
-            removed.record.collection_hash
+            "failed to purge tags for removed share {}: {err}",
+            transfer_id
         );
     }
 
@@ -1168,6 +1223,79 @@ async fn remove_share_and_purge(state: &RuntimeState, transfer_id: u64) -> Resul
     }
     if let Err(err) = state.node.blobs.store().wait_idle().await {
         warn!("failed waiting for blob store idleness after share removal: {err}");
+    }
+
+    Ok(())
+}
+
+fn split_share_hashes(
+    collection_hash: BlobHash,
+    hashes: &[BlobHash],
+) -> (Option<BlobHash>, Vec<BlobHash>) {
+    let mut deduped = Vec::new();
+    let mut seen = HashSet::new();
+    for hash in hashes {
+        if seen.insert(*hash) {
+            deduped.push(*hash);
+        }
+    }
+
+    if deduped.first().copied() == Some(collection_hash) {
+        let manifest_hash = deduped.get(1).copied();
+        let files = deduped.into_iter().skip(2).collect();
+        return (manifest_hash, files);
+    }
+
+    let mut iter = deduped.into_iter().filter(|hash| *hash != collection_hash);
+    let manifest_hash = iter.next();
+    (manifest_hash, iter.collect())
+}
+
+async fn delete_tags_for_hashes_in_order(
+    node: &AppNode,
+    file_hashes: &[BlobHash],
+    manifest_hash: Option<BlobHash>,
+    collection_removable: bool,
+    collection_hash: BlobHash,
+) -> Result<()> {
+    let mut ordered_hashes = file_hashes.to_vec();
+    if let Some(manifest_hash) = manifest_hash {
+        ordered_hashes.push(manifest_hash);
+    }
+    if collection_removable {
+        ordered_hashes.push(collection_hash);
+    }
+    if ordered_hashes.is_empty() {
+        return Ok(());
+    }
+
+    let wanted_hashes: HashSet<BlobHash> = ordered_hashes.iter().copied().collect();
+    let mut tags_by_hash: HashMap<BlobHash, Vec<_>> = HashMap::new();
+    let mut tags = node
+        .blobs
+        .store()
+        .tags()
+        .list()
+        .await
+        .context("failed to list blob tags during share removal")?;
+    while let Some(tag) = tags.next().await {
+        let tag = tag.context("failed to read blob tag during share removal")?;
+        if wanted_hashes.contains(&tag.hash) {
+            tags_by_hash.entry(tag.hash).or_default().push(tag.name);
+        }
+    }
+
+    for hash in ordered_hashes {
+        if let Some(names) = tags_by_hash.remove(&hash) {
+            for name in names {
+                if let Err(err) = node.blobs.store().tags().delete(name).await {
+                    warn!(
+                        "failed to delete blob tag for {} during share removal: {err}",
+                        hash
+                    );
+                }
+            }
+        }
     }
 
     Ok(())
