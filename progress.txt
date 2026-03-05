@@ -842,3 +842,22 @@ What doesn't work:
 
 What doesn't work:
 - no additional blocker for Task 24 in this run
+
+# 2026-03-06 00:00
+
+- picked Task 32 (`Dependency audit and Bevy 0.16 upgrade`) as the highest-priority unfinished feature because dependency alignment and upgrade verification is a prerequisite for stable release packaging (Task 31)
+- verified the upgrade state in `file-sharing/Cargo.toml`: `bevy = 0.16` and `bevy_egui = 0.34` are already in place and the old `bevy_egui 0.33` compatibility pin is no longer present
+- ran dependency/security feedback loops:
+  - `cargo audit` (workspace): completed with no hard vulnerability failures; reported only unmaintained transitive warnings (`atomic-polyfill`, `paste`, `proc-macro-error`)
+  - `cargo outdated --workspace` and scoped variants (`-R`, `--exclude`, root-targeted) all failed with the same resolver conflict involving `curve25519-dalek` pre-release versions while traversing `p2panda-encryption`/`fuzz`
+- ran type/test feedback loops for the target app crate:
+  - `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-file-sharing-gui --all-targets`
+  - `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui --lib --tests -- --nocapture`
+  - all file-sharing unit + integration tests passed in this run
+- ran manual smoke loop:
+  - `./scripts/verify-in-sandbox.sh -- bash -lc 'timeout 8 cargo run -q -p p2panda-file-sharing-gui >/tmp/p2panda-run.log 2>&1; ec=$?; cat /tmp/p2panda-run.log; exit $ec'`
+  - process stayed alive for the timeout window (`124`) with no startup/runtime errors printed
+
+What doesn't work:
+- Task 32 remains blocked for full acceptance in this run because workspace-wide `cargo outdated` cannot complete due a dependency-resolution conflict (`curve25519-dalek` pre-release mismatch via `p2panda-encryption` + `fuzz` + `iroh` graph), so I cannot truthfully verify the criterion "No other dependency has a known-available patch or minor upgrade left unapplied" across the entire workspace.
+- left Task 32 `passes` as `false`.
