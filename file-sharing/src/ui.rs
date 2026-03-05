@@ -15,6 +15,7 @@ enum PendingDialog {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TransferAction {
+    Cancel { transfer_id: u64 },
     Pause { transfer_id: u64 },
     Resume { transfer_id: u64 },
 }
@@ -244,7 +245,7 @@ fn render_transfer_row(
                         });
                     }
                 }
-                TransferStatus::Error(_) => {
+                TransferStatus::Error(_) | TransferStatus::Cancelled => {
                     ui.add_enabled(false, egui::Button::new("Pause"));
                 }
                 _ => {
@@ -255,13 +256,22 @@ fn render_transfer_row(
                     }
                 }
             }
+
+            if can_cancel_transfer(transfer) && ui.button("Cancel").clicked() {
+                action = Some(TransferAction::Cancel {
+                    transfer_id: transfer.id,
+                });
+            }
         });
 
         match &transfer.status {
             TransferStatus::Pending => {
                 ui.label(status_label(transfer, globally_paused));
             }
-            TransferStatus::Active | TransferStatus::Paused | TransferStatus::Completed => {
+            TransferStatus::Active
+            | TransferStatus::Paused
+            | TransferStatus::Completed
+            | TransferStatus::Cancelled => {
                 ui.label(status_label(transfer, globally_paused));
                 if should_render_progress_bar(transfer, globally_paused) {
                     let (fraction, downloaded_bytes) = match transfer.direction {
@@ -318,11 +328,13 @@ fn status_label(transfer: &Transfer, globally_paused: bool) -> &'static str {
         (Direction::Upload, TransferStatus::Pending) => "Importing...",
         (Direction::Upload, TransferStatus::Active | TransferStatus::Completed) => "Seeding",
         (Direction::Upload, TransferStatus::Paused) => "Paused",
+        (Direction::Upload, TransferStatus::Cancelled) => "Cancelled",
         (Direction::Upload, TransferStatus::Error(_)) => "Failed",
         (Direction::Download, TransferStatus::Pending) => "Waiting...",
         (Direction::Download, TransferStatus::Active) => "Downloading",
         (Direction::Download, TransferStatus::Paused) => "Paused",
         (Direction::Download, TransferStatus::Completed) => "Done",
+        (Direction::Download, TransferStatus::Cancelled) => "Cancelled",
         (Direction::Download, TransferStatus::Error(_)) => "Failed",
     }
 }
@@ -346,7 +358,7 @@ fn should_render_progress_bar(transfer: &Transfer, globally_paused: bool) -> boo
 
 fn can_pause_transfer(transfer: &Transfer) -> bool {
     match (&transfer.direction, &transfer.status) {
-        (_, TransferStatus::Paused | TransferStatus::Error(_)) => false,
+        (_, TransferStatus::Paused | TransferStatus::Cancelled | TransferStatus::Error(_)) => false,
         (
             Direction::Upload,
             TransferStatus::Pending | TransferStatus::Active | TransferStatus::Completed,
@@ -356,12 +368,22 @@ fn can_pause_transfer(transfer: &Transfer) -> bool {
     }
 }
 
+fn can_cancel_transfer(transfer: &Transfer) -> bool {
+    matches!(
+        transfer.status,
+        TransferStatus::Pending | TransferStatus::Active
+    )
+}
+
 fn apply_transfer_action(
     transfers: &mut TransferRegistry,
     bridge: &AsyncBridge,
     action: TransferAction,
 ) {
     let (transfer_id, command) = match action {
+        TransferAction::Cancel { transfer_id } => {
+            (transfer_id, NetworkCommand::CancelTransfer { transfer_id })
+        }
         TransferAction::Pause { transfer_id } => {
             (transfer_id, NetworkCommand::PauseTransfer { transfer_id })
         }
@@ -379,6 +401,7 @@ fn apply_transfer_action(
 
     if let Some(transfer) = transfers.get_mut(transfer_id) {
         transfer.status = match action {
+            TransferAction::Cancel { .. } => TransferStatus::Cancelled,
             TransferAction::Pause { .. } => TransferStatus::Paused,
             TransferAction::Resume { .. } => TransferStatus::Active,
         };
@@ -594,6 +617,8 @@ mod tests {
         assert_eq!(status_label(&upload, false), "Seeding");
         upload.status = TransferStatus::Paused;
         assert_eq!(status_label(&upload, false), "Paused");
+        upload.status = TransferStatus::Cancelled;
+        assert_eq!(status_label(&upload, false), "Cancelled");
 
         let mut download = Transfer::new(2, "download", Direction::Download);
         download.status = TransferStatus::Active;
@@ -602,6 +627,8 @@ mod tests {
         assert_eq!(status_label(&download, false), "Paused");
         download.status = TransferStatus::Completed;
         assert_eq!(status_label(&download, false), "Done");
+        download.status = TransferStatus::Cancelled;
+        assert_eq!(status_label(&download, false), "Cancelled");
         download.status = TransferStatus::Error("boom".into());
         assert_eq!(status_label(&download, false), "Failed");
     }
@@ -623,6 +650,8 @@ mod tests {
         assert!(should_render_progress_bar(&download, false));
         download.status = TransferStatus::Completed;
         assert!(!should_render_progress_bar(&download, false));
+        download.status = TransferStatus::Cancelled;
+        assert!(!should_render_progress_bar(&download, false));
     }
 
     #[test]
@@ -632,5 +661,38 @@ mod tests {
         assert_eq!(status_label(&transfer, false), "Downloading");
         assert_eq!(status_label(&transfer, true), "Paused");
         assert!(should_render_progress_bar(&transfer, true));
+    }
+
+    #[test]
+    fn cancel_and_pause_button_rules_match_transfer_status() {
+        let mut pending = Transfer::new(1, "pending", Direction::Download);
+        pending.status = TransferStatus::Pending;
+        assert!(can_cancel_transfer(&pending));
+        assert!(can_pause_transfer(&pending));
+
+        let mut active = Transfer::new(2, "active", Direction::Download);
+        active.status = TransferStatus::Active;
+        assert!(can_cancel_transfer(&active));
+        assert!(can_pause_transfer(&active));
+
+        let mut completed = Transfer::new(3, "done", Direction::Download);
+        completed.status = TransferStatus::Completed;
+        assert!(!can_cancel_transfer(&completed));
+        assert!(!can_pause_transfer(&completed));
+
+        let mut paused = Transfer::new(4, "paused", Direction::Download);
+        paused.status = TransferStatus::Paused;
+        assert!(!can_cancel_transfer(&paused));
+        assert!(!can_pause_transfer(&paused));
+
+        let mut cancelled = Transfer::new(5, "cancelled", Direction::Download);
+        cancelled.status = TransferStatus::Cancelled;
+        assert!(!can_cancel_transfer(&cancelled));
+        assert!(!can_pause_transfer(&cancelled));
+
+        let mut errored = Transfer::new(6, "errored", Direction::Download);
+        errored.status = TransferStatus::Error("boom".into());
+        assert!(!can_cancel_transfer(&errored));
+        assert!(!can_pause_transfer(&errored));
     }
 }

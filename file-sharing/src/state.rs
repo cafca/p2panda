@@ -48,6 +48,7 @@ pub enum TransferStatus {
     Pending,
     Active,
     Paused,
+    Cancelled,
     Completed,
     Error(String),
 }

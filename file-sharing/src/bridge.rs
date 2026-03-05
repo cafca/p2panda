@@ -93,6 +93,9 @@ pub enum NetworkEvent {
     TransferCompleted {
         transfer_id: u64,
     },
+    TransferCancelled {
+        transfer_id: u64,
+    },
     Error {
         transfer_id: u64,
         error_message: String,
@@ -235,20 +238,50 @@ async fn run_network_loop<State, Worker>(
         + Sync
         + 'static,
 {
+    let active_transfer_commands: Arc<
+        tokio::sync::Mutex<HashMap<u64, tokio::task::JoinHandle<()>>>,
+    > = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+
     while let Ok(command) = command_rx.recv_async().await {
+        if let NetworkCommand::CancelTransfer { transfer_id } = &command {
+            if let Some(handle) = active_transfer_commands.lock().await.remove(transfer_id) {
+                handle.abort();
+            }
+        }
+
         let state = Arc::clone(&state);
         let event_tx = event_tx.clone();
         let worker = Arc::clone(&worker);
+        let active_transfer_commands = Arc::clone(&active_transfer_commands);
+        let active_transfer_commands_for_task = Arc::clone(&active_transfer_commands);
+        let transfer_id = command.transfer_id();
+        let track_command = matches!(
+            command,
+            NetworkCommand::ShareDirectory { .. } | NetworkCommand::StartDownload { .. }
+        );
 
-        tokio::spawn(async move {
-            let transfer_id = command.transfer_id();
+        let handle = tokio::spawn(async move {
             if let Err(err) = worker(state, command, event_tx.clone()).await {
                 let _ = event_tx.send(NetworkEvent::Error {
                     transfer_id,
                     error_message: err.to_string(),
                 });
             }
+
+            if track_command {
+                active_transfer_commands_for_task
+                    .lock()
+                    .await
+                    .remove(&transfer_id);
+            }
         });
+
+        if track_command {
+            active_transfer_commands
+                .lock()
+                .await
+                .insert(transfer_id, handle);
+        }
     }
 }
 
@@ -350,54 +383,38 @@ async fn default_handle_command(
 
             if let Some(session) = runtime.live_shares.remove(&transfer_id) {
                 runtime.store.remove_share_by_code(&session.share_code)?;
-                return Ok(());
-            }
-
-            if let Some(session) = runtime.recovered_shares.remove(&transfer_id) {
+            } else if let Some(session) = runtime.recovered_shares.remove(&transfer_id) {
                 runtime
                     .store
                     .remove_share_by_code(&session.record.share_code)?;
-                return Ok(());
-            }
-
-            if let Some(active) = runtime.active_downloads.remove(&transfer_id) {
+            } else if let Some(active) = runtime.active_downloads.remove(&transfer_id) {
                 active.handle.abort();
                 runtime.store.remove_download_by_code(
                     &active.record.share_code,
                     &active.record.output_dir,
                 )?;
-                return Ok(());
-            }
-
-            if let Some(record) = runtime.paused_shares.remove(&transfer_id) {
+            } else if let Some(record) = runtime.paused_shares.remove(&transfer_id) {
                 let hashes = share_hashes_for_record(&state.node, &record).await;
                 state.node.blobs.unblock_serving_hashes(hashes);
                 runtime.store.remove_share_by_code(&record.share_code)?;
-                return Ok(());
-            }
-
-            if let Some(record) = runtime.globally_paused_shares.remove(&transfer_id) {
+            } else if let Some(record) = runtime.globally_paused_shares.remove(&transfer_id) {
                 let hashes = share_hashes_for_record(&state.node, &record).await;
                 state.node.blobs.unblock_serving_hashes(hashes);
                 runtime.store.remove_share_by_code(&record.share_code)?;
-                return Ok(());
-            }
-
-            if let Some(record) = runtime.paused_downloads.remove(&transfer_id) {
+            } else if let Some(record) = runtime.paused_downloads.remove(&transfer_id) {
                 runtime
                     .store
                     .remove_download_by_code(&record.share_code, &record.output_dir)?;
-                return Ok(());
-            }
-
-            if let Some(record) = runtime.globally_paused_downloads.remove(&transfer_id) {
+            } else if let Some(record) = runtime.globally_paused_downloads.remove(&transfer_id) {
                 runtime
                     .store
                     .remove_download_by_code(&record.share_code, &record.output_dir)?;
-                return Ok(());
             }
-
-            Err(anyhow::anyhow!("unknown transfer id {transfer_id}"))
+            drop(runtime);
+            event_tx
+                .send(NetworkEvent::TransferCancelled { transfer_id })
+                .context("failed to send TransferCancelled event")?;
+            Ok(())
         }
         NetworkCommand::PauseTransfer { transfer_id } => {
             pause_transfer(state, transfer_id, event_tx).await
@@ -1187,5 +1204,94 @@ mod tests {
 
         assert_eq!(first, NetworkEvent::TransferCompleted { transfer_id: 2 });
         assert_eq!(second, NetworkEvent::TransferCompleted { transfer_id: 1 });
+    }
+
+    #[test]
+    fn cancel_aborts_in_flight_transfer_command() {
+        let bridge = spawn_test_bridge(|_, command, events| {
+            Box::pin(async move {
+                match command {
+                    NetworkCommand::ShareDirectory { transfer_id, .. } => {
+                        tokio::time::sleep(Duration::from_millis(400)).await;
+                        events
+                            .send_async(NetworkEvent::TransferCompleted { transfer_id })
+                            .await?;
+                    }
+                    NetworkCommand::CancelTransfer { transfer_id } => {
+                        events
+                            .send_async(NetworkEvent::TransferCancelled { transfer_id })
+                            .await?;
+                    }
+                    _ => {}
+                }
+                Ok(())
+            })
+        });
+
+        bridge
+            .send(NetworkCommand::ShareDirectory {
+                transfer_id: 42,
+                directory_path: PathBuf::from("/tmp/slow-share"),
+            })
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(25));
+        bridge
+            .send(NetworkCommand::CancelTransfer { transfer_id: 42 })
+            .unwrap();
+
+        let first = wait_for_event(&bridge);
+        assert_eq!(first, NetworkEvent::TransferCancelled { transfer_id: 42 });
+
+        std::thread::sleep(Duration::from_millis(500));
+        let remaining = bridge.drain_events();
+        assert!(
+            remaining.is_empty(),
+            "unexpected extra events: {remaining:?}"
+        );
+    }
+
+    #[test]
+    fn canceling_one_transfer_does_not_stop_another() {
+        let bridge = spawn_test_bridge(|_, command, events| {
+            Box::pin(async move {
+                match command {
+                    NetworkCommand::ShareDirectory { transfer_id, .. } => {
+                        tokio::time::sleep(Duration::from_millis(250)).await;
+                        events
+                            .send_async(NetworkEvent::TransferCompleted { transfer_id })
+                            .await?;
+                    }
+                    NetworkCommand::CancelTransfer { transfer_id } => {
+                        events
+                            .send_async(NetworkEvent::TransferCancelled { transfer_id })
+                            .await?;
+                    }
+                    _ => {}
+                }
+                Ok(())
+            })
+        });
+
+        bridge
+            .send(NetworkCommand::ShareDirectory {
+                transfer_id: 10,
+                directory_path: PathBuf::from("/tmp/one"),
+            })
+            .unwrap();
+        bridge
+            .send(NetworkCommand::ShareDirectory {
+                transfer_id: 11,
+                directory_path: PathBuf::from("/tmp/two"),
+            })
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        bridge
+            .send(NetworkCommand::CancelTransfer { transfer_id: 10 })
+            .unwrap();
+
+        let first = wait_for_event(&bridge);
+        let second = wait_for_event(&bridge);
+        assert_eq!(first, NetworkEvent::TransferCancelled { transfer_id: 10 });
+        assert_eq!(second, NetworkEvent::TransferCompleted { transfer_id: 11 });
     }
 }

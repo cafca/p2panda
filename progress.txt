@@ -451,3 +451,34 @@ What doesn't work:
 
 What doesn't work:
 - no additional blocker for Task 22 in this run
+
+# 2026-03-05 14:48
+
+- picked Task 26 (`Cancel in-progress transfers`) as the highest-priority unfinished feature because it is a core transfer-control capability and the direct prerequisite for Task 27 (`Remove completed and failed transfers from the list`)
+- implemented first-class cancellation status plumbing across runtime and UI:
+  - added `TransferStatus::Cancelled` in `file-sharing/src/state.rs`
+  - added `NetworkEvent::TransferCancelled { transfer_id }` in `file-sharing/src/bridge.rs`
+  - updated `file-sharing/src/plugin.rs` event handling to apply cancelled state to matching transfer rows
+- implemented cancel behavior in the bridge runtime:
+  - `NetworkCommand::CancelTransfer` now always emits `TransferCancelled` after cleanup
+  - active share/download cleanup paths still stop runtime activity and remove active persistence records without deleting downloaded/output file data
+  - added in-flight command abort tracking in `run_network_loop` so cancelling a transfer can abort long-running `ShareDirectory`/`StartDownload` command tasks promptly
+- implemented per-row UI cancel controls in `file-sharing/src/ui.rs`:
+  - added `TransferAction::Cancel` mapped to `NetworkCommand::CancelTransfer`
+  - added a `Cancel` button for `Pending` and `Active` transfers
+  - cancel button is hidden for `Completed`, `Cancelled`, `Paused`, and `Error` rows
+  - added cancelled status labels for upload/download rows
+- added/updated focused tests:
+  - `bridge::tests::cancel_aborts_in_flight_transfer_command`
+  - `bridge::tests::canceling_one_transfer_does_not_stop_another`
+  - UI tests for cancel-button visibility rules and cancelled status labeling
+  - plugin event-coverage test now includes `TransferCancelled`
+- ran `cargo fmt --package p2panda-file-sharing-gui`
+- ran `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-file-sharing-gui --lib`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui bridge --lib -- --nocapture`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui ui --lib -- --nocapture`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui plugin --lib -- --nocapture`
+- confirmed Task 26 acceptance criteria in this run and updated Task 26 `passes` to `true` in `PRD.jsonl`
+
+What doesn't work:
+- no additional blocker for Task 26 in this run

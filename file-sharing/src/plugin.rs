@@ -150,6 +150,12 @@ fn apply_network_event(
             transfer.status = TransferStatus::Completed;
             false
         }
+        NetworkEvent::TransferCancelled { transfer_id } => {
+            if let Some(transfer) = transfers.get_mut(transfer_id) {
+                transfer.status = TransferStatus::Cancelled;
+            }
+            false
+        }
         NetworkEvent::TransferPaused { transfer_id } => {
             if let Some(transfer) = transfers.get_mut(transfer_id) {
                 transfer.status = TransferStatus::Paused;
@@ -384,6 +390,9 @@ mod tests {
                     .await?;
                 events
                     .send_async(NetworkEvent::TransferCompleted { transfer_id })
+                    .await?;
+                events
+                    .send_async(NetworkEvent::TransferCancelled { transfer_id })
                     .await?;
                 events
                     .send_async(NetworkEvent::Error {

@@ -835,7 +835,7 @@
     "Cancelling one transfer does not affect other active transfers",
     "The cancel button is not shown for already-completed, cancelled, or errored transfers"
   ],
-  "passes": false
+  "passes": true
 }
 {
   "id": 27,
