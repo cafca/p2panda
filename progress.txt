@@ -417,3 +417,37 @@ What doesn't work:
 
 What doesn't work:
 - no additional blocker for Task 21 in this run
+# 2026-03-05 17:02
+
+- picked Task 22 (`App-wide pause and resume`) as the highest-priority unfinished feature because it directly follows the now-passing Task 21 and is the next control-plane dependency before the remaining UX feature set
+- implemented global pause state across runtime, persistence, and UI:
+  - added `PersistedState.global_paused` (serde default `false`) and `StateStore::set_global_paused(...)`
+  - added `NetworkCommand::PauseAll` / `NetworkCommand::ResumeAll` and `NetworkEvent::GlobalPauseChanged { paused }`
+  - extended bridge runtime state to track globally-paused-but-not-individually-paused shares/downloads separately from per-transfer paused state
+- implemented pause-all/resume-all mechanics in `file-sharing/src/bridge.rs`:
+  - `PauseAll` now stops active share/download activity, blocks serving for share hashes, persists `global_paused=true`, and emits pause + global status events
+  - `ResumeAll` now resumes only transfers that are not individually paused, persists `global_paused=false`, and preserves per-transfer paused flags
+  - fixed a global-pause edge case where resuming a paused share while globally paused could unblock serving early; hashes now stay blocked until `ResumeAll`
+- updated startup recovery so persisted `global_paused=true` restores paused transfer presentation and avoids resuming network activity on restart
+- updated UI and event plumbing:
+  - added `UiState.global_paused`
+  - added toolbar toggle button (`Pause All` / `Resume All`)
+  - transfer rows now display effective paused status while global pause is active without mutating individual pause flags
+  - plugin event application now consumes `GlobalPauseChanged` and synchronizes UI global pause state
+- added/updated verification coverage:
+  - unit test for global pause status/progress display behavior in `ui.rs`
+  - integration tests in `file-sharing/tests/pause_resume.rs` for:
+    - global pause scenario where share A active + share B individually paused, then `PauseAll`/`ResumeAll` keeps B paused
+    - toggling per-share pause state while globally paused and applying it after `ResumeAll`
+    - persisted global pause state across bridge restart
+- ran `cargo fmt --package p2panda-file-sharing-gui`
+- ran `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-file-sharing-gui --tests --locked --offline`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui bridge --lib --locked --offline -- --nocapture`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui plugin --lib --locked --offline -- --nocapture`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui ui --lib --locked --offline -- --nocapture`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui persist --lib --locked --offline -- --nocapture`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui --test pause_resume --locked --offline -- --nocapture`
+- confirmed Task 22 acceptance criteria in this run and updated Task 22 `passes` to `true` in `PRD.jsonl`
+
+What doesn't work:
+- no additional blocker for Task 22 in this run

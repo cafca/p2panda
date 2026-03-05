@@ -35,13 +35,17 @@ pub(crate) fn resolve_data_dir() -> Result<std::path::PathBuf> {
         .with_context(|| format!("failed to resolve app data directory for {APP_NAME}"))
 }
 
-pub fn poll_network_events(bridge: Res<AsyncBridge>, mut transfers: ResMut<TransferRegistry>) {
+pub fn poll_network_events(
+    bridge: Res<AsyncBridge>,
+    mut transfers: ResMut<TransferRegistry>,
+    mut ui_state: ResMut<UiState>,
+) {
     let mut saw_progress = false;
 
     loop {
         match bridge.try_recv() {
             Ok(Some(event)) => {
-                saw_progress |= apply_network_event(&mut transfers, event);
+                saw_progress |= apply_network_event(&mut transfers, &mut ui_state, event);
             }
             Ok(None) | Err(TryRecvError::Disconnected) => break,
             Err(TryRecvError::Empty) => break,
@@ -57,7 +61,11 @@ pub fn poll_network_events(bridge: Res<AsyncBridge>, mut transfers: ResMut<Trans
     }
 }
 
-fn apply_network_event(transfers: &mut TransferRegistry, event: NetworkEvent) -> bool {
+fn apply_network_event(
+    transfers: &mut TransferRegistry,
+    ui_state: &mut UiState,
+    event: NetworkEvent,
+) -> bool {
     match event {
         NetworkEvent::ShareReady {
             transfer_id,
@@ -162,6 +170,10 @@ fn apply_network_event(transfers: &mut TransferRegistry, event: NetworkEvent) ->
                 Transfer::new(transfer_id, "Transfer", Direction::Download)
             });
             transfer.status = TransferStatus::Error(error_message);
+            false
+        }
+        NetworkEvent::GlobalPauseChanged { paused } => {
+            ui_state.global_paused = paused;
             false
         }
     }
@@ -274,6 +286,7 @@ mod tests {
         let mut app = App::new();
         app.insert_resource(bridge);
         app.insert_resource(registry);
+        app.insert_resource(UiState::default());
 
         std::thread::sleep(Duration::from_millis(50));
         run_poll(&mut app);
@@ -326,6 +339,7 @@ mod tests {
         let mut app = App::new();
         app.insert_resource(bridge);
         app.insert_resource(registry);
+        app.insert_resource(UiState::default());
 
         std::thread::sleep(Duration::from_millis(50));
         run_poll(&mut app);
@@ -396,6 +410,7 @@ mod tests {
         let mut app = App::new();
         app.insert_resource(bridge);
         app.insert_resource(registry);
+        app.insert_resource(UiState::default());
 
         std::thread::sleep(Duration::from_millis(50));
         run_poll(&mut app);
@@ -442,6 +457,7 @@ mod tests {
         let mut app = App::new();
         app.insert_resource(bridge);
         app.insert_resource(TransferRegistry::default());
+        app.insert_resource(UiState::default());
 
         std::thread::sleep(Duration::from_millis(50));
         run_poll(&mut app);

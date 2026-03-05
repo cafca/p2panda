@@ -21,6 +21,8 @@ pub struct PersistedState {
     pub active_downloads: Vec<DownloadRecord>,
     #[serde(default)]
     pub active_shares: Vec<ShareRecord>,
+    #[serde(default)]
+    pub global_paused: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -150,6 +152,14 @@ impl StateStore {
         write_atomic(&self.path, &self.state)
     }
 
+    pub fn set_global_paused(&mut self, paused: bool) -> Result<()> {
+        if self.state.global_paused != paused {
+            self.state.global_paused = paused;
+            self.save()?;
+        }
+        Ok(())
+    }
+
     pub fn add_share(&mut self, record: ShareRecord) -> Result<()> {
         if let Some(existing) = self
             .state
@@ -217,6 +227,10 @@ pub fn save_state(data_dir: impl AsRef<Path>, state: &PersistedState) -> Result<
 }
 
 pub async fn resume_shares(node: &AppNode, state: &PersistedState) -> Result<Vec<RecoveredShare>> {
+    if state.global_paused {
+        return Ok(Vec::new());
+    }
+
     let mut recovered = Vec::with_capacity(state.active_shares.len());
 
     for record in &state.active_shares {
@@ -233,6 +247,10 @@ pub async fn resume_downloads(
     node: &AppNode,
     state: &PersistedState,
 ) -> Result<Vec<DownloadSession>> {
+    if state.global_paused {
+        return Ok(Vec::new());
+    }
+
     let mut resumed = Vec::with_capacity(state.active_downloads.len());
 
     for record in &state.active_downloads {
@@ -387,6 +405,7 @@ mod tests {
         assert_eq!(loaded.active_downloads.len(), 1);
         assert!(!loaded.active_shares[0].paused);
         assert!(!loaded.active_downloads[0].paused);
+        assert!(!loaded.global_paused);
 
         Ok(())
     }
@@ -416,6 +435,7 @@ mod tests {
         assert_eq!(share.file_count, 0);
         assert_eq!(share.total_bytes, 0);
         assert!(!share.paused);
+        assert!(!state.global_paused);
 
         Ok(())
     }

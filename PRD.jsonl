@@ -678,7 +678,7 @@
     "Global pause state persists across app restart",
     "Per-share pause buttons work while global pause is active (toggling the per-share flag)"
   ],
-  "passes": false
+  "passes": true
 }
 
 {

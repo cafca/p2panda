@@ -73,6 +73,102 @@ async fn pausing_one_share_does_not_affect_another_and_resumed_share_downloads()
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn global_pause_respects_individual_flags_and_toggle_during_pause() -> Result<()> {
+    let (_relay_map, relay_url, _relay_server) = run_relay_server().await?;
+    let opts = NodeOptions {
+        relay_url: Some(relay_url.clone()),
+        insecure_skip_relay_cert_verify: true,
+    };
+
+    let bridge_dir = tempdir()?;
+    let bridge = AsyncBridge::spawn_with_data_dir(opts.clone(), bridge_dir.path().to_path_buf())?;
+    let downloader_dir = tempdir()?;
+    let downloader = AppNode::with_data_dir(downloader_dir.path(), opts).await?;
+    let output_a = tempdir()?;
+    let output_b = tempdir()?;
+
+    let source_one = tempdir()?;
+    let source_two = tempdir()?;
+    let share_one_dir = source_one.path().join("global-alpha");
+    let share_two_dir = source_two.path().join("global-beta");
+    fs::create_dir_all(&share_one_dir)?;
+    fs::create_dir_all(&share_two_dir)?;
+    fs::write(share_one_dir.join("a.txt"), b"alpha")?;
+    fs::write(share_two_dir.join("b.txt"), b"beta")?;
+
+    let share_one = start_share_and_wait(&bridge, 101, &share_one_dir).await?;
+    let share_two = start_share_and_wait(&bridge, 102, &share_two_dir).await?;
+
+    bridge.send(NetworkCommand::PauseTransfer { transfer_id: 102 })?;
+    expect_event(&bridge, Duration::from_secs(5), |event| {
+        matches!(event, NetworkEvent::TransferPaused { transfer_id: 102 })
+    })
+    .await?;
+
+    bridge.send(NetworkCommand::PauseAll)?;
+    expect_event(&bridge, Duration::from_secs(5), |event| {
+        matches!(event, NetworkEvent::GlobalPauseChanged { paused: true })
+    })
+    .await?;
+
+    // Phase 1: without changing per-share flags during global pause, share #102 stays paused.
+    bridge.send(NetworkCommand::ResumeAll)?;
+    expect_event(&bridge, Duration::from_secs(5), |event| {
+        matches!(event, NetworkEvent::GlobalPauseChanged { paused: false })
+    })
+    .await?;
+
+    let share_one_download =
+        download_share_with_progress(&downloader, &share_one, output_a.path(), |_| {}).await;
+    assert!(
+        share_one_download.is_ok(),
+        "active share should resume after ResumeAll"
+    );
+
+    let share_two_download =
+        download_share_with_progress(&downloader, &share_two, output_b.path(), |_| {}).await;
+    assert!(
+        share_two_download.is_err(),
+        "individually paused share should remain paused after ResumeAll"
+    );
+
+    bridge.send(NetworkCommand::PauseAll)?;
+    expect_event(&bridge, Duration::from_secs(5), |event| {
+        matches!(event, NetworkEvent::GlobalPauseChanged { paused: true })
+    })
+    .await?;
+
+    bridge.send(NetworkCommand::ResumeTransfer { transfer_id: 102 })?;
+    expect_event(&bridge, Duration::from_secs(5), |event| {
+        matches!(event, NetworkEvent::TransferResumed { transfer_id: 102 })
+    })
+    .await?;
+
+    let share_two_while_global_paused =
+        download_share_with_progress(&downloader, &share_two, output_b.path(), |_| {}).await;
+    assert!(
+        share_two_while_global_paused.is_err(),
+        "global pause should still block share while per-share flag is toggled"
+    );
+
+    // Phase 2: after toggling per-share resume while globally paused, ResumeAll should resume #102.
+    bridge.send(NetworkCommand::ResumeAll)?;
+    expect_event(&bridge, Duration::from_secs(5), |event| {
+        matches!(event, NetworkEvent::GlobalPauseChanged { paused: false })
+    })
+    .await?;
+
+    let share_two_after_toggle =
+        download_share_with_progress(&downloader, &share_two, output_b.path(), |_| {}).await;
+    assert!(
+        share_two_after_toggle.is_ok(),
+        "per-share toggle during global pause should apply after ResumeAll"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn paused_share_state_survives_bridge_restart() -> Result<()> {
     let bridge_dir = tempdir()?;
     let source = tempdir()?;
@@ -118,6 +214,51 @@ async fn paused_share_state_survives_bridge_restart() -> Result<()> {
     }
 
     bail!("did not observe paused recovered share after restart");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn global_pause_state_survives_bridge_restart() -> Result<()> {
+    let bridge_dir = tempdir()?;
+    let source = tempdir()?;
+    let share_dir = source.path().join("global-paused-share");
+    fs::create_dir_all(&share_dir)?;
+    fs::write(share_dir.join("payload.txt"), b"persist global pause")?;
+
+    let bridge =
+        AsyncBridge::spawn_with_data_dir(NodeOptions::default(), bridge_dir.path().to_path_buf())?;
+    let share_code = start_share_and_wait(&bridge, 201, &share_dir).await?;
+
+    bridge.send(NetworkCommand::PauseAll)?;
+    expect_event(&bridge, Duration::from_secs(5), |event| {
+        matches!(event, NetworkEvent::GlobalPauseChanged { paused: true })
+    })
+    .await?;
+    drop(bridge);
+    tokio::time::sleep(Duration::from_millis(250)).await;
+
+    let restarted =
+        AsyncBridge::spawn_with_data_dir(NodeOptions::default(), bridge_dir.path().to_path_buf())?;
+    let mut saw_global_pause = false;
+    let mut saw_share_paused = false;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        if let Some(event) = restarted.try_recv().unwrap() {
+            match event {
+                NetworkEvent::GlobalPauseChanged { paused: true } => saw_global_pause = true,
+                NetworkEvent::ShareReady {
+                    share_code: code, ..
+                } if code == share_code => {}
+                NetworkEvent::TransferPaused { .. } => saw_share_paused = true,
+                _ => {}
+            }
+        }
+        if saw_global_pause && saw_share_paused {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    bail!("did not observe globally paused recovery state after restart");
 }
 
 #[tokio::test(flavor = "multi_thread")]

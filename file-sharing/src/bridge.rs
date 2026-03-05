@@ -47,12 +47,16 @@ pub enum NetworkCommand {
     ResumeTransfer {
         transfer_id: u64,
     },
+    PauseAll,
+    ResumeAll,
 }
 
 impl NetworkCommand {
     fn transfer_id(&self) -> u64 {
         match self {
             Self::RecoverStartup => u64::MAX,
+            Self::PauseAll => u64::MAX - 1,
+            Self::ResumeAll => u64::MAX - 2,
             Self::ShareDirectory { transfer_id, .. }
             | Self::StartDownload { transfer_id, .. }
             | Self::CancelTransfer { transfer_id }
@@ -98,6 +102,9 @@ pub enum NetworkEvent {
     },
     TransferResumed {
         transfer_id: u64,
+    },
+    GlobalPauseChanged {
+        paused: bool,
     },
 }
 
@@ -253,10 +260,13 @@ struct RuntimeState {
 
 struct RuntimeInner {
     store: StateStore,
+    global_paused: bool,
     live_shares: HashMap<u64, ShareSession>,
     recovered_shares: HashMap<u64, RecoveredShare>,
+    globally_paused_shares: HashMap<u64, ShareRecord>,
     paused_shares: HashMap<u64, ShareRecord>,
     active_downloads: HashMap<u64, ActiveDownload>,
+    globally_paused_downloads: HashMap<u64, DownloadRecord>,
     paused_downloads: HashMap<u64, DownloadRecord>,
 }
 
@@ -273,10 +283,13 @@ impl RuntimeState {
             node,
             inner: tokio::sync::Mutex::new(RuntimeInner {
                 store,
+                global_paused: false,
                 live_shares: HashMap::new(),
                 recovered_shares: HashMap::new(),
+                globally_paused_shares: HashMap::new(),
                 paused_shares: HashMap::new(),
                 active_downloads: HashMap::new(),
+                globally_paused_downloads: HashMap::new(),
                 paused_downloads: HashMap::new(),
             }),
             next_recovery_transfer_id: AtomicU64::new(1_000_000),
@@ -363,7 +376,21 @@ async fn default_handle_command(
                 return Ok(());
             }
 
+            if let Some(record) = runtime.globally_paused_shares.remove(&transfer_id) {
+                let hashes = share_hashes_for_record(&state.node, &record).await;
+                state.node.blobs.unblock_serving_hashes(hashes);
+                runtime.store.remove_share_by_code(&record.share_code)?;
+                return Ok(());
+            }
+
             if let Some(record) = runtime.paused_downloads.remove(&transfer_id) {
+                runtime
+                    .store
+                    .remove_download_by_code(&record.share_code, &record.output_dir)?;
+                return Ok(());
+            }
+
+            if let Some(record) = runtime.globally_paused_downloads.remove(&transfer_id) {
                 runtime
                     .store
                     .remove_download_by_code(&record.share_code, &record.output_dir)?;
@@ -378,6 +405,8 @@ async fn default_handle_command(
         NetworkCommand::ResumeTransfer { transfer_id } => {
             resume_transfer(state, transfer_id, event_tx).await
         }
+        NetworkCommand::PauseAll => pause_all_transfers(state, event_tx).await,
+        NetworkCommand::ResumeAll => resume_all_transfers(state, event_tx).await,
     }
 }
 
@@ -482,6 +511,26 @@ async fn pause_transfer(
         return Ok(());
     }
 
+    if let Some(mut record) = runtime.globally_paused_shares.remove(&transfer_id) {
+        record.paused = true;
+        runtime.store.add_share(record.clone())?;
+        runtime.paused_shares.insert(transfer_id, record);
+        event_tx
+            .send(NetworkEvent::TransferPaused { transfer_id })
+            .context("failed to send TransferPaused event")?;
+        return Ok(());
+    }
+
+    if let Some(mut record) = runtime.globally_paused_downloads.remove(&transfer_id) {
+        record.paused = true;
+        runtime.store.add_download(record.clone())?;
+        runtime.paused_downloads.insert(transfer_id, record);
+        event_tx
+            .send(NetworkEvent::TransferPaused { transfer_id })
+            .context("failed to send TransferPaused event")?;
+        return Ok(());
+    }
+
     Err(anyhow::anyhow!("unknown transfer id {transfer_id}"))
 }
 
@@ -495,11 +544,24 @@ async fn resume_transfer(
         runtime.paused_shares.remove(&transfer_id)
     } {
         let blocked_hashes = share_hashes_for_record(&state.node, &record).await;
+        let globally_paused = {
+            let runtime = state.inner.lock().await;
+            runtime.global_paused
+        };
+        record.paused = false;
+        if globally_paused {
+            let mut runtime = state.inner.lock().await;
+            runtime.store.add_share(record.clone())?;
+            runtime.globally_paused_shares.insert(transfer_id, record);
+            event_tx
+                .send(NetworkEvent::TransferResumed { transfer_id })
+                .context("failed to send TransferResumed event")?;
+            return Ok(());
+        }
         state
             .node
             .blobs
             .unblock_serving_hashes(blocked_hashes.iter().copied());
-        record.paused = false;
         let recovered = match resume_share_record(&state.node, &record).await {
             Ok(recovered) => recovered,
             Err(err) => {
@@ -532,6 +594,21 @@ async fn resume_transfer(
         runtime.paused_downloads.remove(&transfer_id)
     } {
         record.paused = false;
+        let globally_paused = {
+            let runtime = state.inner.lock().await;
+            runtime.global_paused
+        };
+        if globally_paused {
+            let mut runtime = state.inner.lock().await;
+            runtime.store.add_download(record.clone())?;
+            runtime
+                .globally_paused_downloads
+                .insert(transfer_id, record);
+            event_tx
+                .send(NetworkEvent::TransferResumed { transfer_id })
+                .context("failed to send TransferResumed event")?;
+            return Ok(());
+        }
         start_download_task(Arc::clone(&state), transfer_id, record, event_tx.clone()).await?;
         event_tx
             .send(NetworkEvent::TransferResumed { transfer_id })
@@ -543,11 +620,159 @@ async fn resume_transfer(
     if runtime.active_downloads.contains_key(&transfer_id)
         || runtime.live_shares.contains_key(&transfer_id)
         || runtime.recovered_shares.contains_key(&transfer_id)
+        || runtime.globally_paused_shares.contains_key(&transfer_id)
+        || runtime.globally_paused_downloads.contains_key(&transfer_id)
     {
         return Ok(());
     }
 
     Err(anyhow::anyhow!("unknown transfer id {transfer_id}"))
+}
+
+async fn pause_all_transfers(
+    state: Arc<RuntimeState>,
+    event_tx: Sender<NetworkEvent>,
+) -> Result<()> {
+    let mut runtime = state.inner.lock().await;
+
+    if runtime.global_paused {
+        event_tx
+            .send(NetworkEvent::GlobalPauseChanged { paused: true })
+            .context("failed to send GlobalPauseChanged event")?;
+        return Ok(());
+    }
+
+    runtime.global_paused = true;
+    runtime.store.set_global_paused(true)?;
+
+    let live_share_ids: Vec<u64> = runtime.live_shares.keys().copied().collect();
+    for transfer_id in live_share_ids {
+        if let Some(session) = runtime.live_shares.remove(&transfer_id) {
+            let blocked_hashes = share_hashes_for_session(&session);
+            state.node.blobs.block_serving_hashes(blocked_hashes);
+            let mut record = ShareRecord::from(&session);
+            record.paused = false;
+            runtime.store.add_share(record.clone())?;
+            runtime.globally_paused_shares.insert(transfer_id, record);
+            event_tx
+                .send(NetworkEvent::TransferPaused { transfer_id })
+                .context("failed to send TransferPaused event")?;
+        }
+    }
+
+    let recovered_share_ids: Vec<u64> = runtime.recovered_shares.keys().copied().collect();
+    for transfer_id in recovered_share_ids {
+        if let Some(recovered) = runtime.recovered_shares.remove(&transfer_id) {
+            let mut record = recovered.record;
+            let blocked_hashes = share_hashes_for_record(&state.node, &record).await;
+            state.node.blobs.block_serving_hashes(blocked_hashes);
+            record.paused = false;
+            runtime.store.add_share(record.clone())?;
+            runtime.globally_paused_shares.insert(transfer_id, record);
+            event_tx
+                .send(NetworkEvent::TransferPaused { transfer_id })
+                .context("failed to send TransferPaused event")?;
+        }
+    }
+
+    let active_download_ids: Vec<u64> = runtime.active_downloads.keys().copied().collect();
+    for transfer_id in active_download_ids {
+        if let Some(active) = runtime.active_downloads.remove(&transfer_id) {
+            active.handle.abort();
+            let mut record = active.record;
+            record.paused = false;
+            runtime.store.add_download(record.clone())?;
+            runtime
+                .globally_paused_downloads
+                .insert(transfer_id, record);
+            event_tx
+                .send(NetworkEvent::TransferPaused { transfer_id })
+                .context("failed to send TransferPaused event")?;
+        }
+    }
+
+    event_tx
+        .send(NetworkEvent::GlobalPauseChanged { paused: true })
+        .context("failed to send GlobalPauseChanged event")?;
+    Ok(())
+}
+
+async fn resume_all_transfers(
+    state: Arc<RuntimeState>,
+    event_tx: Sender<NetworkEvent>,
+) -> Result<()> {
+    let mut runtime = state.inner.lock().await;
+
+    if !runtime.global_paused {
+        event_tx
+            .send(NetworkEvent::GlobalPauseChanged { paused: false })
+            .context("failed to send GlobalPauseChanged event")?;
+        return Ok(());
+    }
+
+    runtime.global_paused = false;
+    runtime.store.set_global_paused(false)?;
+
+    let globally_paused_share_ids: Vec<u64> =
+        runtime.globally_paused_shares.keys().copied().collect();
+    for transfer_id in globally_paused_share_ids {
+        if let Some(mut record) = runtime.globally_paused_shares.remove(&transfer_id) {
+            if record.paused {
+                runtime.paused_shares.insert(transfer_id, record);
+                continue;
+            }
+
+            let blocked_hashes = share_hashes_for_record(&state.node, &record).await;
+            state
+                .node
+                .blobs
+                .unblock_serving_hashes(blocked_hashes.iter().copied());
+            let recovered = match resume_share_record(&state.node, &record).await {
+                Ok(recovered) => recovered,
+                Err(err) => {
+                    state.node.blobs.block_serving_hashes(blocked_hashes);
+                    return Err(err);
+                }
+            };
+            record.paused = false;
+            runtime.store.add_share(record.clone())?;
+            runtime.recovered_shares.insert(transfer_id, recovered);
+            event_tx
+                .send(NetworkEvent::TransferResumed { transfer_id })
+                .context("failed to send TransferResumed event")?;
+            event_tx
+                .send(NetworkEvent::ShareReady {
+                    transfer_id,
+                    directory_name: record.directory_name,
+                    share_code: record.share_code,
+                    total_bytes: record.total_bytes,
+                    file_count: record.file_count,
+                })
+                .context("failed to send ShareReady event for resumed share")?;
+        }
+    }
+
+    let globally_paused_download_ids: Vec<u64> =
+        runtime.globally_paused_downloads.keys().copied().collect();
+    for transfer_id in globally_paused_download_ids {
+        if let Some(mut record) = runtime.globally_paused_downloads.remove(&transfer_id) {
+            if record.paused {
+                runtime.paused_downloads.insert(transfer_id, record);
+                continue;
+            }
+
+            record.paused = false;
+            start_download_task(Arc::clone(&state), transfer_id, record, event_tx.clone()).await?;
+            event_tx
+                .send(NetworkEvent::TransferResumed { transfer_id })
+                .context("failed to send TransferResumed event")?;
+        }
+    }
+
+    event_tx
+        .send(NetworkEvent::GlobalPauseChanged { paused: false })
+        .context("failed to send GlobalPauseChanged event")?;
+    Ok(())
 }
 
 fn emit_download_event(event_tx: &Sender<NetworkEvent>, transfer_id: u64, event: DownloadEvent) {
@@ -595,6 +820,71 @@ async fn recover_startup_state(
         let runtime = state.inner.lock().await;
         runtime.store.state().clone()
     };
+
+    {
+        let mut runtime = state.inner.lock().await;
+        runtime.global_paused = persisted_state.global_paused;
+    }
+
+    event_tx
+        .send(NetworkEvent::GlobalPauseChanged {
+            paused: persisted_state.global_paused,
+        })
+        .context("failed to send GlobalPauseChanged recovery event")?;
+
+    if persisted_state.global_paused {
+        let mut runtime = state.inner.lock().await;
+        for share in &persisted_state.active_shares {
+            let blocked_hashes = share_hashes_for_record(&state.node, share).await;
+            state.node.blobs.block_serving_hashes(blocked_hashes);
+            let transfer_id = state.next_recovery_transfer_id();
+            event_tx
+                .send(NetworkEvent::ShareReady {
+                    transfer_id,
+                    directory_name: share.directory_name.clone(),
+                    share_code: share.share_code.clone(),
+                    total_bytes: share.total_bytes,
+                    file_count: share.file_count,
+                })
+                .context("failed to send globally paused ShareReady event")?;
+            event_tx
+                .send(NetworkEvent::TransferPaused { transfer_id })
+                .context("failed to send globally paused TransferPaused event")?;
+            if share.paused {
+                runtime.paused_shares.insert(transfer_id, share.clone());
+            } else {
+                runtime
+                    .globally_paused_shares
+                    .insert(transfer_id, share.clone());
+            }
+        }
+
+        for download in &persisted_state.active_downloads {
+            let transfer_id = state.next_recovery_transfer_id();
+            event_tx
+                .send(NetworkEvent::DownloadStarted {
+                    transfer_id,
+                    directory_name: "Download".into(),
+                    total_bytes: 0,
+                    file_count: 0,
+                })
+                .context("failed to send globally paused DownloadStarted event")?;
+            event_tx
+                .send(NetworkEvent::TransferPaused { transfer_id })
+                .context("failed to send globally paused download TransferPaused event")?;
+            if download.paused {
+                runtime
+                    .paused_downloads
+                    .insert(transfer_id, download.clone());
+            } else {
+                runtime
+                    .globally_paused_downloads
+                    .insert(transfer_id, download.clone());
+            }
+        }
+
+        return Ok(());
+    }
 
     let recovered = resume_active_transfers(&state.node, &persisted_state).await?;
     let mut runtime = state.inner.lock().await;
@@ -861,6 +1151,8 @@ mod tests {
             Box::pin(async move {
                 let (transfer_id, delay_ms) = match command {
                     NetworkCommand::RecoverStartup => (u64::MAX, 0),
+                    NetworkCommand::PauseAll => (u64::MAX - 1, 0),
+                    NetworkCommand::ResumeAll => (u64::MAX - 2, 0),
                     NetworkCommand::ShareDirectory { transfer_id, .. } => (transfer_id, 200),
                     NetworkCommand::StartDownload { transfer_id, .. } => (transfer_id, 20),
                     NetworkCommand::CancelTransfer { transfer_id } => (transfer_id, 0),
