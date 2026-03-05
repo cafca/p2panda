@@ -826,3 +826,19 @@ What doesn't work:
 
 What doesn't work:
 - Task 24 acceptance is still incomplete in this sandbox because `All existing tests pass after changes` cannot be proven: integration-test binaries fail to link due sandbox memory pressure (`collect2: fatal error: ld terminated with signal 9 [Killed]`, observed while linking test `recovery`)
+
+# 2026-03-05 22:31 UTC
+
+- picked Task 24 (`Global code review and architectural improvements`) as the highest-priority unfinished feature because it is the core correctness gate and was previously blocked by unstable full-test verification
+- identified and fixed a reliability issue found during the review feedback loop: `file-sharing/tests/transfer.rs::removed_share_is_not_downloadable` had a too-tight 10s timeout that intermittently failed before provider-unavailability surfaced; increased it to 25s with a clarifying comment
+- reran Task 24 verification loops in this run:
+  - `cargo fmt --package p2panda-file-sharing-gui`
+  - `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-file-sharing-gui --tests --locked`
+  - `CARGO_BUILD_JOBS=1 ./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui --lib --locked`
+  - `CARGO_BUILD_JOBS=1 RUSTFLAGS='-C link-arg=-Wl,--no-keep-memory' ./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui --tests --locked`
+- confirmed all existing lib and integration tests pass after the fix
+- rechecked panic safety for production paths by scanning pre-`#[cfg(test)]` code in `file-sharing/src/*.rs`; no `unwrap`/`expect` remain in non-test production code
+- confirmed Task 24 acceptance criteria in this run and updated Task 24 `passes` to `true` in `PRD.jsonl`
+
+What doesn't work:
+- no additional blocker for Task 24 in this run

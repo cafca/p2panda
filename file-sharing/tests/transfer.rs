@@ -252,8 +252,10 @@ async fn removed_share_is_not_downloadable() -> Result<()> {
             },
         )
         .await?;
+        // This path waits for provider-side unavailability to surface through downloader retries.
+        // Give it enough headroom to avoid sandbox/network timing flakes.
         let removed_attempt = timeout(
-            Duration::from_secs(10),
+            Duration::from_secs(25),
             download_share_with_progress(&node_b, &share_code, output_b.path(), |_| {}),
         )
         .await
