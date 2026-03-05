@@ -114,6 +114,7 @@ fn apply_network_event(
             transfer_id,
             directory_name,
             share_code,
+            collection_hash,
             total_bytes,
             file_count,
         } => {
@@ -122,6 +123,7 @@ fn apply_network_event(
             });
             transfer.name = directory_name;
             transfer.share_code = Some(share_code);
+            transfer.collection_hash = Some(collection_hash);
             transfer.total_bytes = total_bytes;
             transfer.downloaded_bytes = total_bytes;
             if transfer.files.is_empty() && file_count > 0 {
@@ -139,6 +141,7 @@ fn apply_network_event(
         NetworkEvent::DownloadStarted {
             transfer_id,
             directory_name,
+            collection_hash,
             total_bytes,
             file_count,
         } => {
@@ -146,6 +149,7 @@ fn apply_network_event(
                 Transfer::new(transfer_id, &directory_name, Direction::Download)
             });
             transfer.name = directory_name;
+            transfer.collection_hash = Some(collection_hash);
             transfer.total_bytes = total_bytes;
             transfer.status = TransferStatus::Active;
             transfer.files = (0..file_count)
@@ -183,6 +187,19 @@ fn apply_network_event(
                 }
                 transfer.refresh_downloaded_bytes();
                 return true;
+            }
+            false
+        }
+        NetworkEvent::FileVerificationFailed {
+            transfer_id,
+            file_index,
+            error_message,
+        } => {
+            if let Some(transfer) = transfers.get_mut(transfer_id) {
+                ensure_file_slot(transfer, file_index);
+                if let Some(file) = transfer.files.get_mut(file_index) {
+                    file.mark_failed_verification(error_message);
+                }
             }
             false
         }
@@ -266,7 +283,7 @@ mod tests {
     use super::*;
     use crate::bridge::{NetworkCommand, NetworkEvent};
     use crate::settings::{AppSettings, RelayMode};
-    use crate::state::{Direction, Transfer};
+    use crate::state::{Direction, FileVerification, Transfer};
 
     type BoxFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'static>>;
 
@@ -298,6 +315,9 @@ mod tests {
                     .send_async(NetworkEvent::DownloadStarted {
                         transfer_id,
                         directory_name: "photos".into(),
+                        collection_hash:
+                            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                                .into(),
                         total_bytes: 10,
                         file_count: 2,
                     })
@@ -347,6 +367,10 @@ mod tests {
         assert_eq!(transfer.name, "photos");
         assert_eq!(transfer.status, TransferStatus::Active);
         assert_eq!(transfer.total_bytes, 10);
+        assert_eq!(
+            transfer.collection_hash.as_deref(),
+            Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+        );
         assert_eq!(transfer.downloaded_bytes, 7);
         assert_eq!(transfer.files.len(), 2);
         assert_eq!(transfer.files[0].downloaded_bytes, 4);
@@ -415,6 +439,9 @@ mod tests {
                         transfer_id,
                         directory_name: "photos".into(),
                         share_code: "p2p-CODE".into(),
+                        collection_hash:
+                            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                                .into(),
                         total_bytes: 5,
                         file_count: 1,
                     })
@@ -437,6 +464,13 @@ mod tests {
                     .await?;
                 events
                     .send_async(NetworkEvent::TransferCancelled { transfer_id })
+                    .await?;
+                events
+                    .send_async(NetworkEvent::FileVerificationFailed {
+                        transfer_id,
+                        file_index: 0,
+                        error_message: "verification failed for file-0".into(),
+                    })
                     .await?;
                 events
                     .send_async(NetworkEvent::Error {
@@ -471,8 +505,16 @@ mod tests {
         let world = app.world();
         let transfer = world.resource::<TransferRegistry>().get(99).unwrap();
         assert_eq!(transfer.share_code.as_deref(), Some("p2p-CODE"));
+        assert_eq!(
+            transfer.collection_hash.as_deref(),
+            Some("cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc")
+        );
         assert_eq!(transfer.status, TransferStatus::Error("late error".into()));
-        assert_eq!(transfer.completed_file_count(), 1);
+        assert!(matches!(
+            transfer.files[0].verification,
+            FileVerification::Failed(_)
+        ));
+        assert_eq!(transfer.completed_file_count(), 0);
         assert_eq!(transfer.downloaded_bytes, 5);
         assert!(transfer.outbound_bytes_per_sec.is_finite());
         assert!(transfer.outbound_bytes_per_sec >= 0.0);
@@ -492,6 +534,9 @@ mod tests {
                         transfer_id,
                         directory_name: "restored-share".into(),
                         share_code: "p2p-RESTORE".into(),
+                        collection_hash:
+                            "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+                                .into(),
                         total_bytes: 77,
                         file_count: 3,
                     })
@@ -522,6 +567,10 @@ mod tests {
         assert_eq!(transfer.file_count(), 3);
         assert_eq!(transfer.downloaded_bytes, 77);
         assert_eq!(transfer.total_bytes, 77);
+        assert_eq!(
+            transfer.collection_hash.as_deref(),
+            Some("dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd")
+        );
         assert_eq!(transfer.status, TransferStatus::Completed);
     }
 

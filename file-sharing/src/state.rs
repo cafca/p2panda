@@ -69,11 +69,19 @@ pub enum TransferStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileVerification {
+    Pending,
+    Verified,
+    Failed(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileProgress {
     pub relative_path: String,
     pub total_size: u64,
     pub downloaded_bytes: u64,
     pub completed: bool,
+    pub verification: FileVerification,
 }
 
 impl FileProgress {
@@ -83,12 +91,19 @@ impl FileProgress {
             total_size,
             downloaded_bytes: 0,
             completed: false,
+            verification: FileVerification::Pending,
         }
     }
 
     pub fn mark_completed(&mut self) {
         self.downloaded_bytes = self.total_size;
         self.completed = true;
+        self.verification = FileVerification::Verified;
+    }
+
+    pub fn mark_failed_verification(&mut self, message: impl Into<String>) {
+        self.completed = false;
+        self.verification = FileVerification::Failed(message.into());
     }
 }
 
@@ -105,6 +120,7 @@ pub struct Transfer {
     pub start_time: Instant,
     pub inbound_bytes_per_sec: f32,
     pub outbound_bytes_per_sec: f32,
+    pub collection_hash: Option<String>,
 }
 
 impl Transfer {
@@ -121,6 +137,7 @@ impl Transfer {
             start_time: Instant::now(),
             inbound_bytes_per_sec: 0.0,
             outbound_bytes_per_sec: 0.0,
+            collection_hash: None,
         }
     }
 
@@ -167,6 +184,20 @@ impl Transfer {
                 self.outbound_bytes_per_sec = 0.0;
             }
         }
+    }
+
+    pub fn verified_file_count(&self) -> usize {
+        self.files
+            .iter()
+            .filter(|file| matches!(file.verification, FileVerification::Verified))
+            .count()
+    }
+
+    pub fn failed_verification_count(&self) -> usize {
+        self.files
+            .iter()
+            .filter(|file| matches!(file.verification, FileVerification::Failed(_)))
+            .count()
     }
 }
 
@@ -229,12 +260,14 @@ mod tests {
                 total_size: 10,
                 downloaded_bytes: 10,
                 completed: true,
+                verification: FileVerification::Verified,
             },
             FileProgress {
                 relative_path: "nested/two.bin".into(),
                 total_size: 20,
                 downloaded_bytes: 8,
                 completed: false,
+                verification: FileVerification::Pending,
             },
         ];
 
@@ -264,5 +297,36 @@ mod tests {
         upload.update_bandwidth();
         assert!(upload.outbound_bytes_per_sec >= 4_000.0);
         assert_eq!(upload.inbound_bytes_per_sec, 0.0);
+    }
+
+    #[test]
+    fn verification_counts_follow_file_verification_states() {
+        let mut transfer = Transfer::new(5, "download", Direction::Download);
+        transfer.files = vec![
+            FileProgress {
+                relative_path: "ok.bin".into(),
+                total_size: 1,
+                downloaded_bytes: 1,
+                completed: true,
+                verification: FileVerification::Verified,
+            },
+            FileProgress {
+                relative_path: "bad.bin".into(),
+                total_size: 1,
+                downloaded_bytes: 1,
+                completed: false,
+                verification: FileVerification::Failed("hash mismatch".into()),
+            },
+            FileProgress {
+                relative_path: "pending.bin".into(),
+                total_size: 1,
+                downloaded_bytes: 0,
+                completed: false,
+                verification: FileVerification::Pending,
+            },
+        ];
+
+        assert_eq!(transfer.verified_file_count(), 1);
+        assert_eq!(transfer.failed_verification_count(), 1);
     }
 }

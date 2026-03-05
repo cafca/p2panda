@@ -6,7 +6,7 @@ use bevy_egui::{egui, EguiContexts};
 
 use crate::bridge::{AsyncBridge, NetworkCommand};
 use crate::settings::{RelayMode, SettingsStore};
-use crate::state::{Direction, Transfer, TransferRegistry, TransferStatus};
+use crate::state::{Direction, FileVerification, Transfer, TransferRegistry, TransferStatus};
 
 /// Which file dialog is currently open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -580,6 +580,37 @@ fn render_transfer_row(
             }
         }
 
+        if let Some((label, color)) = verification_badge(transfer) {
+            ui.colored_label(color, label);
+        }
+
+        if let Some(collection_hash) = &transfer.collection_hash {
+            ui.horizontal(|ui| {
+                ui.label("Collection hash:");
+                ui.monospace(truncate_hash(collection_hash));
+                if ui.button("Copy hash").clicked() {
+                    copy_text(ui.ctx(), collection_hash);
+                }
+            });
+        }
+
+        if matches!(transfer.direction, Direction::Download) && !transfer.files.is_empty() {
+            egui::CollapsingHeader::new("Integrity details")
+                .default_open(false)
+                .show(ui, |ui| {
+                    for (index, file) in transfer.files.iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            ui.label(format!("File {}", index + 1));
+                            ui.label(match &file.verification {
+                                FileVerification::Pending => "Pending",
+                                FileVerification::Verified => "Verified",
+                                FileVerification::Failed(_) => "Failed",
+                            });
+                        });
+                    }
+                });
+        }
+
         if matches!(transfer.direction, Direction::Upload) {
             if let Some(code) = &transfer.share_code {
                 ui.horizontal(|ui| {
@@ -604,6 +635,35 @@ fn render_progress_bar(ui: &mut egui::Ui, fraction: f32, downloaded_bytes: u64, 
         format_bytes(downloaded_bytes),
         format_bytes(total_bytes),
     )));
+}
+
+fn verification_badge(transfer: &Transfer) -> Option<(&'static str, egui::Color32)> {
+    if !matches!(transfer.direction, Direction::Download) {
+        return None;
+    }
+
+    let failed = transfer.failed_verification_count();
+    if failed > 0 {
+        return Some(("Verification failed", egui::Color32::RED));
+    }
+
+    if matches!(transfer.status, TransferStatus::Completed)
+        && transfer.file_count() > 0
+        && transfer.verified_file_count() == transfer.file_count()
+    {
+        return Some(("Verified", egui::Color32::from_rgb(75, 180, 100)));
+    }
+
+    None
+}
+
+fn truncate_hash(hash: &str) -> String {
+    const PREFIX: usize = 10;
+    const SUFFIX: usize = 10;
+    if hash.len() <= PREFIX + SUFFIX + 3 {
+        return hash.to_owned();
+    }
+    format!("{}...{}", &hash[..PREFIX], &hash[hash.len() - SUFFIX..])
 }
 
 fn status_label(transfer: &Transfer, globally_paused: bool) -> &'static str {
@@ -960,6 +1020,7 @@ mod tests {
 
     use super::*;
     use crate::bridge::{NetworkCommand, NetworkEvent};
+    use crate::state::FileProgress;
 
     type BoxFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'static>>;
 
@@ -995,6 +1056,43 @@ mod tests {
         assert_eq!(format_bytes(1_024), "1.0 KB");
         assert_eq!(format_bytes(1_048_576), "1.0 MB");
         assert_eq!(format_bytes(1_073_741_824), "1.0 GB");
+    }
+
+    #[test]
+    fn verification_badge_reports_verified_and_failed_downloads() {
+        let mut verified = Transfer::new(1, "ok", Direction::Download);
+        verified.status = TransferStatus::Completed;
+        verified.files = vec![FileProgress {
+            relative_path: "ok".into(),
+            total_size: 1,
+            downloaded_bytes: 1,
+            completed: true,
+            verification: FileVerification::Verified,
+        }];
+        assert!(matches!(
+            verification_badge(&verified),
+            Some(("Verified", _))
+        ));
+
+        let mut failed = Transfer::new(2, "bad", Direction::Download);
+        failed.status = TransferStatus::Error("verification failed".into());
+        failed.files = vec![FileProgress {
+            relative_path: "bad".into(),
+            total_size: 1,
+            downloaded_bytes: 1,
+            completed: false,
+            verification: FileVerification::Failed("hash mismatch".into()),
+        }];
+        assert!(matches!(
+            verification_badge(&failed),
+            Some(("Verification failed", _))
+        ));
+    }
+
+    #[test]
+    fn hash_truncation_keeps_prefix_and_suffix() {
+        let hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        assert_eq!(truncate_hash(hash), "0123456789...6789abcdef");
     }
 
     #[test]
@@ -1038,6 +1136,9 @@ mod tests {
                             .send_async(NetworkEvent::DownloadStarted {
                                 transfer_id,
                                 directory_name: "album".into(),
+                                collection_hash:
+                                    "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+                                        .into(),
                                 total_bytes: 5,
                                 file_count: 1,
                             })
@@ -1066,6 +1167,8 @@ mod tests {
             NetworkEvent::DownloadStarted {
                 transfer_id,
                 directory_name: "album".into(),
+                collection_hash: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+                    .into(),
                 total_bytes: 5,
                 file_count: 1,
             }

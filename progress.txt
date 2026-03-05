@@ -582,3 +582,41 @@ What doesn't work:
 
 What doesn't work:
 - no additional blocker for Task 27 in this run
+
+# 2026-03-05 20:35
+
+- picked Task 30 (`Content integrity verification display`) as the highest-priority unfinished feature because it directly improves trust and safety in the core download experience while remaining narrowly scoped to existing transfer state/UI plumbing
+- implemented end-to-end integrity metadata flow for UI display:
+  - extended `DownloadEvent::DownloadStarted` with `collection_hash`
+  - extended `NetworkEvent::ShareReady` and `NetworkEvent::DownloadStarted` with `collection_hash`
+  - added `NetworkEvent::FileVerificationFailed` to preserve per-file verification failures from the download pipeline
+- updated download verification/error surfacing in `file-sharing/src/download.rs`:
+  - file-level hash mismatches and download integrity failures now emit clear `verification failed ...` messages
+  - aggregate download failure now returns `verification failed: ...` context
+- extended transfer state in `file-sharing/src/state.rs`:
+  - added `FileVerification` (`Pending`/`Verified`/`Failed`) to `FileProgress`
+  - added `collection_hash: Option<String>` to `Transfer`
+  - added helper counters for verified and failed file verification statuses
+- wired new events into plugin state updates in `file-sharing/src/plugin.rs`:
+  - `ShareReady` / `DownloadStarted` now set `transfer.collection_hash`
+  - `FileVerificationFailed` marks per-file verification status as failed
+- added UI integrity presentation in `file-sharing/src/ui.rs`:
+  - completed downloads now show a `Verified` badge when all files verify
+  - transfers with verification failures show a `Verification failed` badge
+  - both upload and download rows now display copyable collection hash values
+  - added a collapsible `Integrity details` section with per-file verification state
+- added/updated tests for Task 30 behavior:
+  - state verification counters
+  - plugin handling of collection hash + file verification failure events
+  - UI verification badge and hash truncation helpers
+  - updated affected event-constructor tests for new `collection_hash` fields
+- ran `cargo fmt --package p2panda-file-sharing-gui`
+- ran `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-file-sharing-gui --tests --locked`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui download --lib --locked -- --nocapture`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui plugin --lib --locked -- --nocapture`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui ui --lib --locked -- --nocapture`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui bridge --lib --locked -- --nocapture`
+- confirmed Task 30 acceptance criteria in this run and updated Task 30 `passes` to `true` in `PRD.jsonl`
+
+What doesn't work:
+- no additional blocker for Task 30 in this run

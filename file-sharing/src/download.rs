@@ -26,6 +26,7 @@ pub enum DownloadEvent {
         directory_name: String,
         total_bytes: u64,
         file_count: usize,
+        collection_hash: String,
     },
     FileDownloadProgress {
         file_index: usize,
@@ -148,6 +149,7 @@ where
         directory_name: verified_manifest.data.name.clone(),
         total_bytes,
         file_count: verified_manifest.data.files.len(),
+        collection_hash: collection_hash.to_string(),
     });
 
     let mut downloaded_files = Vec::with_capacity(verified_manifest.data.files.len());
@@ -162,7 +164,10 @@ where
     {
         let file_hash = BlobHash::from_bytes(manifest_file.hash);
         if file_hash != expected_hash {
-            let error = format!("manifest hash mismatch for {}", manifest_file.relative_path);
+            let error = format!(
+                "verification failed for {}: manifest hash mismatch",
+                manifest_file.relative_path
+            );
             on_event(DownloadEvent::FileError {
                 file_index,
                 error_message: error.clone(),
@@ -184,7 +189,10 @@ where
         {
             Ok(downloaded_file) => downloaded_files.push(downloaded_file),
             Err(err) => {
-                let error = format!("failed to download {}: {err}", manifest_file.relative_path);
+                let error = format!(
+                    "verification failed for {}: {err}",
+                    manifest_file.relative_path
+                );
                 on_event(DownloadEvent::FileError {
                     file_index,
                     error_message: error.clone(),
@@ -195,7 +203,7 @@ where
     }
 
     if !file_errors.is_empty() {
-        bail!(file_errors.join("; "));
+        bail!("verification failed: {}", file_errors.join("; "));
     }
 
     on_event(DownloadEvent::TransferCompleted);
@@ -570,8 +578,12 @@ mod tests {
             Some(DownloadEvent::DownloadStarted {
                 directory_name,
                 total_bytes,
-                file_count
-            }) if directory_name == "share-me" && *total_bytes == 5 + 512 * 1024 + 5 && *file_count == 3
+                file_count,
+                collection_hash,
+            }) if directory_name == "share-me"
+                && *total_bytes == 5 + 512 * 1024 + 5
+                && *file_count == 3
+                && collection_hash == &share.collection_hash.to_string()
         ));
         assert!(matches!(
             events.last(),

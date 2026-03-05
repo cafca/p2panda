@@ -702,7 +702,7 @@
     "The verification display does not trigger additional disk I/O or re-hashing",
     "Shares display their collection hash so it can be communicated to downloaders"
   ],
-  "passes": false
+  "passes": true
 }
 {
   "id": 31,

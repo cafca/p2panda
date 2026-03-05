@@ -73,12 +73,14 @@ pub enum NetworkEvent {
         transfer_id: u64,
         directory_name: String,
         share_code: String,
+        collection_hash: String,
         total_bytes: u64,
         file_count: usize,
     },
     DownloadStarted {
         transfer_id: u64,
         directory_name: String,
+        collection_hash: String,
         total_bytes: u64,
         file_count: usize,
     },
@@ -90,6 +92,11 @@ pub enum NetworkEvent {
     FileCompleted {
         transfer_id: u64,
         file_index: usize,
+    },
+    FileVerificationFailed {
+        transfer_id: u64,
+        file_index: usize,
+        error_message: String,
     },
     TransferCompleted {
         transfer_id: u64,
@@ -362,6 +369,7 @@ async fn default_handle_command(
                         .unwrap_or("Shared directory")
                         .to_owned(),
                     share_code: session.share_code.clone(),
+                    collection_hash: session.collection_hash.to_string(),
                     total_bytes: session.total_bytes,
                     file_count: session.file_count(),
                 })
@@ -605,6 +613,7 @@ async fn resume_transfer(
                 transfer_id,
                 directory_name: record.directory_name,
                 share_code: record.share_code,
+                collection_hash: record.collection_hash,
                 total_bytes: record.total_bytes,
                 file_count: record.file_count,
             })
@@ -768,6 +777,7 @@ async fn resume_all_transfers(
                     transfer_id,
                     directory_name: record.directory_name,
                     share_code: record.share_code,
+                    collection_hash: record.collection_hash,
                     total_bytes: record.total_bytes,
                     file_count: record.file_count,
                 })
@@ -802,11 +812,13 @@ fn emit_download_event(event_tx: &Sender<NetworkEvent>, transfer_id: u64, event:
     let network_event = match event {
         DownloadEvent::DownloadStarted {
             directory_name,
+            collection_hash,
             total_bytes,
             file_count,
         } => NetworkEvent::DownloadStarted {
             transfer_id,
             directory_name,
+            collection_hash,
             total_bytes,
             file_count,
         },
@@ -823,10 +835,11 @@ fn emit_download_event(event_tx: &Sender<NetworkEvent>, transfer_id: u64, event:
             file_index,
         },
         DownloadEvent::FileError {
-            file_index: _,
+            file_index,
             error_message,
-        } => NetworkEvent::Error {
+        } => NetworkEvent::FileVerificationFailed {
             transfer_id,
+            file_index,
             error_message,
         },
         DownloadEvent::TransferCompleted => NetworkEvent::TransferCompleted { transfer_id },
@@ -866,6 +879,7 @@ async fn recover_startup_state(
                     transfer_id,
                     directory_name: share.directory_name.clone(),
                     share_code: share.share_code.clone(),
+                    collection_hash: share.collection_hash.clone(),
                     total_bytes: share.total_bytes,
                     file_count: share.file_count,
                 })
@@ -888,6 +902,7 @@ async fn recover_startup_state(
                 .send(NetworkEvent::DownloadStarted {
                     transfer_id,
                     directory_name: "Download".into(),
+                    collection_hash: download.collection_hash.clone(),
                     total_bytes: 0,
                     file_count: 0,
                 })
@@ -919,6 +934,7 @@ async fn recover_startup_state(
                 transfer_id,
                 directory_name: share.record.directory_name.clone(),
                 share_code: share.record.share_code.clone(),
+                collection_hash: share.record.collection_hash.clone(),
                 total_bytes: share.record.total_bytes,
                 file_count: share.record.file_count,
             })
@@ -939,6 +955,7 @@ async fn recover_startup_state(
                 transfer_id,
                 directory_name: share.directory_name.clone(),
                 share_code: share.share_code.clone(),
+                collection_hash: share.collection_hash.clone(),
                 total_bytes: share.total_bytes,
                 file_count: share.file_count,
             })
@@ -955,6 +972,7 @@ async fn recover_startup_state(
             .send(NetworkEvent::DownloadStarted {
                 transfer_id,
                 directory_name: download.directory_name.clone(),
+                collection_hash: download.collection_hash.to_string(),
                 total_bytes: download.total_bytes,
                 file_count: download.files.len(),
             })
@@ -999,6 +1017,7 @@ async fn recover_startup_state(
             .send(NetworkEvent::DownloadStarted {
                 transfer_id,
                 directory_name: "Download".into(),
+                collection_hash: download.collection_hash.clone(),
                 total_bytes: 0,
                 file_count: 0,
             })
@@ -1097,6 +1116,9 @@ mod tests {
                                 transfer_id,
                                 directory_name: "example".into(),
                                 share_code: "p2p-TEST".into(),
+                                collection_hash:
+                                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                                        .into(),
                                 total_bytes: 128,
                                 file_count: 3,
                             })
@@ -1121,6 +1143,8 @@ mod tests {
                 transfer_id: 7,
                 directory_name: "example".into(),
                 share_code: "p2p-TEST".into(),
+                collection_hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    .into(),
                 total_bytes: 128,
                 file_count: 3,
             }
