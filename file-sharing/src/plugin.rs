@@ -1,13 +1,15 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use bevy::app::Plugin;
-use bevy::prelude::{App, IntoScheduleConfigs, Res, ResMut, Update};
+use bevy::prelude::{App, IntoScheduleConfigs, Query, Res, ResMut, Update, With};
+use bevy::window::{PrimaryWindow, Window};
 use directories::ProjectDirs;
 use flume::TryRecvError;
 
 use crate::bridge::{AsyncBridge, NetworkEvent};
 use crate::node::NodeOptions;
+use crate::notifications::NotificationState;
 use crate::settings::{AppSettings, SettingsStore};
 use crate::state::{Direction, FileProgress, Transfer, TransferRegistry, TransferStatus};
 use crate::ui::{default_download_directory, ui_system, UiState};
@@ -41,6 +43,7 @@ impl Plugin for FileSharingPlugin {
         app.insert_resource(TransferRegistry::default());
         app.insert_resource(settings_store);
         app.insert_resource(ui_state);
+        app.insert_resource(NotificationState::default());
         app.add_systems(Update, (poll_network_events, ui_system).chain());
     }
 }
@@ -82,18 +85,29 @@ pub fn poll_network_events(
     bridge: Res<AsyncBridge>,
     mut transfers: ResMut<TransferRegistry>,
     mut ui_state: ResMut<UiState>,
+    mut notifications: ResMut<NotificationState>,
+    primary_window: Query<&Window, With<PrimaryWindow>>,
 ) {
+    let app_focused = primary_window
+        .iter()
+        .next()
+        .map(|window| window.focused)
+        .unwrap_or(true);
+    let now = Instant::now();
     let mut saw_progress = false;
 
     loop {
         match bridge.try_recv() {
             Ok(Some(event)) => {
-                saw_progress |= apply_network_event(&mut transfers, &mut ui_state, event);
+                saw_progress |= apply_network_event(&mut transfers, &mut ui_state, event.clone());
+                notifications.on_event(&event, &transfers, app_focused, now);
             }
             Ok(None) | Err(TryRecvError::Disconnected) => break,
             Err(TryRecvError::Empty) => break,
         }
     }
+
+    notifications.flush_due(app_focused, now);
 
     if saw_progress {
         for transfer in transfers.transfers_mut() {
@@ -357,6 +371,7 @@ mod tests {
         app.insert_resource(bridge);
         app.insert_resource(registry);
         app.insert_resource(UiState::default());
+        app.insert_resource(NotificationState::default());
 
         std::thread::sleep(Duration::from_millis(50));
         run_poll(&mut app);
@@ -414,6 +429,7 @@ mod tests {
         app.insert_resource(bridge);
         app.insert_resource(registry);
         app.insert_resource(UiState::default());
+        app.insert_resource(NotificationState::default());
 
         std::thread::sleep(Duration::from_millis(50));
         run_poll(&mut app);
@@ -498,6 +514,7 @@ mod tests {
         app.insert_resource(bridge);
         app.insert_resource(registry);
         app.insert_resource(UiState::default());
+        app.insert_resource(NotificationState::default());
 
         std::thread::sleep(Duration::from_millis(50));
         run_poll(&mut app);
@@ -556,6 +573,7 @@ mod tests {
         app.insert_resource(bridge);
         app.insert_resource(TransferRegistry::default());
         app.insert_resource(UiState::default());
+        app.insert_resource(NotificationState::default());
 
         std::thread::sleep(Duration::from_millis(50));
         run_poll(&mut app);

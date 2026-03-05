@@ -682,3 +682,28 @@ What doesn't work:
 
 What doesn't work:
 - no additional blocker for Task 35 in this run
+
+# 2026-03-05 22:02 UTC
+
+- picked Task 28 (`System notifications for transfer events`) as the highest-priority unfinished feature because it closes a core UX gap for unattended transfers (completion/failure visibility) without introducing new product scope
+- implemented notification infrastructure in `file-sharing/src/notifications.rs`:
+  - added focus-aware notification dispatcher keyed off `NetworkEvent`s
+  - emits notifications for `ShareReady`, `Error`, and download `TransferCompleted`
+  - suppresses notifications while the app window is focused
+  - batches rapid sequential download completions into a single notification within a 2-second window
+  - degrades gracefully when the OS notification backend is unavailable (warn once, no crash)
+- integrated notification plumbing into runtime polling in `file-sharing/src/plugin.rs`:
+  - `poll_network_events` now reads primary-window focus state
+  - forwards each received event into `NotificationState`
+  - flushes pending completion batches on schedule
+  - plugin and test app setups now insert `NotificationState` as a Bevy resource
+- exported the new module from `file-sharing/src/lib.rs`
+- verification feedback loops run in this environment:
+  - `cargo fmt --package p2panda-file-sharing-gui`
+  - `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-file-sharing-gui --lib --locked --offline`
+  - `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui notifications --lib --locked --offline -- --nocapture`
+  - `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui plugin --lib --locked --offline -- --nocapture`
+- confirmed Task 28 acceptance criteria in this run and updated Task 28 `passes` to `true` in `PRD.jsonl`
+
+What doesn't work:
+- no additional blocker for Task 28 in this run

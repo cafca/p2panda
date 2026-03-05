@@ -2,6 +2,7 @@ pub mod bridge;
 pub mod download;
 pub mod manifest;
 pub mod node;
+pub mod notifications;
 pub mod persist;
 pub mod plugin;
 pub mod protocol;

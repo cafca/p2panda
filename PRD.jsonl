@@ -659,7 +659,7 @@
     "Rapid sequential completions are batched into a single notification",
     "The app does not crash if the notification system is unavailable"
   ],
-  "passes": false
+  "passes": true
 }
 {
   "id": 29,
