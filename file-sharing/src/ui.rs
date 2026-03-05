@@ -6,12 +6,20 @@ use bevy_egui::{egui, EguiContexts};
 use crate::bridge::{AsyncBridge, NetworkCommand};
 use crate::state::{Direction, Transfer, TransferRegistry, TransferStatus};
 
+/// Which file dialog is currently open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PendingDialog {
+    Share,
+    DownloadDestination,
+}
+
 #[derive(Debug, Resource)]
 pub struct UiState {
     pub download_dialog_open: bool,
     pub download_share_code_input: String,
     pub pending_share_path: Option<PathBuf>,
     pub selected_download_directory: PathBuf,
+    folder_dialog: Option<(PendingDialog, flume::Receiver<Option<PathBuf>>)>,
 }
 
 impl Default for UiState {
@@ -21,8 +29,21 @@ impl Default for UiState {
             download_share_code_input: String::new(),
             pending_share_path: None,
             selected_download_directory: default_download_directory(),
+            folder_dialog: None,
         }
     }
+}
+
+/// Spawn a non-blocking folder picker on a background thread, returning a
+/// receiver that will eventually deliver the chosen path (or `None` if the
+/// user cancelled).
+fn open_folder_dialog() -> flume::Receiver<Option<PathBuf>> {
+    let (tx, rx) = flume::bounded(1);
+    std::thread::spawn(move || {
+        let result = rfd::FileDialog::new().pick_folder();
+        let _ = tx.send(result);
+    });
+    rx
 }
 
 pub fn ui_system(
@@ -31,17 +52,39 @@ pub fn ui_system(
     mut transfers: ResMut<TransferRegistry>,
     bridge: Res<AsyncBridge>,
 ) {
+    // Check if a pending folder dialog has completed.
+    if let Some((purpose, rx)) = &ui_state.folder_dialog {
+        if let Ok(result) = rx.try_recv() {
+            let purpose = *purpose;
+            ui_state.folder_dialog = None;
+            if let Some(path) = result {
+                match purpose {
+                    PendingDialog::Share => {
+                        ui_state.pending_share_path = Some(path.clone());
+                        start_share_transfer(&mut transfers, &bridge, path);
+                    }
+                    PendingDialog::DownloadDestination => {
+                        ui_state.selected_download_directory = path;
+                    }
+                }
+            }
+        }
+    }
+
+    let dialog_busy = ui_state.folder_dialog.is_some();
+
     let ctx = egui_contexts.ctx_mut();
 
     egui::CentralPanel::default().show(ctx, |ui| {
         ui.heading("p2panda File Sharing");
 
         ui.horizontal(|ui| {
-            if ui.button("Share Directory...").clicked() {
-                if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                    ui_state.pending_share_path = Some(path.clone());
-                    start_share_transfer(&mut transfers, &bridge, path);
-                }
+            if ui
+                .add_enabled(!dialog_busy, egui::Button::new("Share Directory..."))
+                .clicked()
+            {
+                let rx = open_folder_dialog();
+                ui_state.folder_dialog = Some((PendingDialog::Share, rx));
             }
 
             if ui.button("Download").clicked() {
@@ -84,6 +127,7 @@ fn render_download_dialog(
 ) {
     let mut is_open = ui_state.download_dialog_open;
     let mut should_start = false;
+    let dialog_busy = ui_state.folder_dialog.is_some();
 
     egui::Window::new("Start Download")
         .collapsible(false)
@@ -97,10 +141,12 @@ fn render_download_dialog(
             ui.horizontal(|ui| {
                 ui.label("Destination:");
                 ui.label(ui_state.selected_download_directory.display().to_string());
-                if ui.button("Choose...").clicked() {
-                    if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                        ui_state.selected_download_directory = path;
-                    }
+                if ui
+                    .add_enabled(!dialog_busy, egui::Button::new("Choose..."))
+                    .clicked()
+                {
+                    let rx = open_folder_dialog();
+                    ui_state.folder_dialog = Some((PendingDialog::DownloadDestination, rx));
                 }
             });
 

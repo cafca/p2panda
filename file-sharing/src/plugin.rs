@@ -70,12 +70,17 @@ fn apply_network_event(transfers: &mut TransferRegistry, event: NetworkEvent) ->
             });
             transfer.share_code = Some(share_code);
             transfer.total_bytes = total_bytes;
+            transfer.downloaded_bytes = total_bytes;
             if transfer.files.is_empty() && file_count > 0 {
                 transfer.files = (0..file_count)
-                    .map(|index| FileProgress::new(format!("file-{index}"), 0))
+                    .map(|index| {
+                        let mut fp = FileProgress::new(format!("file-{index}"), 0);
+                        fp.mark_completed();
+                        fp
+                    })
                     .collect();
             }
-            transfer.status = TransferStatus::Active;
+            transfer.status = TransferStatus::Completed;
             false
         }
         NetworkEvent::DownloadStarted {

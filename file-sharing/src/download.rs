@@ -18,6 +18,7 @@ use crate::share_code::{decode_share_code, ShareCode};
 const DOWNLOAD_ATTEMPTS: usize = 5;
 const DOWNLOAD_RETRY_DELAY: Duration = Duration::from_millis(250);
 const DOWNLOAD_BLOB_PIN_PREFIX: &str = "downloaded/";
+const COMPLETED_BLOBS_DIR: &str = "completed_blobs";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DownloadEvent {
@@ -79,8 +80,7 @@ where
 {
     let share_code = decode_share_code(share_code).context("failed to decode share code")?;
     let sharer_node_id = share_code.node_id()?;
-    let preexisting_hashes: HashSet<BlobHash> =
-        node.blobs.list().hashes().await?.into_iter().collect();
+    let completed_blobs = load_completed_blobs(&node.data_dir);
     bootstrap_sharer(node, &share_code)
         .await
         .context("failed to bootstrap sharer from share code")?;
@@ -177,7 +177,7 @@ where
             manifest_file,
             &output_root,
             &providers,
-            &preexisting_hashes,
+            &completed_blobs,
             &mut on_event,
         )
         .await
@@ -340,16 +340,16 @@ async fn download_one_file<F>(
     manifest_file: &crate::manifest::ManifestFile,
     output_root: &Path,
     providers: &[PublicKey],
-    preexisting_hashes: &HashSet<BlobHash>,
+    completed_blobs: &HashSet<BlobHash>,
     on_event: &mut F,
 ) -> Result<DownloadedFile>
 where
     F: FnMut(DownloadEvent),
 {
     let file_hash = BlobHash::from_bytes(manifest_file.hash);
-    let already_present = preexisting_hashes.contains(&file_hash);
+    let previously_completed = completed_blobs.contains(&file_hash);
     let present_now = node.blobs.has(file_hash).await?;
-    let skipped_download = present_now && already_present;
+    let skipped_download = present_now && previously_completed;
 
     if !present_now {
         let progress = retry_download("file blob", || {
@@ -422,6 +422,14 @@ where
         .await
         .with_context(|| format!("failed to write {}", destination.display()))?;
 
+    mark_blob_completed(&node.data_dir, file_hash)
+        .with_context(|| {
+            format!(
+                "failed to record completed blob for {}",
+                manifest_file.relative_path
+            )
+        })?;
+
     node.blobs
         .pins()
         .set(download_blob_pin_name(file_hash), file_hash)
@@ -445,6 +453,36 @@ where
 
 fn download_blob_pin_name(hash: BlobHash) -> String {
     format!("{DOWNLOAD_BLOB_PIN_PREFIX}{hash}")
+}
+
+fn completed_blobs_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join(COMPLETED_BLOBS_DIR)
+}
+
+fn load_completed_blobs(data_dir: &Path) -> HashSet<BlobHash> {
+    let dir = completed_blobs_dir(data_dir);
+    let mut set = HashSet::new();
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(_) => return set,
+    };
+    for entry in entries.flatten() {
+        if let Some(name) = entry.file_name().to_str() {
+            if let Ok(hash) = name.parse::<BlobHash>() {
+                set.insert(hash);
+            }
+        }
+    }
+    set
+}
+
+fn mark_blob_completed(data_dir: &Path, hash: BlobHash) -> Result<()> {
+    let dir = completed_blobs_dir(data_dir);
+    std::fs::create_dir_all(&dir)
+        .with_context(|| format!("failed to create completed blobs dir {}", dir.display()))?;
+    std::fs::write(dir.join(hash.to_string()), b"")
+        .with_context(|| format!("failed to mark blob {hash} as completed"))?;
+    Ok(())
 }
 
 fn sanitize_relative_path(path: &str) -> Result<PathBuf> {
@@ -596,6 +634,7 @@ mod tests {
         let preseeded_hash = share.files[0].hash;
         node_b.blobs.download(preseeded_hash).await?;
         assert!(node_b.blobs.has(preseeded_hash).await?);
+        mark_blob_completed(node_b_dir.path(), preseeded_hash)?;
 
         let mut events = Vec::new();
         let session =

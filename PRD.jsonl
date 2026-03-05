@@ -561,3 +561,122 @@
   ],
   "passes": true
 }
+
+{
+  "id": 20,
+  "category": "ui",
+  "title": "Recovered share display and status model rework",
+  "description": "Fix recovered shares showing 'Recovered share' with 0/0 files after restart. Persist the directory name, file count, and total bytes in ShareRecord so recovered shares display identically to freshly created ones. Rework transfer status labels to use domain-appropriate terms: 'Seeding' for shares, 'Downloading' for in-progress downloads, 'Failed' for errors. Shares should show a 100% progress bar since the sharer has all data locally.",
+  "depends_on": [11, 13],
+  "inputs": [
+    "file-sharing/src/persist.rs (ShareRecord, DownloadRecord)",
+    "file-sharing/src/bridge.rs (recover_startup_state, ShareReady event)",
+    "file-sharing/src/state.rs (TransferStatus, Transfer)",
+    "file-sharing/src/plugin.rs (apply_network_event)",
+    "file-sharing/src/ui.rs (render_transfer_row)"
+  ],
+  "outputs": [
+    "file-sharing/src/persist.rs",
+    "file-sharing/src/bridge.rs",
+    "file-sharing/src/state.rs",
+    "file-sharing/src/plugin.rs",
+    "file-sharing/src/ui.rs"
+  ],
+  "spec": {
+    "share_record_fields": "Add directory_name (String), file_count (usize), and total_bytes (u64) to ShareRecord. Populate them from ShareSession when creating a new record. Use serde default for backward compatibility with existing state.json files.",
+    "recovery_event": "In recover_startup_state, populate ShareReady events with the persisted directory_name, file_count, and total_bytes instead of hardcoded 0/0 values.",
+    "transfer_name": "When a ShareReady event arrives without a pre-existing transfer (recovery path), use the directory_name from the event as the transfer name instead of 'Recovered share'.",
+    "share_status": "When ShareReady is handled, set downloaded_bytes = total_bytes, mark all files as completed, and set status to Completed. The sharer has all data locally so progress should be 100%.",
+    "status_labels": "Change the UI rendering of status text: uploads with status Completed or Active display 'Seeding'. Downloads with status Active display 'Downloading'. Status Error displays 'Failed'. Downloads with status Completed display 'Done'.",
+    "progress_bar_for_shares": "Shares always render a progress bar at 100% (since downloaded_bytes == total_bytes). The progress bar remains visible alongside the 'Seeding' label."
+  },
+  "acceptance": [
+    "A fresh share shows the directory name, correct file count (e.g. '11/11 files'), 100% progress bar, and 'Seeding' status",
+    "After restarting the app, recovered shares show the same directory name, file count, progress bar, and 'Seeding' status as before restart",
+    "Downloads in progress show 'Downloading' status with the progress bar",
+    "Failed transfers show 'Failed' status with the error message",
+    "Existing state.json files without the new fields load without errors (serde defaults)"
+  ],
+  "passes": false
+}
+
+{
+  "id": 21,
+  "category": "core",
+  "title": "Per-share pause and resume",
+  "description": "Allow pausing and resuming individual shares (both seeding uploads and in-progress downloads). Pausing a share stops all network activity for that share: leaves the gossip topic, stops serving blobs, and stops downloading. The paused state persists across app restarts. Each share has an inline pause/resume button in its transfer row.",
+  "depends_on": [20],
+  "inputs": [
+    "file-sharing/src/state.rs (TransferStatus, Transfer)",
+    "file-sharing/src/bridge.rs (NetworkCommand, default_handle_command, RuntimeState)",
+    "file-sharing/src/persist.rs (ShareRecord, DownloadRecord, StateStore)",
+    "file-sharing/src/plugin.rs (apply_network_event)",
+    "file-sharing/src/ui.rs (render_transfer_row)",
+    "file-sharing/src/share.rs (ShareSession, gossip handle, reannounce task)"
+  ],
+  "outputs": [
+    "file-sharing/src/state.rs",
+    "file-sharing/src/bridge.rs",
+    "file-sharing/src/persist.rs",
+    "file-sharing/src/plugin.rs",
+    "file-sharing/src/ui.rs",
+    "file-sharing/src/share.rs"
+  ],
+  "spec": {
+    "paused_status": "Add TransferStatus::Paused variant. When paused, the UI shows 'Paused' label alongside the current progress bar (which stays at its last known position, e.g. 100% for a seeding share or 45% for a paused download).",
+    "pause_command": "Add NetworkCommand::PauseTransfer { transfer_id } and NetworkCommand::ResumeTransfer { transfer_id }. The network thread handles these by stopping or restarting the share/download activity.",
+    "pause_seeding_share": "Pausing a seeding share: abort the reannounce task, leave the gossip topic (drop the gossip handle), and stop serving blobs for that collection. The blobs remain in FsStore but are no longer announced or served.",
+    "pause_downloading_share": "Pausing an in-progress download: cancel the ongoing download task. Progress so far is preserved in FsStore (completed file blobs remain). On resume, the download flow restarts and skips already-completed files via the existing has()/completed_blobs mechanism.",
+    "resume": "Resuming a share: re-join gossip, re-announce the collection, resume serving blobs. Resuming a download: restart the download_share_with_progress flow which skips completed files.",
+    "persist_paused_state": "Add a paused boolean field to both ShareRecord and DownloadRecord. When a share is paused, persist it. On recovery, paused shares are not re-joined to gossip and their UI status is set to Paused. Use serde default (false) for backward compatibility.",
+    "ui_button": "Each transfer row gets an inline button: shows 'Pause' when the transfer is active/seeding/downloading, shows 'Resume' when paused. The button sends PauseTransfer or ResumeTransfer through the bridge. Disabled for failed transfers.",
+    "independence": "Per-share pause state is completely independent from the global app pause (task 22). Pausing share A does not affect share B. Global pause does not modify per-share pause flags."
+  },
+  "acceptance": [
+    "Clicking 'Pause' on a seeding share changes its status to 'Paused' and stops gossip announcements",
+    "Clicking 'Resume' on a paused seeding share resumes gossip and shows 'Seeding' again",
+    "Clicking 'Pause' on an in-progress download stops the download and shows 'Paused' with current progress preserved",
+    "Clicking 'Resume' on a paused download resumes from where it left off (skips already-completed files)",
+    "Paused state survives app restart: a share paused before exit remains paused after restart",
+    "Pausing share A does not affect the status of share B"
+  ],
+  "passes": false
+}
+
+{
+  "id": 22,
+  "category": "core",
+  "title": "App-wide pause and resume",
+  "description": "A global toggle that pauses all network activity across the entire app. When active, all shares stop serving and announcing, all downloads stop fetching. The global pause does not modify per-share pause flags: when global pause is lifted, only shares that were not individually paused resume.",
+  "depends_on": [21],
+  "inputs": [
+    "file-sharing/src/state.rs (TransferStatus, Transfer)",
+    "file-sharing/src/bridge.rs (NetworkCommand, RuntimeState)",
+    "file-sharing/src/persist.rs (PersistedState)",
+    "file-sharing/src/plugin.rs (apply_network_event, poll_network_events)",
+    "file-sharing/src/ui.rs (ui_system toolbar)"
+  ],
+  "outputs": [
+    "file-sharing/src/state.rs",
+    "file-sharing/src/bridge.rs",
+    "file-sharing/src/persist.rs",
+    "file-sharing/src/plugin.rs",
+    "file-sharing/src/ui.rs"
+  ],
+  "spec": {
+    "global_pause_flag": "Add a global_paused boolean to PersistedState (persists across restarts, serde default false). Add a corresponding flag to the UI state or a dedicated Bevy Resource so the UI can read it.",
+    "toolbar_button": "Add a 'Pause All' / 'Resume All' toggle button in the toolbar next to the existing 'Share Directory...' and 'Download' buttons. Shows 'Pause All' when unpaused, 'Resume All' when paused.",
+    "pause_all_command": "Add NetworkCommand::PauseAll and NetworkCommand::ResumeAll. PauseAll stops all active shares and downloads at the network level (same mechanics as per-share pause but applied to all). ResumeAll restarts only shares whose per-share paused flag is false.",
+    "non_interaction_with_per_share": "Global pause does NOT set per-share paused flags. It is a separate layer. When the user unpauses the app, each share checks its own paused flag: if the share was individually paused before the global pause, it stays paused. Only shares that were active before global pause resume.",
+    "ui_indication": "When global pause is active, all active transfers show 'Paused' status in the UI. Per-share pause buttons remain functional: the user can still toggle individual share pause state while the app is globally paused (the effect applies when global pause is lifted).",
+    "persist": "The global_paused flag is saved to state.json. On restart, if global_paused is true, no shares are resumed regardless of their per-share pause state."
+  },
+  "acceptance": [
+    "Clicking 'Pause All' stops all network activity and all transfers show 'Paused'",
+    "Clicking 'Resume All' resumes only transfers that are not individually paused",
+    "Scenario: share A is active, share B is individually paused. User clicks 'Pause All' then 'Resume All'. Share A resumes to 'Seeding', share B remains 'Paused'",
+    "Global pause state persists across app restart",
+    "Per-share pause buttons work while global pause is active (toggling the per-share flag)"
+  ],
+  "passes": false
+}
