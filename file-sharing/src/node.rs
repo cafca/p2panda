@@ -24,13 +24,13 @@ pub struct NodeOptions {
 pub struct AppNode {
     pub blobs: Blobs,
     pub gossip: Gossip,
+    pub discovery: Discovery,
     pub endpoint: Endpoint,
     pub address_book: AddressBook,
     pub relay_url: Option<RelayUrl>,
     pub data_dir: PathBuf,
     _fs_store: FsStore,
     _mdns: MdnsDiscovery,
-    _discovery: Discovery,
 }
 
 impl AppNode {
@@ -88,13 +88,13 @@ impl AppNode {
         Ok(Self {
             blobs,
             gossip,
+            discovery,
             endpoint,
             address_book,
             relay_url: opts.relay_url,
             data_dir,
             _fs_store: fs_store,
             _mdns: mdns,
-            _discovery: discovery,
         })
     }
 

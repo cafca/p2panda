@@ -586,7 +586,7 @@
     "The diagnostic view does not cause noticeable performance degradation",
     "All diagnostic data is bounded (ring buffers) to prevent unbounded memory growth"
   ],
-  "passes": false
+  "passes": true
 }
 {
   "id": 26,

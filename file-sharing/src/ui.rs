@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use bevy::prelude::{EventReader, Res, ResMut, Resource};
@@ -5,6 +6,9 @@ use bevy::window::FileDragAndDrop;
 use bevy_egui::{egui, EguiContexts};
 
 use crate::bridge::{AsyncBridge, NetworkCommand};
+use crate::diagnostics::{
+    now_unix_ms, DiagnosticsSnapshot, PeerConnectionState, PeerDiscoveryMethod,
+};
 use crate::settings::{RelayMode, SettingsStore};
 use crate::state::{Direction, FileVerification, Transfer, TransferRegistry, TransferStatus};
 
@@ -28,6 +32,7 @@ enum TransferAction {
 pub struct UiState {
     pub global_paused: bool,
     pub show_settings_view: bool,
+    pub show_diagnostics_view: bool,
     pub download_dialog_open: bool,
     pub download_share_code_input: String,
     pub pending_share_path: Option<PathBuf>,
@@ -38,6 +43,11 @@ pub struct UiState {
     pub settings_error: Option<String>,
     pub drag_drop_active: bool,
     pub drag_drop_error: Option<String>,
+    pub diagnostics_snapshot: DiagnosticsSnapshot,
+    pub diagnostics_total_bytes_received: u64,
+    pub diagnostics_total_bytes_sent: u64,
+    upload_byte_counted_transfers: HashSet<u64>,
+    download_progress_watermark: HashMap<(u64, usize), u64>,
     pending_share_removal: Option<u64>,
     confirm_clear_completed: bool,
     folder_dialog: Option<(PendingDialog, flume::Receiver<Option<PathBuf>>)>,
@@ -54,6 +64,7 @@ impl UiState {
         Self {
             global_paused: false,
             show_settings_view: false,
+            show_diagnostics_view: false,
             download_dialog_open: false,
             download_share_code_input: String::new(),
             pending_share_path: None,
@@ -64,6 +75,11 @@ impl UiState {
             settings_error: None,
             drag_drop_active: false,
             drag_drop_error: None,
+            diagnostics_snapshot: DiagnosticsSnapshot::default(),
+            diagnostics_total_bytes_received: 0,
+            diagnostics_total_bytes_sent: 0,
+            upload_byte_counted_transfers: HashSet::new(),
+            download_progress_watermark: HashMap::new(),
             pending_share_removal: None,
             confirm_clear_completed: false,
             folder_dialog: None,
@@ -79,6 +95,42 @@ impl UiState {
         state.relay_mode = relay_mode;
         state.custom_relay_url_input = custom_relay_url.unwrap_or_default();
         state
+    }
+
+    pub fn record_uploaded_bytes(&mut self, transfer_id: u64, total_bytes: u64) {
+        if self.upload_byte_counted_transfers.insert(transfer_id) {
+            self.diagnostics_total_bytes_sent = self
+                .diagnostics_total_bytes_sent
+                .saturating_add(total_bytes);
+        }
+    }
+
+    pub fn record_downloaded_bytes(
+        &mut self,
+        transfer_id: u64,
+        file_index: usize,
+        bytes_downloaded: u64,
+    ) {
+        let key = (transfer_id, file_index);
+        let previous = self
+            .download_progress_watermark
+            .insert(key, bytes_downloaded);
+        if let Some(previous) = previous {
+            if bytes_downloaded > previous {
+                self.diagnostics_total_bytes_received = self
+                    .diagnostics_total_bytes_received
+                    .saturating_add(bytes_downloaded - previous);
+            }
+        } else {
+            self.diagnostics_total_bytes_received = self
+                .diagnostics_total_bytes_received
+                .saturating_add(bytes_downloaded);
+        }
+    }
+
+    pub fn prune_download_progress(&mut self, transfer_id: u64) {
+        self.download_progress_watermark
+            .retain(|(tracked_transfer_id, _), _| *tracked_transfer_id != transfer_id);
     }
 }
 
@@ -259,6 +311,19 @@ pub fn ui_system(
                 .clicked()
             {
                 ui_state.show_settings_view = !ui_state.show_settings_view;
+                if ui_state.show_settings_view {
+                    ui_state.show_diagnostics_view = false;
+                }
+            }
+
+            if ui
+                .selectable_label(ui_state.show_diagnostics_view, "Diagnostics")
+                .clicked()
+            {
+                ui_state.show_diagnostics_view = !ui_state.show_diagnostics_view;
+                if ui_state.show_diagnostics_view {
+                    ui_state.show_settings_view = false;
+                }
             }
         });
 
@@ -270,6 +335,8 @@ pub fn ui_system(
 
         if ui_state.show_settings_view {
             render_settings_view(ui, &mut ui_state, &mut settings_store, dialog_busy);
+        } else if ui_state.show_diagnostics_view {
+            render_diagnostics_view(ui, &ui_state, &transfers);
         } else {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 if transfers.transfers().is_empty() {
@@ -491,6 +558,180 @@ fn render_settings_view(
             egui::Color32::YELLOW,
             "Restart required to apply relay changes",
         );
+    }
+}
+
+fn render_diagnostics_view(ui: &mut egui::Ui, ui_state: &UiState, transfers: &TransferRegistry) {
+    ui.heading("Diagnostics");
+    ui.label("Live network and transfer state for troubleshooting.");
+    ui.separator();
+
+    let snapshot = &ui_state.diagnostics_snapshot;
+    ui.heading("Node identity");
+    ui.monospace(format!("Node ID: {}", snapshot.node_identity.node_id));
+    ui.label(format!(
+        "Relay URL: {}",
+        snapshot
+            .node_identity
+            .relay_url
+            .as_deref()
+            .unwrap_or("Disabled")
+    ));
+    if snapshot.node_identity.local_listen_addrs.is_empty() {
+        ui.label("Listening addresses: none");
+    } else {
+        ui.label("Listening addresses:");
+        for addr in &snapshot.node_identity.local_listen_addrs {
+            ui.monospace(addr);
+        }
+    }
+
+    ui.separator();
+    ui.heading("Peer connections");
+    if snapshot.peers.is_empty() {
+        ui.label("No known peers");
+    } else {
+        egui::Grid::new("diagnostic-peers-grid")
+            .num_columns(5)
+            .striped(true)
+            .show(ui, |ui| {
+                ui.strong("Node");
+                ui.strong("State");
+                ui.strong("Discovery");
+                ui.strong("Last seen");
+                ui.strong("RTT");
+                ui.end_row();
+                for peer in &snapshot.peers {
+                    ui.monospace(truncate_hash(&peer.node_id));
+                    ui.label(match peer.state {
+                        PeerConnectionState::Connected => "connected",
+                        PeerConnectionState::Known => "known",
+                        PeerConnectionState::Disconnected => "disconnected",
+                    });
+                    ui.label(match peer.discovered_via {
+                        PeerDiscoveryMethod::Manual => "manual",
+                        PeerDiscoveryMethod::Relay => "relay",
+                        PeerDiscoveryMethod::Mdns => "mDNS",
+                        PeerDiscoveryMethod::Unknown => "unknown",
+                    });
+                    ui.label(
+                        peer.last_seen_unix_ms
+                            .map(format_ago)
+                            .unwrap_or_else(|| "n/a".into()),
+                    );
+                    ui.label(
+                        peer.rtt_ms
+                            .map(|rtt_ms| format!("{rtt_ms} ms"))
+                            .unwrap_or_else(|| "n/a".into()),
+                    );
+                    ui.end_row();
+                }
+            });
+    }
+
+    ui.separator();
+    ui.heading("Connection history");
+    if snapshot.connection_history.is_empty() {
+        ui.label("No recent connection events");
+    } else {
+        egui::ScrollArea::vertical()
+            .max_height(140.0)
+            .show(ui, |ui| {
+                for entry in snapshot.connection_history.iter().rev() {
+                    let peer = entry
+                        .peer_node_id
+                        .as_deref()
+                        .map(truncate_hash)
+                        .unwrap_or_else(|| "-".into());
+                    let duration = entry
+                        .establish_ms
+                        .map(|ms| format!(" in {ms} ms"))
+                        .unwrap_or_default();
+                    ui.monospace(format!(
+                        "[{}] {} {} {}{}",
+                        format_ago(entry.at_unix_ms),
+                        entry.event,
+                        peer,
+                        entry.detail,
+                        duration
+                    ));
+                }
+            });
+    }
+
+    ui.separator();
+    ui.heading("Transfer stats");
+    let active_transfers = transfers
+        .transfers()
+        .iter()
+        .filter(|transfer| matches!(transfer.status, TransferStatus::Active))
+        .count();
+    let completed_transfers = transfers
+        .transfers()
+        .iter()
+        .filter(|transfer| matches!(transfer.status, TransferStatus::Completed))
+        .count();
+    let failed_transfers = transfers
+        .transfers()
+        .iter()
+        .filter(|transfer| matches!(transfer.status, TransferStatus::Error(_)))
+        .count();
+    ui.label(format!(
+        "Bytes received (session): {}",
+        format_bytes(ui_state.diagnostics_total_bytes_received)
+    ));
+    ui.label(format!(
+        "Bytes sent (session): {}",
+        format_bytes(ui_state.diagnostics_total_bytes_sent)
+    ));
+    ui.label(format!("Active transfers: {active_transfers}"));
+    ui.label(format!("Completed transfers: {completed_transfers}"));
+    ui.label(format!("Failed transfers: {failed_transfers}"));
+
+    ui.separator();
+    ui.heading("Error log");
+    if snapshot.error_log.is_empty() {
+        ui.label("No recent errors");
+    } else {
+        egui::ScrollArea::vertical()
+            .max_height(120.0)
+            .show(ui, |ui| {
+                for entry in snapshot.error_log.iter().rev() {
+                    ui.monospace(format!(
+                        "[{}] {}",
+                        format_ago(entry.at_unix_ms),
+                        entry.message
+                    ));
+                }
+            });
+    }
+
+    ui.separator();
+    ui.heading("Gossip state");
+    if snapshot.gossip_topics.is_empty() {
+        ui.label("No active gossip topics");
+    } else {
+        for topic in &snapshot.gossip_topics {
+            ui.monospace(format!(
+                "{} peers={} topic={}",
+                truncate_hash(&topic.topic_id),
+                topic.peer_count,
+                topic.topic_id
+            ));
+        }
+    }
+}
+
+fn format_ago(at_unix_ms: u64) -> String {
+    let now = now_unix_ms();
+    if at_unix_ms >= now {
+        return "just now".into();
+    }
+    let seconds = (now - at_unix_ms) / 1_000;
+    if seconds < 60 {
+        format!("{seconds}s ago")
+    } else {
+        format!("{}m ago", seconds / 60)
     }
 }
 

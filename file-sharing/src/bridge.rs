@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -14,8 +14,17 @@ use flume::{Receiver, Sender, TryRecvError};
 use futures_util::StreamExt;
 use iroh_blobs::hashseq::HashSeq;
 use p2panda_blobs::Hash as BlobHash;
+use p2panda_net::addrs::{NodeTransportInfo, TransportAddress};
+use p2panda_net::discovery::{DiscoveryEvent, SessionRole};
+use p2panda_net::gossip::GossipEvent;
+use p2panda_net::iroh_endpoint::from_public_key;
 use tracing::warn;
 
+use crate::diagnostics::{
+    now_unix_ms, ConnectionHistoryEntry, DiagnosticErrorEntry, DiagnosticsSnapshot,
+    GossipTopicSnapshot, NodeIdentitySnapshot, PeerConnectionState, PeerDiscoveryMethod,
+    PeerSnapshot, CONNECTION_HISTORY_LIMIT, ERROR_LOG_LIMIT,
+};
 use crate::download::{download_share_with_progress, DownloadEvent};
 use crate::node::{AppNode, NodeOptions};
 use crate::persist::{
@@ -24,13 +33,14 @@ use crate::persist::{
 };
 use crate::settings::load_settings;
 use crate::share::{share_directory, share_pin_name, ShareSession};
-use crate::share_code::decode_share_code;
+use crate::share_code::{decode_share_code, derive_topic};
 
 type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NetworkCommand {
     RecoverStartup,
+    RequestDiagnostics,
     ShareDirectory {
         transfer_id: u64,
         directory_path: PathBuf,
@@ -60,6 +70,7 @@ impl NetworkCommand {
     fn transfer_id(&self) -> u64 {
         match self {
             Self::RecoverStartup => u64::MAX,
+            Self::RequestDiagnostics => u64::MAX - 3,
             Self::PauseAll => u64::MAX - 1,
             Self::ResumeAll => u64::MAX - 2,
             Self::ShareDirectory { transfer_id, .. }
@@ -74,6 +85,9 @@ impl NetworkCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NetworkEvent {
+    DiagnosticsSnapshot {
+        snapshot: DiagnosticsSnapshot,
+    },
     ShareReady {
         transfer_id: u64,
         directory_name: String,
@@ -140,7 +154,15 @@ impl AsyncBridge {
     pub fn spawn_with_data_dir(node_options: NodeOptions, data_dir: PathBuf) -> Result<Self> {
         let bridge = Self::spawn_with_worker(
             move || Box::pin(async move { RuntimeState::new(data_dir, node_options).await }),
-            |state, command, events| Box::pin(default_handle_command(state, command, events)),
+            |state, command, events| {
+                Box::pin(async move {
+                    let result = default_handle_command(state.clone(), command, events).await;
+                    if let Err(err) = &result {
+                        state.push_error(err.to_string()).await;
+                    }
+                    result
+                })
+            },
         )?;
         bridge.send(NetworkCommand::RecoverStartup)?;
         Ok(bridge)
@@ -317,6 +339,16 @@ struct RuntimeInner {
     active_downloads: HashMap<u64, ActiveDownload>,
     globally_paused_downloads: HashMap<u64, DownloadRecord>,
     paused_downloads: HashMap<u64, DownloadRecord>,
+    diagnostics: RuntimeDiagnostics,
+}
+
+struct RuntimeDiagnostics {
+    discovery_events: tokio::sync::broadcast::Receiver<DiscoveryEvent>,
+    gossip_events: tokio::sync::broadcast::Receiver<GossipEvent>,
+    peer_last_seen_unix_ms: HashMap<String, u64>,
+    topic_peers: HashMap<String, HashSet<String>>,
+    connection_history: VecDeque<ConnectionHistoryEntry>,
+    error_log: VecDeque<DiagnosticErrorEntry>,
 }
 
 struct ActiveDownload {
@@ -328,6 +360,8 @@ impl RuntimeState {
     async fn new(data_dir: PathBuf, node_options: NodeOptions) -> Result<Self> {
         let settings = load_settings(&data_dir)?;
         let node = AppNode::with_data_dir(data_dir, node_options).await?;
+        let discovery_events = node.discovery.events().await?;
+        let gossip_events = node.gossip.events().await?;
         let store = StateStore::load(&node.data_dir)?;
         Ok(Self {
             node,
@@ -341,6 +375,14 @@ impl RuntimeState {
                 active_downloads: HashMap::new(),
                 globally_paused_downloads: HashMap::new(),
                 paused_downloads: HashMap::new(),
+                diagnostics: RuntimeDiagnostics {
+                    discovery_events,
+                    gossip_events,
+                    peer_last_seen_unix_ms: HashMap::new(),
+                    topic_peers: HashMap::new(),
+                    connection_history: VecDeque::with_capacity(CONNECTION_HISTORY_LIMIT),
+                    error_log: VecDeque::with_capacity(ERROR_LOG_LIMIT),
+                },
             }),
             _settings: settings,
             next_recovery_transfer_id: AtomicU64::new(1_000_000),
@@ -351,6 +393,11 @@ impl RuntimeState {
         self.next_recovery_transfer_id
             .fetch_add(1, Ordering::Relaxed)
     }
+
+    async fn push_error(&self, message: impl Into<String>) {
+        let mut runtime = self.inner.lock().await;
+        push_bounded_error(&mut runtime.diagnostics.error_log, message.into());
+    }
 }
 
 async fn default_handle_command(
@@ -360,6 +407,13 @@ async fn default_handle_command(
 ) -> Result<()> {
     match command {
         NetworkCommand::RecoverStartup => recover_startup_state(&state, &event_tx).await,
+        NetworkCommand::RequestDiagnostics => {
+            let snapshot = collect_diagnostics_snapshot(&state).await?;
+            event_tx
+                .send(NetworkEvent::DiagnosticsSnapshot { snapshot })
+                .context("failed to send DiagnosticsSnapshot event")?;
+            Ok(())
+        }
         NetworkCommand::ShareDirectory {
             transfer_id,
             directory_path,
@@ -489,6 +543,7 @@ async fn start_download_task(
                 runtime.paused_downloads.remove(&transfer_id);
             }
             Err(err) => {
+                task_state.push_error(err.to_string()).await;
                 let _ = task_event_tx.send(NetworkEvent::Error {
                     transfer_id,
                     error_message: err.to_string(),
@@ -1047,6 +1102,394 @@ async fn recover_startup_state(
     Ok(())
 }
 
+async fn collect_diagnostics_snapshot(state: &RuntimeState) -> Result<DiagnosticsSnapshot> {
+    let captured_at_unix_ms = now_unix_ms();
+
+    let (
+        active_topic_ids,
+        topic_peer_counts,
+        peer_last_seen_unix_ms,
+        connection_history,
+        error_log,
+    ) = {
+        let mut runtime = state.inner.lock().await;
+        drain_discovery_events(&mut runtime.diagnostics);
+        drain_gossip_events(&mut runtime.diagnostics);
+
+        let mut active_topic_ids = HashSet::new();
+        for share in runtime.live_shares.values() {
+            active_topic_ids.insert(share.topic_id());
+        }
+        for share in runtime.recovered_shares.values() {
+            active_topic_ids.insert(share.topic_id);
+        }
+        for record in runtime.paused_shares.values() {
+            if let Ok(collection_hash) = record.collection_hash() {
+                active_topic_ids.insert(derive_topic(*collection_hash.as_bytes()));
+            }
+        }
+        for record in runtime.globally_paused_shares.values() {
+            if let Ok(collection_hash) = record.collection_hash() {
+                active_topic_ids.insert(derive_topic(*collection_hash.as_bytes()));
+            }
+        }
+
+        (
+            active_topic_ids,
+            runtime.diagnostics.topic_peers.clone(),
+            runtime.diagnostics.peer_last_seen_unix_ms.clone(),
+            runtime
+                .diagnostics
+                .connection_history
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>(),
+            runtime
+                .diagnostics
+                .error_log
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>(),
+        )
+    };
+
+    let endpoint = state
+        .node
+        .endpoint
+        .endpoint()
+        .await
+        .context("failed to access endpoint for diagnostics")?;
+    let endpoint_addr = endpoint.addr();
+
+    let relay_url = state
+        .node
+        .relay_url
+        .as_ref()
+        .map(ToString::to_string)
+        .or_else(|| endpoint_addr.relay_urls().next().map(ToString::to_string));
+    let local_listen_addrs = endpoint_addr
+        .ip_addrs()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+
+    let node_id = state.node.node_id();
+    let peer_ids = state
+        .node
+        .address_book
+        .node_ids()
+        .await
+        .context("failed to list known peers for diagnostics")?;
+    let connected_peer_ids: HashSet<String> = topic_peer_counts
+        .values()
+        .flat_map(|peers| peers.iter().cloned())
+        .collect();
+
+    let mut peers = Vec::new();
+    for peer_id in peer_ids {
+        if peer_id == node_id {
+            continue;
+        }
+
+        let Some(info) = state
+            .node
+            .address_book
+            .node_info(peer_id)
+            .await
+            .context("failed to read peer info for diagnostics")?
+        else {
+            continue;
+        };
+
+        let peer_id_string = peer_id.to_string();
+        let remotely_connected = endpoint
+            .remote_info(from_public_key(peer_id))
+            .await
+            .is_some();
+        let connected = remotely_connected || connected_peer_ids.contains(&peer_id_string);
+        let discovered_via = if info.bootstrap {
+            PeerDiscoveryMethod::Manual
+        } else if info
+            .transports
+            .as_ref()
+            .map(|transport| {
+                transport
+                    .addresses()
+                    .iter()
+                    .any(|addr| matches!(addr, TransportAddress::Iroh(endpoint) if endpoint.relay_urls().next().is_some()))
+            })
+            .unwrap_or(false)
+        {
+            PeerDiscoveryMethod::Relay
+        } else if info.transports.is_some() {
+            PeerDiscoveryMethod::Mdns
+        } else {
+            PeerDiscoveryMethod::Unknown
+        };
+
+        let state = if connected {
+            PeerConnectionState::Connected
+        } else if info.metrics.is_stale() {
+            PeerConnectionState::Disconnected
+        } else {
+            PeerConnectionState::Known
+        };
+
+        peers.push(PeerSnapshot {
+            node_id: peer_id_string.clone(),
+            state,
+            discovered_via,
+            last_seen_unix_ms: peer_last_seen_unix_ms.get(&peer_id_string).copied(),
+            rtt_ms: None,
+        });
+    }
+    peers.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+
+    let mut gossip_topics = Vec::new();
+    for topic_id in active_topic_ids {
+        let topic_id_str = bytes_to_hex(&topic_id);
+        let peer_count = topic_peer_counts
+            .get(&topic_id_str)
+            .map(HashSet::len)
+            .unwrap_or(0);
+        gossip_topics.push(GossipTopicSnapshot {
+            topic_id: topic_id_str,
+            peer_count,
+        });
+    }
+    gossip_topics.sort_by(|a, b| a.topic_id.cmp(&b.topic_id));
+
+    Ok(DiagnosticsSnapshot {
+        captured_at_unix_ms,
+        node_identity: NodeIdentitySnapshot {
+            node_id: node_id.to_string(),
+            relay_url,
+            local_listen_addrs,
+        },
+        peers,
+        connection_history,
+        error_log,
+        gossip_topics,
+    })
+}
+
+fn drain_discovery_events(diagnostics: &mut RuntimeDiagnostics) {
+    loop {
+        match diagnostics.discovery_events.try_recv() {
+            Ok(event) => {
+                let at_unix_ms = now_unix_ms();
+                match event {
+                    DiscoveryEvent::SessionStarted {
+                        role,
+                        remote_node_id,
+                    } => {
+                        diagnostics
+                            .peer_last_seen_unix_ms
+                            .insert(remote_node_id.to_string(), at_unix_ms);
+                        push_bounded_history(
+                            &mut diagnostics.connection_history,
+                            ConnectionHistoryEntry {
+                                at_unix_ms,
+                                peer_node_id: Some(remote_node_id.to_string()),
+                                event: "connect-started".into(),
+                                detail: format!("{} discovery session started", session_role(role)),
+                                establish_ms: None,
+                            },
+                        );
+                    }
+                    DiscoveryEvent::SessionEnded {
+                        role,
+                        remote_node_id,
+                        duration,
+                        ..
+                    } => {
+                        diagnostics
+                            .peer_last_seen_unix_ms
+                            .insert(remote_node_id.to_string(), at_unix_ms);
+                        push_bounded_history(
+                            &mut diagnostics.connection_history,
+                            ConnectionHistoryEntry {
+                                at_unix_ms,
+                                peer_node_id: Some(remote_node_id.to_string()),
+                                event: "connect-success".into(),
+                                detail: format!(
+                                    "{} discovery session completed",
+                                    session_role(role)
+                                ),
+                                establish_ms: Some(duration.as_millis() as u64),
+                            },
+                        );
+                    }
+                    DiscoveryEvent::SessionFailed {
+                        role,
+                        remote_node_id,
+                        duration,
+                        reason,
+                    } => {
+                        diagnostics
+                            .peer_last_seen_unix_ms
+                            .insert(remote_node_id.to_string(), at_unix_ms);
+                        push_bounded_history(
+                            &mut diagnostics.connection_history,
+                            ConnectionHistoryEntry {
+                                at_unix_ms,
+                                peer_node_id: Some(remote_node_id.to_string()),
+                                event: "connect-failed".into(),
+                                detail: format!(
+                                    "{} discovery session failed: {reason}",
+                                    session_role(role)
+                                ),
+                                establish_ms: Some(duration.as_millis() as u64),
+                            },
+                        );
+                        push_bounded_error(
+                            &mut diagnostics.error_log,
+                            format!("failed to connect to peer {remote_node_id}: {reason}"),
+                        );
+                    }
+                }
+            }
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
+            Err(tokio::sync::broadcast::error::TryRecvError::Closed) => break,
+            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(skipped)) => {
+                push_bounded_error(
+                    &mut diagnostics.error_log,
+                    format!("diagnostics dropped {skipped} discovery events"),
+                );
+            }
+        }
+    }
+}
+
+fn drain_gossip_events(diagnostics: &mut RuntimeDiagnostics) {
+    loop {
+        match diagnostics.gossip_events.try_recv() {
+            Ok(event) => {
+                let at_unix_ms = now_unix_ms();
+                match event {
+                    GossipEvent::Joined { topic, nodes } => {
+                        let topic_id = bytes_to_hex(&topic);
+                        let peers = diagnostics.topic_peers.entry(topic_id.clone()).or_default();
+                        peers.clear();
+                        for node in nodes {
+                            let node_id = node.to_string();
+                            peers.insert(node_id.clone());
+                            diagnostics
+                                .peer_last_seen_unix_ms
+                                .insert(node_id, at_unix_ms);
+                        }
+                        push_bounded_history(
+                            &mut diagnostics.connection_history,
+                            ConnectionHistoryEntry {
+                                at_unix_ms,
+                                peer_node_id: None,
+                                event: "gossip-joined".into(),
+                                detail: format!("joined topic {topic_id}"),
+                                establish_ms: None,
+                            },
+                        );
+                    }
+                    GossipEvent::NeighbourUp { node, topic } => {
+                        let topic_id = bytes_to_hex(&topic);
+                        let node_id = node.to_string();
+                        diagnostics
+                            .topic_peers
+                            .entry(topic_id.clone())
+                            .or_default()
+                            .insert(node_id.clone());
+                        diagnostics
+                            .peer_last_seen_unix_ms
+                            .insert(node_id.clone(), at_unix_ms);
+                        push_bounded_history(
+                            &mut diagnostics.connection_history,
+                            ConnectionHistoryEntry {
+                                at_unix_ms,
+                                peer_node_id: Some(node_id),
+                                event: "peer-connected".into(),
+                                detail: format!("peer joined topic {topic_id}"),
+                                establish_ms: None,
+                            },
+                        );
+                    }
+                    GossipEvent::NeighbourDown { node, topic } => {
+                        let topic_id = bytes_to_hex(&topic);
+                        let node_id = node.to_string();
+                        if let Some(peers) = diagnostics.topic_peers.get_mut(&topic_id) {
+                            peers.remove(&node_id);
+                        }
+                        push_bounded_history(
+                            &mut diagnostics.connection_history,
+                            ConnectionHistoryEntry {
+                                at_unix_ms,
+                                peer_node_id: Some(node_id),
+                                event: "peer-disconnected".into(),
+                                detail: format!("peer left topic {topic_id}"),
+                                establish_ms: None,
+                            },
+                        );
+                    }
+                    GossipEvent::Left { topic } => {
+                        let topic_id = bytes_to_hex(&topic);
+                        diagnostics.topic_peers.remove(&topic_id);
+                        push_bounded_history(
+                            &mut diagnostics.connection_history,
+                            ConnectionHistoryEntry {
+                                at_unix_ms,
+                                peer_node_id: None,
+                                event: "gossip-left".into(),
+                                detail: format!("left topic {topic_id}"),
+                                establish_ms: None,
+                            },
+                        );
+                    }
+                }
+            }
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
+            Err(tokio::sync::broadcast::error::TryRecvError::Closed) => break,
+            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(skipped)) => {
+                push_bounded_error(
+                    &mut diagnostics.error_log,
+                    format!("diagnostics dropped {skipped} gossip events"),
+                );
+            }
+        }
+    }
+}
+
+fn session_role(role: SessionRole) -> &'static str {
+    match role {
+        SessionRole::Initiated => "initiated",
+        SessionRole::Accepted => "accepted",
+    }
+}
+
+fn push_bounded_history(
+    history: &mut VecDeque<ConnectionHistoryEntry>,
+    entry: ConnectionHistoryEntry,
+) {
+    if history.len() >= CONNECTION_HISTORY_LIMIT {
+        history.pop_front();
+    }
+    history.push_back(entry);
+}
+
+fn push_bounded_error(errors: &mut VecDeque<DiagnosticErrorEntry>, message: String) {
+    if errors.len() >= ERROR_LOG_LIMIT {
+        errors.pop_front();
+    }
+    errors.push_back(DiagnosticErrorEntry {
+        at_unix_ms: now_unix_ms(),
+        message,
+    });
+}
+
+fn bytes_to_hex(bytes: &[u8]) -> String {
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push_str(&format!("{byte:02x}"));
+    }
+    output
+}
+
 fn share_hashes_for_session(session: &ShareSession) -> Vec<BlobHash> {
     let mut hashes = Vec::with_capacity(session.files.len() + 2);
     hashes.push(session.collection_hash);
@@ -1427,6 +1870,7 @@ mod tests {
             Box::pin(async move {
                 let (transfer_id, delay_ms) = match command {
                     NetworkCommand::RecoverStartup => (u64::MAX, 0),
+                    NetworkCommand::RequestDiagnostics => (u64::MAX - 3, 0),
                     NetworkCommand::PauseAll => (u64::MAX - 1, 0),
                     NetworkCommand::ResumeAll => (u64::MAX - 2, 0),
                     NetworkCommand::ShareDirectory { transfer_id, .. } => (transfer_id, 200),

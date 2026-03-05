@@ -7,7 +7,7 @@ use bevy::window::{PrimaryWindow, Window};
 use directories::ProjectDirs;
 use flume::TryRecvError;
 
-use crate::bridge::{AsyncBridge, NetworkEvent};
+use crate::bridge::{AsyncBridge, NetworkCommand, NetworkEvent};
 use crate::node::NodeOptions;
 use crate::notifications::NotificationState;
 use crate::settings::{AppSettings, SettingsStore};
@@ -17,6 +17,20 @@ use crate::ui::{default_download_directory, ui_system, UiState};
 pub struct FileSharingPlugin;
 const INSECURE_SKIP_RELAY_CERT_VERIFY_ENV: &str =
     "P2PANDA_FILE_SHARING_INSECURE_SKIP_RELAY_CERT_VERIFY";
+const DIAGNOSTIC_POLL_INTERVAL: Duration = Duration::from_secs(1);
+
+#[derive(bevy::prelude::Resource)]
+pub(crate) struct DiagnosticsPollState {
+    last_requested_at: Instant,
+}
+
+impl Default for DiagnosticsPollState {
+    fn default() -> Self {
+        Self {
+            last_requested_at: Instant::now() - DIAGNOSTIC_POLL_INTERVAL,
+        }
+    }
+}
 
 impl Plugin for FileSharingPlugin {
     fn build(&self, app: &mut App) {
@@ -44,6 +58,7 @@ impl Plugin for FileSharingPlugin {
         app.insert_resource(settings_store);
         app.insert_resource(ui_state);
         app.insert_resource(NotificationState::default());
+        app.insert_resource(DiagnosticsPollState::default());
         app.add_systems(Update, (poll_network_events, ui_system).chain());
     }
 }
@@ -81,11 +96,12 @@ fn parse_bool_env_var(value: &str, name: &str) -> Result<bool> {
     }
 }
 
-pub fn poll_network_events(
+pub(crate) fn poll_network_events(
     bridge: Res<AsyncBridge>,
     mut transfers: ResMut<TransferRegistry>,
     mut ui_state: ResMut<UiState>,
     mut notifications: ResMut<NotificationState>,
+    diagnostics_poll_state: Option<ResMut<DiagnosticsPollState>>,
     primary_window: Query<&Window, With<PrimaryWindow>>,
 ) {
     let app_focused = primary_window
@@ -94,6 +110,14 @@ pub fn poll_network_events(
         .map(|window| window.focused)
         .unwrap_or(true);
     let now = Instant::now();
+    if let Some(mut diagnostics_poll_state) = diagnostics_poll_state {
+        if now.duration_since(diagnostics_poll_state.last_requested_at) >= DIAGNOSTIC_POLL_INTERVAL
+        {
+            if bridge.send(NetworkCommand::RequestDiagnostics).is_ok() {
+                diagnostics_poll_state.last_requested_at = now;
+            }
+        }
+    }
     let mut saw_progress = false;
 
     loop {
@@ -124,6 +148,10 @@ fn apply_network_event(
     event: NetworkEvent,
 ) -> bool {
     match event {
+        NetworkEvent::DiagnosticsSnapshot { snapshot } => {
+            ui_state.diagnostics_snapshot = snapshot;
+            false
+        }
         NetworkEvent::ShareReady {
             transfer_id,
             directory_name,
@@ -150,6 +178,7 @@ fn apply_network_event(
                     .collect();
             }
             transfer.status = TransferStatus::Completed;
+            ui_state.record_uploaded_bytes(transfer_id, total_bytes);
             false
         }
         NetworkEvent::DownloadStarted {
@@ -186,6 +215,7 @@ fn apply_network_event(
                     }
                 }
                 transfer.refresh_downloaded_bytes();
+                ui_state.record_downloaded_bytes(transfer_id, file_index, bytes_downloaded);
                 return true;
             }
             false
@@ -250,6 +280,7 @@ fn apply_network_event(
                 Transfer::new(transfer_id, "Transfer", Direction::Download)
             });
             transfer.status = TransferStatus::Error(error_message);
+            ui_state.prune_download_progress(transfer_id);
             false
         }
         NetworkEvent::GlobalPauseChanged { paused } => {

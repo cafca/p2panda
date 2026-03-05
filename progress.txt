@@ -707,3 +707,49 @@ What doesn't work:
 
 What doesn't work:
 - no additional blocker for Task 28 in this run
+
+# 2026-03-06 00:30 UTC
+
+- picked Task 25 (`Diagnostic view for network and app state inspection`) as the highest-priority unfinished feature because it provides direct troubleshooting visibility for peer/connectivity issues in the core transfer workflow and is a focused, shippable unit compared with broader review/release tasks
+- implemented diagnostics data model in `file-sharing/src/diagnostics.rs` with bounded structures and caps (connection history: 100, error log: 50)
+- extended async bridge protocol in `file-sharing/src/bridge.rs`:
+  - added `NetworkCommand::RequestDiagnostics`
+  - added `NetworkEvent::DiagnosticsSnapshot`
+  - implemented runtime snapshot collection from node internals (node identity, relay URL, listen addresses, known peers, gossip topics)
+  - subscribed to `DiscoveryEvent` and `GossipEvent` streams and drained them into bounded diagnostics state
+  - added connection-history tracking with timestamps and establish durations for discovery sessions
+  - added diagnostics error-ring buffering for discovery failures and dropped-event backpressure
+- exposed `Discovery` on `AppNode` in `file-sharing/src/node.rs` so diagnostics can subscribe to discovery events
+- wired periodic diagnostics polling in `file-sharing/src/plugin.rs`:
+  - inserted a 1-second polling resource and sent `RequestDiagnostics` on interval (no per-frame querying)
+  - handled `DiagnosticsSnapshot` events and stored latest snapshot in UI state
+  - tracked session transfer totals for diagnostics (`bytes received` via progress deltas, `bytes sent` via completed share totals)
+- implemented a dedicated Diagnostics panel in `file-sharing/src/ui.rs`:
+  - toolbar toggle (`Diagnostics`) with always-available view
+  - sections for node identity, peer connections, connection history, transfer stats, error log, and gossip state
+  - real-time rendering from incoming snapshots/events with human-readable relative timestamps
+- exported diagnostics module in `file-sharing/src/lib.rs`
+- ran `cargo fmt --package p2panda-file-sharing-gui`
+- ran verification loops:
+  - `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-file-sharing-gui --tests --locked`
+  - `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui bridge --lib --locked -- --nocapture`
+  - `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui plugin --lib --locked -- --nocapture`
+  - `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui ui --lib --locked -- --nocapture`
+- confirmed Task 25 acceptance criteria in this run and updated Task 25 `passes` to `true` in `PRD.jsonl`
+
+What doesn't work:
+- no additional blocker for Task 25 in this run
+
+# 2026-03-05 21:49 UTC
+
+- picked Task 25 (`Diagnostic view for network and app state inspection`) as the highest-priority unfinished feature in `HEAD` because it adds critical troubleshooting visibility while avoiding the broad, blocked scope of Tasks 24/31/32
+- validated the existing Task 25 implementation in this run (no additional feature edits required)
+- re-ran feedback loops for types/tests:
+  - `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-file-sharing-gui --tests --locked`
+  - `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui bridge --lib --locked -- --nocapture`
+  - `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui plugin --lib --locked -- --nocapture`
+  - `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui ui --lib --locked -- --nocapture`
+- confirmed Task 25 acceptance criteria still pass in this run and kept the single `PRD.jsonl` update as Task 25 `passes: true`
+
+What doesn't work:
+- no additional blocker for Task 25 in this run
