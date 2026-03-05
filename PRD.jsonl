@@ -528,7 +528,7 @@
     "The app looks intentionally designed rather than using raw egui defaults",
     "The UI works well at the default window size (900x600) and remains usable when resized"
   ],
-  "passes": false
+  "passes": true
 }
 {
   "id": 24,

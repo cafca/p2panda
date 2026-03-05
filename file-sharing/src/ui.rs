@@ -247,116 +247,141 @@ pub fn ui_system(
     let dialog_busy = ui_state.folder_dialog.is_some();
 
     let ctx = egui_contexts.ctx_mut();
+    apply_app_theme(ctx);
 
-    egui::CentralPanel::default().show(ctx, |ui| {
-        ui.heading("p2panda File Sharing");
+    egui::CentralPanel::default()
+        .frame(egui::Frame::new().inner_margin(egui::Margin::same(18)))
+        .show(ctx, |ui| {
+            egui::Frame::new()
+                .fill(egui::Color32::from_rgb(27, 31, 38))
+                .corner_radius(egui::CornerRadius::same(12))
+                .inner_margin(egui::Margin::symmetric(14, 12))
+                .show(ui, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.heading("p2panda File Sharing");
+                        ui.add_space(8.0);
+                        if ui_state.global_paused {
+                            ui.colored_label(
+                                egui::Color32::from_rgb(242, 190, 85),
+                                "All transfers paused",
+                            );
+                        } else {
+                            ui.colored_label(egui::Color32::from_rgb(107, 206, 168), "Live");
+                        }
+                    });
+                    ui.add_space(8.0);
 
-        ui.horizontal(|ui| {
-            if ui
-                .add_enabled(
-                    !dialog_busy && !ui_state.global_paused,
-                    egui::Button::new("Share Directory..."),
-                )
-                .clicked()
-            {
-                let rx = open_folder_dialog();
-                ui_state.folder_dialog = Some((PendingDialog::Share, rx));
+                    ui.horizontal_wrapped(|ui| {
+                        if ui
+                            .add_enabled(
+                                !dialog_busy && !ui_state.global_paused,
+                                egui::Button::new("Share Directory..."),
+                            )
+                            .clicked()
+                        {
+                            let rx = open_folder_dialog();
+                            ui_state.folder_dialog = Some((PendingDialog::Share, rx));
+                        }
+
+                        if ui
+                            .add_enabled(!ui_state.global_paused, egui::Button::new("Download"))
+                            .clicked()
+                        {
+                            ui_state.download_dialog_open = true;
+                        }
+
+                        let toggle_label = if ui_state.global_paused {
+                            "Resume All"
+                        } else {
+                            "Pause All"
+                        };
+                        if ui.button(toggle_label).clicked() {
+                            let command = if ui_state.global_paused {
+                                NetworkCommand::ResumeAll
+                            } else {
+                                NetworkCommand::PauseAll
+                            };
+                            if bridge.send(command).is_ok() {
+                                ui_state.global_paused = !ui_state.global_paused;
+                            }
+                        }
+
+                        let has_completed = transfers
+                            .transfers()
+                            .iter()
+                            .any(|transfer| matches!(transfer.status, TransferStatus::Completed));
+                        if ui
+                            .add_enabled(has_completed, egui::Button::new("Clear completed"))
+                            .clicked()
+                        {
+                            let has_completed_upload = transfers
+                                .transfers()
+                                .iter()
+                                .any(|transfer| is_serving_share(transfer));
+                            if has_completed_upload {
+                                ui_state.confirm_clear_completed = true;
+                            } else {
+                                clear_completed_transfers(&mut transfers);
+                            }
+                        }
+
+                        ui.separator();
+                        if ui
+                            .selectable_label(ui_state.show_settings_view, "Settings")
+                            .clicked()
+                        {
+                            ui_state.show_settings_view = !ui_state.show_settings_view;
+                            if ui_state.show_settings_view {
+                                ui_state.show_diagnostics_view = false;
+                            }
+                        }
+
+                        if ui
+                            .selectable_label(ui_state.show_diagnostics_view, "Diagnostics")
+                            .clicked()
+                        {
+                            ui_state.show_diagnostics_view = !ui_state.show_diagnostics_view;
+                            if ui_state.show_diagnostics_view {
+                                ui_state.show_settings_view = false;
+                            }
+                        }
+                    });
+                });
+
+            ui.add_space(10.0);
+            if let Some(error) = &ui_state.drag_drop_error {
+                ui.colored_label(egui::Color32::from_rgb(240, 119, 119), error);
+                ui.add_space(6.0);
             }
 
-            if ui
-                .add_enabled(!ui_state.global_paused, egui::Button::new("Download"))
-                .clicked()
-            {
-                ui_state.download_dialog_open = true;
-            }
-
-            let toggle_label = if ui_state.global_paused {
-                "Resume All"
+            if ui_state.show_settings_view {
+                render_settings_view(ui, &mut ui_state, &mut settings_store, dialog_busy);
+            } else if ui_state.show_diagnostics_view {
+                render_diagnostics_view(ui, &ui_state, &transfers);
             } else {
-                "Pause All"
-            };
-            if ui.button(toggle_label).clicked() {
-                let command = if ui_state.global_paused {
-                    NetworkCommand::ResumeAll
-                } else {
-                    NetworkCommand::PauseAll
-                };
-                if bridge.send(command).is_ok() {
-                    ui_state.global_paused = !ui_state.global_paused;
-                }
-            }
+                render_transfer_list_header(ui, transfers.transfers().len());
+                ui.add_space(4.0);
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    if transfers.transfers().is_empty() {
+                        render_empty_state(ui);
+                    }
 
-            let has_completed = transfers
-                .transfers()
-                .iter()
-                .any(|transfer| matches!(transfer.status, TransferStatus::Completed));
-            if ui
-                .add_enabled(has_completed, egui::Button::new("Clear completed"))
-                .clicked()
-            {
-                let has_completed_upload = transfers
-                    .transfers()
-                    .iter()
-                    .any(|transfer| is_serving_share(transfer));
-                if has_completed_upload {
-                    ui_state.confirm_clear_completed = true;
-                } else {
-                    clear_completed_transfers(&mut transfers);
-                }
-            }
+                    let mut pending_actions = Vec::new();
+                    for transfer in transfers.transfers() {
+                        if let Some(action) =
+                            render_transfer_row(ui, transfer, ui_state.global_paused)
+                        {
+                            pending_actions.push(action);
+                        }
+                        ui.add_space(8.0);
+                    }
 
-            ui.separator();
-            if ui
-                .selectable_label(ui_state.show_settings_view, "Settings")
-                .clicked()
-            {
-                ui_state.show_settings_view = !ui_state.show_settings_view;
-                if ui_state.show_settings_view {
-                    ui_state.show_diagnostics_view = false;
-                }
-            }
-
-            if ui
-                .selectable_label(ui_state.show_diagnostics_view, "Diagnostics")
-                .clicked()
-            {
-                ui_state.show_diagnostics_view = !ui_state.show_diagnostics_view;
-                if ui_state.show_diagnostics_view {
-                    ui_state.show_settings_view = false;
-                }
+                    for action in pending_actions {
+                        apply_transfer_action(&mut transfers, &mut ui_state, &bridge, action);
+                    }
+                });
             }
         });
-
-        ui.separator();
-        if let Some(error) = &ui_state.drag_drop_error {
-            ui.colored_label(egui::Color32::RED, error);
-            ui.separator();
-        }
-
-        if ui_state.show_settings_view {
-            render_settings_view(ui, &mut ui_state, &mut settings_store, dialog_busy);
-        } else if ui_state.show_diagnostics_view {
-            render_diagnostics_view(ui, &ui_state, &transfers);
-        } else {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                if transfers.transfers().is_empty() {
-                    ui.label("No active transfers");
-                }
-
-                let mut pending_actions = Vec::new();
-                for transfer in transfers.transfers() {
-                    if let Some(action) = render_transfer_row(ui, transfer, ui_state.global_paused)
-                    {
-                        pending_actions.push(action);
-                    }
-                }
-
-                for action in pending_actions {
-                    apply_transfer_action(&mut transfers, &mut ui_state, &bridge, action);
-                }
-            });
-        }
-    });
 
     if ui_state.download_dialog_open {
         render_download_dialog(ctx, &mut ui_state, &mut transfers, &bridge);
@@ -386,6 +411,49 @@ pub fn render_transfer_ui(
         settings_store,
         drag_and_drop_events,
     );
+}
+
+fn apply_app_theme(ctx: &egui::Context) {
+    let mut style = (*ctx.style()).clone();
+    style.spacing.item_spacing = egui::vec2(10.0, 8.0);
+    style.spacing.button_padding = egui::vec2(10.0, 6.0);
+    style.spacing.window_margin = egui::Margin::symmetric(14, 12);
+    style.visuals.panel_fill = egui::Color32::from_rgb(20, 24, 30);
+    style.visuals.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(24, 28, 35);
+    style.visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(44, 52, 63);
+    style.visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(59, 71, 86);
+    style.visuals.widgets.active.bg_fill = egui::Color32::from_rgb(68, 82, 99);
+    style.visuals.widgets.open.bg_fill = egui::Color32::from_rgb(54, 65, 79);
+    style.visuals.selection.bg_fill = egui::Color32::from_rgb(48, 98, 132);
+    style.visuals.widgets.noninteractive.corner_radius = egui::CornerRadius::same(8);
+    style.visuals.widgets.inactive.corner_radius = egui::CornerRadius::same(8);
+    style.visuals.widgets.hovered.corner_radius = egui::CornerRadius::same(8);
+    style.visuals.widgets.active.corner_radius = egui::CornerRadius::same(8);
+    style.visuals.window_corner_radius = egui::CornerRadius::same(10);
+    ctx.set_style(style);
+}
+
+fn render_transfer_list_header(ui: &mut egui::Ui, total: usize) {
+    ui.horizontal(|ui| {
+        ui.heading("Transfers");
+        ui.add_space(8.0);
+        ui.label(format!("{total} total"));
+    });
+    ui.label("Share and download activity, integrity state, and transfer controls.");
+}
+
+fn render_empty_state(ui: &mut egui::Ui) {
+    egui::Frame::new()
+        .fill(egui::Color32::from_rgb(24, 29, 36))
+        .corner_radius(egui::CornerRadius::same(10))
+        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(49, 59, 73)))
+        .inner_margin(egui::Margin::same(14))
+        .show(ui, |ui| {
+            ui.heading("No transfers yet");
+            ui.label(
+                "Use Share Directory to publish files, or Download to fetch from a share code.",
+            );
+        });
 }
 
 fn render_download_dialog(
@@ -742,131 +810,164 @@ fn render_transfer_row(
 ) -> Option<TransferAction> {
     let mut action = None;
 
-    ui.group(|ui| {
-        ui.horizontal(|ui| {
-            let icon = match transfer.direction {
-                Direction::Upload => "↑",
-                Direction::Download => "↓",
-            };
-            ui.label(format!("{icon} {}", transfer.name));
+    egui::Frame::new()
+        .fill(egui::Color32::from_rgb(25, 32, 40))
+        .corner_radius(egui::CornerRadius::same(10))
+        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(50, 61, 75)))
+        .inner_margin(egui::Margin::same(12))
+        .show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                let icon = match transfer.direction {
+                    Direction::Upload => "UPLOAD",
+                    Direction::Download => "DOWNLOAD",
+                };
+                ui.colored_label(
+                    egui::Color32::from_rgb(146, 175, 205),
+                    egui::RichText::new(icon).strong(),
+                );
+                ui.label(egui::RichText::new(&transfer.name).strong());
+                ui.separator();
 
-            let files_total = transfer.file_count();
-            let files_done = transfer.completed_file_count();
-            ui.label(format!("{files_done}/{files_total} files"));
+                let files_total = transfer.file_count();
+                let files_done = transfer.completed_file_count();
+                ui.label(format!("{files_done}/{files_total} files"));
+                ui.separator();
 
-            let bytes_per_sec = match transfer.direction {
-                Direction::Upload => transfer.outbound_bytes_per_sec,
-                Direction::Download => transfer.inbound_bytes_per_sec,
-            };
-            ui.label(format!(
-                "{} /s",
-                format_bytes(bytes_per_sec.max(0.0) as u64)
-            ));
+                let bytes_per_sec = match transfer.direction {
+                    Direction::Upload => transfer.outbound_bytes_per_sec,
+                    Direction::Download => transfer.inbound_bytes_per_sec,
+                };
+                ui.label(format!(
+                    "{} /s",
+                    format_bytes(bytes_per_sec.max(0.0) as u64)
+                ));
+                ui.separator();
+                let status = status_label(transfer, globally_paused);
+                ui.colored_label(
+                    status_color(transfer, globally_paused),
+                    egui::RichText::new(status).strong(),
+                );
 
-            match transfer.status {
-                TransferStatus::Paused => {
-                    if ui.button("Resume").clicked() {
-                        action = Some(TransferAction::Resume {
-                            transfer_id: transfer.id,
-                        });
+                match transfer.status {
+                    TransferStatus::Paused => {
+                        if ui.button("Resume").clicked() {
+                            action = Some(TransferAction::Resume {
+                                transfer_id: transfer.id,
+                            });
+                        }
+                    }
+                    TransferStatus::Error(_) | TransferStatus::Cancelled => {
+                        ui.add_enabled(false, egui::Button::new("Pause"));
+                    }
+                    _ => {
+                        if can_pause_transfer(transfer) && ui.button("Pause").clicked() {
+                            action = Some(TransferAction::Pause {
+                                transfer_id: transfer.id,
+                            });
+                        }
                     }
                 }
-                TransferStatus::Error(_) | TransferStatus::Cancelled => {
-                    ui.add_enabled(false, egui::Button::new("Pause"));
+
+                if can_cancel_transfer(transfer) && ui.button("Cancel").clicked() {
+                    action = Some(TransferAction::Cancel {
+                        transfer_id: transfer.id,
+                    });
                 }
-                _ => {
-                    if can_pause_transfer(transfer) && ui.button("Pause").clicked() {
-                        action = Some(TransferAction::Pause {
-                            transfer_id: transfer.id,
-                        });
+
+                if can_remove_transfer(transfer) && ui.button("Remove").clicked() {
+                    action = Some(TransferAction::Remove {
+                        transfer_id: transfer.id,
+                    });
+                }
+            });
+
+            match &transfer.status {
+                TransferStatus::Pending => {
+                    ui.label(status_label(transfer, globally_paused));
+                }
+                TransferStatus::Active
+                | TransferStatus::Paused
+                | TransferStatus::Completed
+                | TransferStatus::Cancelled => {
+                    ui.label(status_label(transfer, globally_paused));
+                    if should_render_progress_bar(transfer, globally_paused) {
+                        let (fraction, downloaded_bytes) = match transfer.direction {
+                            Direction::Upload => (1.0, transfer.total_bytes),
+                            Direction::Download => {
+                                (transfer.progress_fraction(), transfer.downloaded_bytes)
+                            }
+                        };
+                        render_progress_bar(ui, fraction, downloaded_bytes, transfer.total_bytes);
                     }
+                }
+                TransferStatus::Error(message) => {
+                    ui.colored_label(egui::Color32::RED, status_label(transfer, globally_paused));
+                    ui.colored_label(egui::Color32::RED, message);
                 }
             }
 
-            if can_cancel_transfer(transfer) && ui.button("Cancel").clicked() {
-                action = Some(TransferAction::Cancel {
-                    transfer_id: transfer.id,
+            if let Some((label, color)) = verification_badge(transfer) {
+                ui.colored_label(color, label);
+            }
+
+            if let Some(collection_hash) = &transfer.collection_hash {
+                ui.horizontal(|ui| {
+                    ui.label("Collection hash:");
+                    ui.monospace(truncate_hash(collection_hash));
+                    if ui.button("Copy hash").clicked() {
+                        copy_text(ui.ctx(), collection_hash);
+                    }
                 });
             }
 
-            if can_remove_transfer(transfer) && ui.button("Remove").clicked() {
-                action = Some(TransferAction::Remove {
-                    transfer_id: transfer.id,
-                });
+            if matches!(transfer.direction, Direction::Download) && !transfer.files.is_empty() {
+                egui::CollapsingHeader::new("Integrity details")
+                    .default_open(false)
+                    .show(ui, |ui| {
+                        for (index, file) in transfer.files.iter().enumerate() {
+                            ui.horizontal(|ui| {
+                                ui.label(format!("File {}", index + 1));
+                                ui.label(match &file.verification {
+                                    FileVerification::Pending => "Pending",
+                                    FileVerification::Verified => "Verified",
+                                    FileVerification::Failed(_) => "Failed",
+                                });
+                            });
+                        }
+                    });
+            }
+
+            if matches!(transfer.direction, Direction::Upload) {
+                if let Some(code) = &transfer.share_code {
+                    ui.horizontal(|ui| {
+                        ui.label("Share code:");
+                        let mut share_code_text = code.clone();
+                        ui.add(
+                            egui::TextEdit::singleline(&mut share_code_text).desired_width(280.0),
+                        );
+                        if ui.button("Copy").clicked() {
+                            copy_text(ui.ctx(), code);
+                        }
+                    });
+                }
             }
         });
 
-        match &transfer.status {
-            TransferStatus::Pending => {
-                ui.label(status_label(transfer, globally_paused));
-            }
-            TransferStatus::Active
-            | TransferStatus::Paused
-            | TransferStatus::Completed
-            | TransferStatus::Cancelled => {
-                ui.label(status_label(transfer, globally_paused));
-                if should_render_progress_bar(transfer, globally_paused) {
-                    let (fraction, downloaded_bytes) = match transfer.direction {
-                        Direction::Upload => (1.0, transfer.total_bytes),
-                        Direction::Download => {
-                            (transfer.progress_fraction(), transfer.downloaded_bytes)
-                        }
-                    };
-                    render_progress_bar(ui, fraction, downloaded_bytes, transfer.total_bytes);
-                }
-            }
-            TransferStatus::Error(message) => {
-                ui.colored_label(egui::Color32::RED, status_label(transfer, globally_paused));
-                ui.colored_label(egui::Color32::RED, message);
-            }
-        }
-
-        if let Some((label, color)) = verification_badge(transfer) {
-            ui.colored_label(color, label);
-        }
-
-        if let Some(collection_hash) = &transfer.collection_hash {
-            ui.horizontal(|ui| {
-                ui.label("Collection hash:");
-                ui.monospace(truncate_hash(collection_hash));
-                if ui.button("Copy hash").clicked() {
-                    copy_text(ui.ctx(), collection_hash);
-                }
-            });
-        }
-
-        if matches!(transfer.direction, Direction::Download) && !transfer.files.is_empty() {
-            egui::CollapsingHeader::new("Integrity details")
-                .default_open(false)
-                .show(ui, |ui| {
-                    for (index, file) in transfer.files.iter().enumerate() {
-                        ui.horizontal(|ui| {
-                            ui.label(format!("File {}", index + 1));
-                            ui.label(match &file.verification {
-                                FileVerification::Pending => "Pending",
-                                FileVerification::Verified => "Verified",
-                                FileVerification::Failed(_) => "Failed",
-                            });
-                        });
-                    }
-                });
-        }
-
-        if matches!(transfer.direction, Direction::Upload) {
-            if let Some(code) = &transfer.share_code {
-                ui.horizontal(|ui| {
-                    ui.label("Share code:");
-                    let mut share_code_text = code.clone();
-                    ui.add(egui::TextEdit::singleline(&mut share_code_text).desired_width(280.0));
-                    if ui.button("Copy").clicked() {
-                        copy_text(ui.ctx(), code);
-                    }
-                });
-            }
-        }
-    });
-
     action
+}
+
+fn status_color(transfer: &Transfer, globally_paused: bool) -> egui::Color32 {
+    if globally_paused && matches!(transfer.status, TransferStatus::Active) {
+        return egui::Color32::from_rgb(242, 190, 85);
+    }
+
+    match transfer.status {
+        TransferStatus::Error(_) => egui::Color32::from_rgb(238, 109, 109),
+        TransferStatus::Completed => egui::Color32::from_rgb(107, 206, 168),
+        TransferStatus::Cancelled => egui::Color32::from_rgb(173, 182, 194),
+        TransferStatus::Paused => egui::Color32::from_rgb(242, 190, 85),
+        TransferStatus::Pending | TransferStatus::Active => egui::Color32::from_rgb(146, 175, 205),
+    }
 }
 
 fn render_progress_bar(ui: &mut egui::Ui, fraction: f32, downloaded_bytes: u64, total_bytes: u64) {
