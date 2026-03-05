@@ -861,3 +861,25 @@ What doesn't work:
 What doesn't work:
 - Task 32 remains blocked for full acceptance in this run because workspace-wide `cargo outdated` cannot complete due a dependency-resolution conflict (`curve25519-dalek` pre-release mismatch via `p2panda-encryption` + `fuzz` + `iroh` graph), so I cannot truthfully verify the criterion "No other dependency has a known-available patch or minor upgrade left unapplied" across the entire workspace.
 - left Task 32 `passes` as `false`.
+
+# 2026-03-05 22:52 UTC
+
+- picked Task 31 (`Multi-platform packaging and release builds`) as the highest-priority unfinished feature because only Tasks 31/32 remain and release artifact automation is the direct ship-readiness path
+- implemented cross-platform release automation for tagged builds:
+  - added `.github/workflows/release.yml` triggered by `v*` tags with native `macos-latest`, `ubuntu-latest`, and `windows-latest` jobs
+  - added strict tag/version gate script `scripts/release/check-version.sh` to enforce `GITHUB_REF_NAME == v<file-sharing/Cargo.toml package.version>`
+  - added `scripts/release/package-macos.sh` to build a signed `.app` bundle with `Info.plist` and package it into a `.dmg`
+  - added `scripts/release/package-linux.sh` to build both `.AppImage` and `.tar.gz` (including a minimal README)
+  - added `scripts/release/package-windows.ps1` to build both `.msi` (WiX via `cargo wix`) and `.zip`
+  - wired per-platform SHA-256 checksum generation and artifact upload, then publish all artifacts to GitHub Releases via `softprops/action-gh-release`
+- updated `file-sharing/src/main.rs` so the window title includes the running app version (`p2panda File Sharing v<version>`) per Task 31 app-metadata acceptance
+- ran feedback loops:
+  - `bash -n scripts/release/check-version.sh scripts/release/package-macos.sh scripts/release/package-linux.sh`
+  - `bash scripts/release/check-version.sh v0.1.0`
+  - `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-file-sharing-gui --locked`
+  - `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui ui --lib --locked -- --nocapture`
+- kept Task 31 `passes` as `false` in this run pending real CI artifact execution on macOS/Linux/Windows runners
+
+What doesn't work:
+- local PowerShell syntax validation for `scripts/release/package-windows.ps1` is blocked in this environment because `pwsh` is not installed (`/bin/bash: pwsh: command not found`)
+- Task 31 acceptance cannot be fully proven locally; artifact build/install behavior must be validated by GitHub Actions tag-run outputs (especially AppImage runtime compatibility and Windows MSI install behavior on clean systems)

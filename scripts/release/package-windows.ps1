@@ -1,0 +1,49 @@
+param(
+  [Parameter(Mandatory = $true)]
+  [string]$Version
+)
+
+$ErrorActionPreference = "Stop"
+
+$RootDir = (Resolve-Path "$PSScriptRoot/../..").Path
+$DistDir = Join-Path $RootDir "dist"
+$BinName = "p2panda-file-sharing-gui"
+$Arch = if ($env:ARCH) { $env:ARCH } else { "x86_64" }
+
+Set-Location $RootDir
+if (Test-Path (Join-Path $DistDir "windows")) {
+  Remove-Item (Join-Path $DistDir "windows") -Recurse -Force
+}
+New-Item -ItemType Directory -Force -Path (Join-Path $DistDir "windows") | Out-Null
+
+cargo build --release -p $BinName
+
+$ExePath = Join-Path $RootDir "target/release/$BinName.exe"
+$ZipDir = Join-Path $DistDir "windows/p2panda-file-sharing-$Version-windows-$Arch"
+New-Item -ItemType Directory -Force -Path $ZipDir | Out-Null
+Copy-Item $ExePath (Join-Path $ZipDir "$BinName.exe")
+
+@"
+p2panda File Sharing $Version
+
+Run:
+  p2panda-file-sharing-gui.exe
+"@ | Out-File -FilePath (Join-Path $ZipDir "README.txt") -Encoding utf8
+
+$ZipPath = Join-Path $DistDir "p2panda-file-sharing-$Version-windows-$Arch.zip"
+if (Test-Path $ZipPath) {
+  Remove-Item $ZipPath -Force
+}
+Compress-Archive -Path (Join-Path $ZipDir "*") -DestinationPath $ZipPath
+
+cargo wix --package $BinName
+$MsiSource = Get-ChildItem -Path (Join-Path $RootDir "target/wix") -Filter "*.msi" | Sort-Object LastWriteTime | Select-Object -Last 1
+if (-not $MsiSource) {
+  throw "failed to locate MSI output in target/wix"
+}
+
+$MsiPath = Join-Path $DistDir "p2panda-file-sharing-$Version-windows-$Arch.msi"
+Copy-Item $MsiSource.FullName $MsiPath -Force
+
+Write-Output $MsiPath
+Write-Output $ZipPath

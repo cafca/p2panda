@@ -1,0 +1,144 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: 1.89.0
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: moonrepo/setup-rust@v1
+        with:
+          channel: ${{ env.RUST_TOOLCHAIN }}
+
+      - name: Validate tag and read version
+        id: version
+        run: |
+          version="$(bash scripts/release/check-version.sh "$GITHUB_REF_NAME")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Build macOS app bundle and dmg
+        run: bash scripts/release/package-macos.sh "${{ steps.version.outputs.version }}"
+
+      - name: Generate checksums
+        run: shasum -a 256 dist/p2panda-file-sharing-*.dmg > dist/p2panda-file-sharing-${{ steps.version.outputs.version }}-macos.sha256
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-macos
+          path: |
+            dist/p2panda-file-sharing-*.dmg
+            dist/p2panda-file-sharing-*-macos.sha256
+
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: moonrepo/setup-rust@v1
+        with:
+          channel: ${{ env.RUST_TOOLCHAIN }}
+
+      - name: Install AppImage dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfuse2
+          cargo install cargo-appimage --locked
+
+      - name: Validate tag and read version
+        id: version
+        run: |
+          version="$(bash scripts/release/check-version.sh "$GITHUB_REF_NAME")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Build Linux artifacts
+        run: bash scripts/release/package-linux.sh "${{ steps.version.outputs.version }}"
+
+      - name: Generate checksums
+        run: |
+          shasum -a 256 dist/p2panda-file-sharing-*.AppImage > dist/p2panda-file-sharing-${{ steps.version.outputs.version }}-linux-appimage.sha256
+          shasum -a 256 dist/p2panda-file-sharing-*.tar.gz > dist/p2panda-file-sharing-${{ steps.version.outputs.version }}-linux-tar.sha256
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-linux
+          path: |
+            dist/p2panda-file-sharing-*.AppImage
+            dist/p2panda-file-sharing-*.tar.gz
+            dist/p2panda-file-sharing-*-linux-*.sha256
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: moonrepo/setup-rust@v1
+        with:
+          channel: ${{ env.RUST_TOOLCHAIN }}
+
+      - name: Install cargo-wix
+        run: cargo install cargo-wix --locked
+
+      - name: Validate tag and read version
+        id: version
+        shell: bash
+        run: |
+          version="$(bash scripts/release/check-version.sh "$GITHUB_REF_NAME")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Build Windows artifacts
+        shell: pwsh
+        run: scripts/release/package-windows.ps1 -Version "${{ steps.version.outputs.version }}"
+
+      - name: Generate checksums
+        shell: pwsh
+        run: |
+          Get-FileHash dist\p2panda-file-sharing-*.msi -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  $($_.Path | Split-Path -Leaf)" } | Set-Content -Path dist\p2panda-file-sharing-${{ steps.version.outputs.version }}-windows-msi.sha256
+          Get-FileHash dist\p2panda-file-sharing-*.zip -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  $($_.Path | Split-Path -Leaf)" } | Set-Content -Path dist\p2panda-file-sharing-${{ steps.version.outputs.version }}-windows-zip.sha256
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-windows
+          path: |
+            dist/p2panda-file-sharing-*.msi
+            dist/p2panda-file-sharing-*.zip
+            dist/p2panda-file-sharing-*-windows-*.sha256
+
+  release:
+    needs: [macos, linux, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: dist
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
