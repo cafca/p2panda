@@ -647,3 +647,21 @@ What doesn't work:
 What doesn't work:
 - Task 35 remains `passes: false` in this run. The remaining acceptance blocker is deterministic blob-file deletion verification for all associated share blobs (collection/manifest/files). In the current `iroh-blobs` API used by this codebase, explicit blob delete is not publicly exposed through the safe API path used here; the implemented flow unpins and removes share records/serving state, but full explicit per-hash deletion semantics from the PRD are not yet proven in this run.
 - I tested a GC-based approach to force immediate purge, but it introduced a regression (downloads intermittently losing unpinned collection blobs mid-flow), so that approach was reverted.
+
+# 2026-03-05 21:07 UTC
+
+- picked Task 32 (`Dependency audit and Bevy 0.16 upgrade`) as the highest-priority unfinished feature because it removes the active Bevy/bevy_egui version pin debt and is foundational for future UI/release stability
+- installed `cargo-outdated` and `cargo-audit` to run the required dependency/security audit loop
+- attempted `cargo outdated --workspace --depth 1`; it is currently blocked by a workspace version-resolution conflict in transitive pre-release crypto deps (`curve25519-dalek` required simultaneously as `5.0.0-pre.1` via `iroh` and `5.0.0-pre.6` via `x-wing` in the temporary outdated resolution)
+- ran `cargo audit`; it completed with findings including `RUSTSEC-2023-0071` (`rsa` via `sqlx-mysql`), plus unmaintained crates warnings (`atomic-polyfill`, `paste`, `proc-macro-error`), and intermittent registry timeout warnings
+- upgraded `file-sharing` GUI stack from `bevy 0.15` to `bevy 0.16` and from `bevy_egui 0.33` to `bevy_egui 0.34`
+- updated Bevy 0.16 API usage in app code (`IntoScheduleConfigs` import for chained systems and explicit `EguiPlugin { enable_multipass_for_primary_context: false }` construction)
+- ran `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-file-sharing-gui` (passes)
+- ran `CARGO_BUILD_JOBS=1 ./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui --lib` (passes: 62/62)
+- ran `CARGO_BUILD_JOBS=1 ./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui --tests` (blocked during link of integration-test binaries)
+- kept Task 32 `passes` as false in `PRD.jsonl`
+
+What doesn't work:
+- full integration-test verification for Task 32 is blocked in this sandbox by linker OOM (`collect2: fatal error: ld terminated with signal 9 [Killed]`) while linking heavy Bevy integration test binaries (e.g. `recovery`)
+- Task 32 acceptance item `cargo audit reports no known vulnerabilities` is not met yet because audit currently reports at least one vulnerability (`RUSTSEC-2023-0071`) and additional unmaintained-crate warnings
+- workspace-wide `cargo outdated --workspace` output remains incomplete due the transitive version-resolution conflict above, so the acceptance item about no remaining patch/minor upgrades cannot be fully proven in this run

@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use bevy::app::Plugin;
-use bevy::prelude::{App, IntoSystemConfigs, Res, ResMut, Update};
+use bevy::prelude::{App, IntoScheduleConfigs, Res, ResMut, Update};
 use directories::ProjectDirs;
 use flume::TryRecvError;
 
