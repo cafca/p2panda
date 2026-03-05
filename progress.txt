@@ -17,17 +17,6 @@ What doesn't work: everything does. Append new logs below.
 What doesn't work:
 - `cargo check -p p2panda-blobs` and `cargo test -p p2panda-blobs --test blobs` are blocked in this environment by `.cargo/config.toml` forcing `linker = "gcc"` while `gcc` is not installed
 
-# 2026-03-04 16:36
-
-- picked Task 1 (`Project scaffold`) as the highest-priority remaining feature because every file-sharing task depends on a real GUI crate entrypoint and dependency scaffold
-- updated `file-sharing/Cargo.toml` to add the missing Bevy/egui GUI stack plus the remaining scaffold dependencies called out in the PRD (`flume`, `rfd`, `directories`)
-- replaced the `main.rs` print stub with a Bevy app using `DefaultPlugins`, `EguiPlugin`, a 900x600 primary window, and the required title `p2panda File Sharing`
-- implemented a minimal `FileSharingPlugin` so the app has the placeholder plugin hook required by the scaffold spec
-- ran `cargo fmt --package p2panda-file-sharing-gui`
-
-What doesn't work:
-- `cargo check -p p2panda-file-sharing-gui` could not complete in this environment because fetching the new crates.io dependencies for Bevy/bevy_egui repeatedly timed out while updating the crates index
-
 # 2026-03-04 16:16
 
 - picked Task 3 (`Manifest format as signed p2panda Operation`) as the highest-priority remaining feature because the signed manifest is the authenticated core data structure that later share and download flows depend on
@@ -38,6 +27,17 @@ What doesn't work:
 
 What doesn't work:
 - `cargo test -p p2panda-file-sharing-gui manifest -- --nocapture` is blocked in this environment by `.cargo/config.toml` forcing `linker = "gcc"` while no `gcc` binary is installed
+
+# 2026-03-04 16:36
+
+- picked Task 1 (`Project scaffold`) as the highest-priority remaining feature because every file-sharing task depends on a real GUI crate entrypoint and dependency scaffold
+- updated `file-sharing/Cargo.toml` to add the missing Bevy/egui GUI stack plus the remaining scaffold dependencies called out in the PRD (`flume`, `rfd`, `directories`)
+- replaced the `main.rs` print stub with a Bevy app using `DefaultPlugins`, `EguiPlugin`, a 900x600 primary window, and the required title `p2panda File Sharing`
+- implemented a minimal `FileSharingPlugin` so the app has the placeholder plugin hook required by the scaffold spec
+- ran `cargo fmt --package p2panda-file-sharing-gui`
+
+What doesn't work:
+- `cargo check -p p2panda-file-sharing-gui` could not complete in this environment because fetching the new crates.io dependencies for Bevy/bevy_egui repeatedly timed out while updating the crates index
 
 # 2026-03-04 16:49
 
@@ -62,74 +62,9 @@ What doesn't work:
 What doesn't work:
 - `cargo test -p p2panda-file-sharing-gui share_code -- --nocapture` is blocked in this environment because the configured Linux linker toolchain cannot find startup objects like `Scrt1.o` and `crti.o`
 
-# 2026-03-04 17:05
-
-- picked Task 5 (`Gossip protocol messages`) as the highest-priority remaining feature because it is still a direct dependency of both the share and download flows and `file-sharing/src/protocol.rs` was only a stub
-- implemented `file-sharing/src/protocol.rs` with a typed `CollectionAnnouncement` message using the specified one-byte type tag (`0x01`) plus 32-byte collection hash wire format
-- added unit tests covering encode/decode roundtrip, wrong type-tag rejection, and too-short input rejection
-- ran `cargo fmt --package p2panda-file-sharing-gui`
-- attempted `cargo test -p p2panda-file-sharing-gui protocol -- --nocapture` and `cargo test -p p2panda-file-sharing-gui protocol --target $(rustc -vV | sed -n 's/^host: //p') -- --nocapture` as the feedback loop for this feature
-- left Task 5 `passes` as `false`; the acceptance criteria could not be verified end-to-end in this run
-
-What doesn't work:
-- Rust linking in this sandbox is still blocked before the file-sharing crate tests run because `/usr/bin/ld` cannot find target startup objects `Scrt1.o` and `crti.o`
-- `PRD.jsonl` already contains unrelated uncommitted user edits (new Task 19), so I did not make any non-`passes` changes there; Task 5 remains `passes: false`
-
-# 2026-03-04 17:23
-
-- picked Task 6 (`Node module with FsStore and persistent identity`) as the highest-priority remaining feature because both the share and download flows depend on a real persistent node with stable identity and on-disk blob storage
-- implemented `file-sharing/src/node.rs` with `AppNode`/`FileSharingNode`, platform data-dir resolution via `directories::ProjectDirs`, persistent `node.key` seed loading/creation, `FsStore::load(data_dir/blobs)`, and the required AddressBook → Endpoint → active mDNS → Discovery → Gossip → Blobs initialization order
-- added a test-friendly `AppNode::with_data_dir(...)` constructor plus async tests covering key reuse across restarts and joining multiple gossip topics from the same node instance
-- ran `cargo fmt --package p2panda-file-sharing-gui`
-- attempted `cargo check -p p2panda-file-sharing-gui` and a second check with an overridden linker to verify Task 6 acceptance
-
-What doesn't work:
-- Task 6 remains `passes: false`; verification is still blocked because the sandbox image is missing the glibc startup objects `Scrt1.o` and `crti.o`, so even build scripts fail to link before Rust can finish `cargo check`
-- I confirmed `gcc` and `mold` are installed, but `libc6-dev` is not; installing it with `apt-get install -y libc6-dev` is blocked here by lack of permission to acquire the apt lock under `/var/lib/apt/lists/`
-
-# 2026-03-04 18:24
-
-- picked Task 8 (`Transfer state model`) as the highest-priority remaining feature because it has no unfinished dependencies and unblocks both the network polling system and the UI task chain
-- implemented `file-sharing/src/state.rs` with a Bevy `TransferRegistry` resource, `Transfer`/`FileProgress` data models, directional status enums, ID allocation and lookup helpers, aggregate byte tracking, progress-fraction calculation, and directional bandwidth calculation
-- added focused unit tests for resource usability, registry ID allocation and lookup, progress-fraction edge cases, aggregate file-progress accounting, and bandwidth assignment semantics
-- ran `cargo fmt --package p2panda-file-sharing-gui`
-- installed the missing host build prerequisites needed to get a real Rust feedback loop in this sandbox (`libc6-dev`, `pkg-config`, `libwayland-dev`, `libx11-dev`, `libxkbcommon-dev`, `libasound2-dev`, `libudev-dev`)
-- ran `cargo check -p p2panda-file-sharing-gui --lib` successfully
-- attempted `cargo test -p p2panda-file-sharing-gui state --lib -- --nocapture` as the acceptance feedback loop for Task 8
-
-What doesn't work:
-- Task 8 remains `passes: false`; the crate now compiles, but the focused lib test run is blocked by an unrelated pre-existing compile error in `file-sharing/src/share_code.rs` test code (`E0283` ambiguous `.into()` in `derived_topic_is_deterministic`), so the new state tests could not complete in this run
-
-# 2026-03-04 18:47
-
-- picked Task 7 (`Async bridge between Bevy and Tokio`) as the highest-priority next feature because it unblocks both the network polling system (Task 13) and the transfer UI work (Task 12) while staying narrow enough to verify cleanly in this run
-- implemented `file-sharing/src/bridge.rs` with a Bevy `AsyncBridge` resource, typed command/event enums, a dedicated Tokio runtime thread, synchronous startup error reporting, nonblocking event draining via `try_recv`, and per-command task spawning so multiple operations can run concurrently
-- added focused bridge unit tests covering Bevy-thread-to-network-thread command delivery, nonblocking event receipt/draining, and concurrent command execution ordering
-- fixed the pre-existing `file-sharing/src/share_code.rs` test-only type inference error so the `p2panda-file-sharing-gui` lib test target compiles again
-- ran `cargo fmt --package p2panda-file-sharing-gui`
-- ran `cargo check -p p2panda-file-sharing-gui --lib`
-- ran `cargo test -p p2panda-file-sharing-gui bridge --lib -- --nocapture`
-
-What doesn't work:
-- no additional blocker for Task 7 in this run
-
-# 2026-03-04 19:06
-
-- picked Task 19 (`Make sandboxed Rust verification environment reliable`) as the highest-priority next feature because repeated linker/startup-object failures were invalidating acceptance checks across otherwise-finished Rust tasks
-- replaced the repo's broken `docker sandbox ...` assumption with a plain-Docker sandbox workflow: `ralph.sh` and `watch-ralph.sh` now reuse or create the named sandbox container and interact with it through `docker exec`
-- added `scripts/bootstrap-sandbox-toolchain.sh` to provision the sandbox's Rust verification baseline (`gcc`, `mold`, `libc6-dev`, `pkg-config`, `libwayland-dev`, `libx11-dev`, `libxkbcommon-dev`, `libasound2-dev`, `libudev-dev`) and optionally prefetch crates with `cargo fetch --locked`
-- added `scripts/verify-in-sandbox.sh` as a repo-local non-interactive verification entrypoint for arbitrary cargo commands inside the running sandbox
-- documented the expected bootstrap/verification workflow, assumptions, and Ralph iteration path in `docs/dev-environment.md`
-- verified the new workflow with `./scripts/bootstrap-sandbox-toolchain.sh --skip-fetch`
-- verified `cargo check -p p2panda-blobs` via `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-blobs`
-- verified a targeted GUI test via `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui bridge --lib -- --nocapture`
-
-What doesn't work:
-- no additional blocker for Task 19 in this run
-
 # 2026-03-04 16:54
 
-- picked Task 8 (`Transfer state model`) as the highest-priority unfinished task for this run because it is already implemented, unblocked, and directly gates both the network polling system (Task 13) and the transfer UI (Task 12)
+- picked Task 8 (`Transfer state model`) as the highest-priority remaining feature because every file-sharing task depends on a real GUI crate entrypoint and dependency scaffold
 - verified the existing `file-sharing/src/state.rs` implementation against the Task 8 acceptance criteria instead of starting a new feature branch of work
 - ran `cargo check -p p2panda-file-sharing-gui --lib`
 - ran `cargo test -p p2panda-file-sharing-gui state --lib -- --nocapture`
@@ -138,18 +73,6 @@ What doesn't work:
 
 What doesn't work:
 - no additional blocker for Task 8 in this run
-
-# 2026-03-04 19:14
-
-- picked Task 5 (`Gossip protocol messages`) as the highest-priority unfinished feature for this run because it is still a hard prerequisite for both the share flow (Task 9) and the download flow (Task 10), and its implementation was already in place but not yet re-verified after the sandbox-tooling fix
-- verified `file-sharing/src/protocol.rs` against the Task 5 acceptance criteria without widening scope to any other feature
-- ran `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-file-sharing-gui --lib`
-- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui protocol --lib -- --nocapture`
-- confirmed the protocol unit tests pass for encode/decode roundtrip, wrong type-tag rejection, and too-short input rejection
-- updated Task 5 `passes` to `true` in `PRD.jsonl`
-
-What doesn't work:
-- no additional blocker for Task 5 in this run
 
 # 2026-03-04 16:58
 
@@ -164,6 +87,19 @@ What doesn't work:
 
 What doesn't work:
 - no additional blocker for Task 13 in this run
+
+# 2026-03-04 17:05
+
+- picked Task 5 (`Gossip protocol messages`) as the highest-priority remaining feature because it is still a direct dependency of both the share flow (Task 9) and the download flow (Task 10), and `file-sharing/src/protocol.rs` was only a stub
+- implemented `file-sharing/src/protocol.rs` with a typed `CollectionAnnouncement` message using the specified one-byte type tag (`0x01`) plus 32-byte collection hash wire format
+- added unit tests covering encode/decode roundtrip, wrong type-tag rejection, and too-short input rejection
+- ran `cargo fmt --package p2panda-file-sharing-gui`
+- attempted `cargo test -p p2panda-file-sharing-gui protocol -- --nocapture` and `cargo test -p p2panda-file-sharing-gui protocol --target $(rustc -vV | sed -n 's/^host: //p') -- --nocapture` as the feedback loop for this feature
+- left Task 5 `passes` as `false`; the acceptance criteria could not be verified end-to-end in this run
+
+What doesn't work:
+- Rust linking in this sandbox is still blocked before the file-sharing crate tests run because `/usr/bin/ld` cannot find target startup objects `Scrt1.o` and `crti.o`
+- `PRD.jsonl` already contains unrelated uncommitted user edits (new Task 19), so I did not make any non-`passes` changes there; Task 5 remains `passes: false`
 
 # 2026-03-04 17:06
 
@@ -190,6 +126,18 @@ What doesn't work:
 
 What doesn't work:
 - no additional blocker for Task 9 in this run
+
+# 2026-03-04 17:23
+
+- picked Task 6 (`Node module with FsStore and persistent identity`) as the highest-priority next feature because both the share and download flows depend on a real persistent node with stable identity and on-disk blob storage
+- implemented `file-sharing/src/node.rs` with `AppNode`/`FileSharingNode`, platform data-dir resolution via `directories::ProjectDirs`, persistent `node.key` seed loading/creation, `FsStore::load(data_dir/blobs)`, and the required AddressBook → Endpoint → active mDNS → Discovery → Gossip → Blobs initialization order
+- added a test-friendly `AppNode::with_data_dir(...)` constructor plus async tests covering key reuse across restarts and joining multiple gossip topics from the same node instance
+- ran `cargo fmt --package p2panda-file-sharing-gui`
+- attempted `cargo check -p p2panda-file-sharing-gui` and a second check with an overridden linker to verify Task 6 acceptance
+
+What doesn't work:
+- Task 6 remains `passes: false`; verification is still blocked because the sandbox image is missing the glibc startup objects `Scrt1.o` and `crti.o`, so even build scripts fail to link before Rust can finish `cargo check`
+- I confirmed `gcc` and `mold` are installed, but `libc6-dev` is not; installing it with `apt-get install -y libc6-dev` is blocked here by lack of permission to acquire the apt lock under `/var/lib/apt/lists/`
 
 # 2026-03-04 17:23
 
@@ -250,23 +198,6 @@ What doesn't work:
 - Task 14 remains `passes: false` in this run. The full acceptance criteria require plugin registration of the UI rendering system itself, but the current dependency set is structurally inconsistent (`bevy = 0.15.x` with `bevy_egui = 0.34.x`, where `bevy_egui 0.34` uses Bevy 0.16 types). Attempting to register `render_transfer_ui` from the plugin fails at compile time due cross-version `bevy_ecs` trait incompatibility.
 - This is a missing infrastructure alignment item for manual PRD amendment: pin `bevy_egui` to a Bevy-0.15-compatible release (or upgrade `bevy` to match `bevy_egui`) before Task 14 can be fully completed and truthfully marked passing.
 
-# 2026-03-04 20:02
-
-- picked Task 15 (`Integration test: local two-node directory transfer`) as the highest-priority unfinished feature because it unblocks three downstream integration tasks (16 relay transfer, 17 crash recovery integration, 18 multi-source integration)
-- added `file-sharing/tests/transfer.rs` with a full end-to-end two-node local transfer integration test using separate temp dirs for node A data, node B data, source files, and output files
-- the test fixture now creates exactly the required file mix: a small file (~100 bytes), a medium binary file (~100 KB), and a nested file (~500 bytes)
-- wired the test through real `share_directory` + `download_share_with_progress` flows, then recursively compared all source/output file bytes to validate transfer correctness
-- asserted byte-level download progress by collecting `DownloadEvent::FileDownloadProgress` updates and verifying nondecreasing byte counts per file index
-- wrapped the full transfer flow in `tokio::time::timeout(Duration::from_secs(30), ...)` and verified completion within the limit
-- to unblock verification in this repository state, pinned `file-sharing`'s `bevy_egui` dependency to `0.33` (Bevy 0.15-compatible) and updated the lockfile offline (`cargo update -p bevy_egui --precise 0.33.0 --offline`)
-- ran `cargo fmt --package p2panda-file-sharing-gui`
-- ran `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-file-sharing-gui --tests --locked --offline`
-- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui --test transfer --locked --offline -- --nocapture`
-- confirmed Task 15 acceptance in this run and updated Task 15 `passes` to `true` in `PRD.jsonl`
-
-What doesn't work:
-- no additional blocker for Task 15 in this run
-
 # 2026-03-04 18:06
 
 - picked Task 14 (`Bevy plugin wiring`) as the highest-priority unfinished feature because all of its dependencies are already verified and it is the runtime integration point that connects node startup/recovery, network polling, and the transfer UI loop
@@ -314,6 +245,19 @@ What doesn't work:
 What doesn't work:
 - no additional blocker for Task 17 in this run
 
+# 2026-03-04 18:24
+
+- picked Task 8 (`Transfer state model`) as the highest-priority unfinished task for this run because it is already implemented, unblocked, and directly gates both the network polling system (Task 13) and the transfer UI (Task 12)
+- implemented `file-sharing/src/state.rs` with a Bevy `TransferRegistry` resource, `Transfer`/`FileProgress` data models, directional status enums, ID allocation and lookup helpers, aggregate byte tracking, progress-fraction calculation, and directional bandwidth calculation
+- added focused unit tests for resource usability, registry ID allocation and lookup, progress-fraction edge cases, aggregate file-progress accounting, and bandwidth assignment semantics
+- ran `cargo fmt --package p2panda-file-sharing-gui`
+- installed the missing host build prerequisites needed to get a real Rust feedback loop in this sandbox (`libc6-dev`, `pkg-config`, `libwayland-dev`, `libx11-dev`, `libxkbcommon-dev`, `libasound2-dev`, `libudev-dev`)
+- ran `cargo check -p p2panda-file-sharing-gui --lib` successfully
+- attempted `cargo test -p p2panda-file-sharing-gui state --lib -- --nocapture` as the acceptance feedback loop for Task 8
+
+What doesn't work:
+- Task 8 remains `passes: false`; the crate now compiles, but the focused lib test run is blocked by an unrelated pre-existing compile error in `file-sharing/src/share_code.rs` test code (`E0283` ambiguous `.into()` in `derived_topic_is_deterministic`), so the new state tests could not complete in this run
+
 # 2026-03-04 18:26
 
 - picked Task 18 (`Integration test: multi-source download`) as the highest-priority unfinished feature because it is the last remaining transfer integration behavior in the PRD critical path
@@ -328,6 +272,62 @@ What doesn't work:
 
 What doesn't work:
 - no additional blocker for Task 18 in this run
+
+# 2026-03-04 18:47
+
+- picked Task 7 (`Async bridge between Bevy and Tokio`) as the highest-priority next feature because it unblocks both the network polling system (Task 13) and the transfer UI work (Task 12) while staying narrow enough to verify cleanly in this run
+- implemented `file-sharing/src/bridge.rs` with a Bevy `AsyncBridge` resource, typed command/event enums, a dedicated Tokio runtime thread, synchronous startup error reporting, nonblocking event draining via `try_recv`, and per-command task spawning so multiple operations can run concurrently
+- added focused bridge unit tests covering Bevy-thread-to-network-thread command delivery, nonblocking event receipt/draining, and concurrent command execution ordering
+- fixed the pre-existing `file-sharing/src/share_code.rs` test-only type inference error so the `p2panda-file-sharing-gui` lib test target compiles again
+- ran `cargo fmt --package p2panda-file-sharing-gui`
+- ran `cargo check -p p2panda-file-sharing-gui --lib`
+- ran `cargo test -p p2panda-file-sharing-gui bridge --lib -- --nocapture`
+
+What doesn't work:
+- no additional blocker for Task 7 in this run
+
+# 2026-03-04 19:06
+
+- picked Task 19 (`Make sandboxed Rust verification environment reliable`) as the highest-priority next feature because repeated linker/startup-object failures were invalidating acceptance checks across otherwise-finished Rust tasks
+- replaced the repo's broken `docker sandbox ...` assumption with a plain-Docker sandbox workflow: `ralph.sh` and `watch-ralph.sh` now reuse or create the named sandbox container and interact with it through `docker exec`
+- added `scripts/bootstrap-sandbox-toolchain.sh` to provision the sandbox's Rust verification baseline (`gcc`, `mold`, `libc6-dev`, `pkg-config`, `libwayland-dev`, `libx11-dev`, `libxkbcommon-dev`, `libasound2-dev`, `libudev-dev`) and optionally prefetch crates with `cargo fetch --locked`
+- added `scripts/verify-in-sandbox.sh` as a repo-local non-interactive verification entrypoint for arbitrary cargo commands inside the running sandbox
+- documented the expected bootstrap/verification workflow, assumptions, and Ralph iteration path in `docs/dev-environment.md`
+- verified the new workflow with `./scripts/bootstrap-sandbox-toolchain.sh --skip-fetch`
+- verified `cargo check -p p2panda-blobs` via `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-blobs`
+- verified a targeted GUI test via `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui bridge --lib -- --nocapture`
+
+What doesn't work:
+- no additional blocker for Task 19 in this run
+
+# 2026-03-04 19:14
+
+- picked Task 5 (`Gossip protocol messages`) as the highest-priority unfinished feature for this run because it is still a hard prerequisite for both the share flow (Task 9) and the download flow (Task 10), and its implementation was already in place but not yet re-verified after the sandbox-tooling fix
+- verified `file-sharing/src/protocol.rs` against the Task 5 acceptance criteria without widening scope to any other feature
+- ran `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-file-sharing-gui --lib`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui protocol --lib -- --nocapture`
+- confirmed the protocol unit tests pass for encode/decode roundtrip, wrong type-tag rejection, and too-short input rejection
+- updated Task 5 `passes` to `true` in `PRD.jsonl`
+
+What doesn't work:
+- no additional blocker for Task 5 in this run
+
+# 2026-03-04 20:02
+
+- picked Task 15 (`Integration test: local two-node directory transfer`) as the highest-priority unfinished feature because it unblocks three downstream integration tasks (16 relay transfer, 17 crash recovery integration, 18 multi-source integration)
+- added `file-sharing/tests/transfer.rs` with a full end-to-end two-node local transfer integration test using separate temp dirs for node A data, node B data, source files, and output files
+- the test fixture now creates exactly the required file mix: a small file (~100 bytes), a medium binary file (~100 KB), and a nested file (~500 bytes)
+- wired the test through real `share_directory` + `download_share_with_progress` flows, then recursively compared all source/output file bytes to validate transfer correctness
+- asserted byte-level download progress by collecting `DownloadEvent::FileDownloadProgress` updates and verifying nondecreasing byte counts per file index
+- wrapped the full transfer flow in `tokio::time::timeout(Duration::from_secs(30), ...)` and verified completion within the limit
+- to unblock verification in this repository state, pinned `file-sharing`'s `bevy_egui` dependency to `0.33` (Bevy 0.15-compatible) and updated the lockfile offline (`cargo update -p bevy_egui --precise 0.33.0 --offline`)
+- ran `cargo fmt --package p2panda-file-sharing-gui`
+- ran `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-file-sharing-gui --tests --locked --offline`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui --test transfer --locked --offline -- --nocapture`
+- confirmed Task 15 acceptance in this run and updated Task 15 `passes` to `true` in `PRD.jsonl`
+
+What doesn't work:
+- no additional blocker for Task 15 in this run
 
 # 2026-03-05 14:03
 
@@ -384,6 +384,37 @@ What doesn't work:
   - no integration assertion yet proving that a paused seeding share stops gossip announcements end-to-end (the current re-announce cadence and existing tests do not directly validate this)
   - no integration assertion yet proving resume of a mid-flight paused download skips already-completed files in a pause/resume cycle
   - no direct two-share independence integration test yet (`pause A` leaves `B` unaffected)
+
+# 2026-03-05 14:48
+
+- picked Task 26 (`Cancel in-progress transfers`) as the highest-priority unfinished feature because it is a core transfer-control capability and the direct prerequisite for Task 27 (`Remove completed and failed transfers from the list`)
+- implemented first-class cancellation status plumbing across runtime and UI:
+  - added `TransferStatus::Cancelled` in `file-sharing/src/state.rs`
+  - added `NetworkEvent::TransferCancelled { transfer_id }` in `file-sharing/src/bridge.rs`
+  - updated `file-sharing/src/plugin.rs` event handling to apply cancelled state to matching transfer rows
+- implemented cancel behavior in the bridge runtime:
+  - `NetworkCommand::CancelTransfer` now always emits `TransferCancelled` after cleanup
+  - active share/download cleanup paths still stop runtime activity and remove active persistence records without deleting downloaded/output file data
+  - added in-flight command abort tracking in `run_network_loop` so cancelling a transfer can abort long-running `ShareDirectory`/`StartDownload` command tasks promptly
+- implemented per-row UI cancel controls in `file-sharing/src/ui.rs`:
+  - added `TransferAction::Cancel` mapped to `NetworkCommand::CancelTransfer`
+  - added a `Cancel` button for `Pending` and `Active` transfers
+  - cancel button is hidden for `Completed`, `Cancelled`, `Paused`, and `Error` rows
+  - added cancelled status labels for upload/download rows
+- added/updated focused tests:
+  - `bridge::tests::cancel_aborts_in_flight_transfer_command`
+  - `bridge::tests::canceling_one_transfer_does_not_stop_another`
+  - UI tests for cancel-button visibility rules and cancelled status labeling
+  - plugin event-coverage test now includes `TransferCancelled`
+- ran `cargo fmt --package p2panda-file-sharing-gui`
+- ran `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-file-sharing-gui --lib`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui bridge --lib -- --nocapture`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui ui --lib -- --nocapture`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui plugin --lib -- --nocapture`
+- confirmed Task 26 acceptance criteria in this run and updated Task 26 `passes` to `true` in `PRD.jsonl`
+
+What doesn't work:
+- no additional blocker for Task 26 in this run
 
 # 2026-03-05 15:18
 
@@ -451,34 +482,3 @@ What doesn't work:
 
 What doesn't work:
 - no additional blocker for Task 22 in this run
-
-# 2026-03-05 14:48
-
-- picked Task 26 (`Cancel in-progress transfers`) as the highest-priority unfinished feature because it is a core transfer-control capability and the direct prerequisite for Task 27 (`Remove completed and failed transfers from the list`)
-- implemented first-class cancellation status plumbing across runtime and UI:
-  - added `TransferStatus::Cancelled` in `file-sharing/src/state.rs`
-  - added `NetworkEvent::TransferCancelled { transfer_id }` in `file-sharing/src/bridge.rs`
-  - updated `file-sharing/src/plugin.rs` event handling to apply cancelled state to matching transfer rows
-- implemented cancel behavior in the bridge runtime:
-  - `NetworkCommand::CancelTransfer` now always emits `TransferCancelled` after cleanup
-  - active share/download cleanup paths still stop runtime activity and remove active persistence records without deleting downloaded/output file data
-  - added in-flight command abort tracking in `run_network_loop` so cancelling a transfer can abort long-running `ShareDirectory`/`StartDownload` command tasks promptly
-- implemented per-row UI cancel controls in `file-sharing/src/ui.rs`:
-  - added `TransferAction::Cancel` mapped to `NetworkCommand::CancelTransfer`
-  - added a `Cancel` button for `Pending` and `Active` transfers
-  - cancel button is hidden for `Completed`, `Cancelled`, `Paused`, and `Error` rows
-  - added cancelled status labels for upload/download rows
-- added/updated focused tests:
-  - `bridge::tests::cancel_aborts_in_flight_transfer_command`
-  - `bridge::tests::canceling_one_transfer_does_not_stop_another`
-  - UI tests for cancel-button visibility rules and cancelled status labeling
-  - plugin event-coverage test now includes `TransferCancelled`
-- ran `cargo fmt --package p2panda-file-sharing-gui`
-- ran `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-file-sharing-gui --lib`
-- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui bridge --lib -- --nocapture`
-- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui ui --lib -- --nocapture`
-- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui plugin --lib -- --nocapture`
-- confirmed Task 26 acceptance criteria in this run and updated Task 26 `passes` to `true` in `PRD.jsonl`
-
-What doesn't work:
-- no additional blocker for Task 26 in this run

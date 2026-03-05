@@ -1,22 +1,15 @@
 {
   "id": 1,
-  "category": "infrastructure",
   "title": "Project scaffold",
   "description": "Create the file-sharing crate within the p2panda workspace. This is a Bevy desktop app with egui for the UI, using p2panda for peer-to-peer networking.",
-  "depends_on": [19],
-  "inputs": [
-    "Cargo.toml (workspace root, add new member)"
-  ],
-  "outputs": [
-    "file-sharing/Cargo.toml",
-    "file-sharing/src/main.rs",
-    "file-sharing/src/lib.rs"
+  "depends_on": [
+    19
   ],
   "spec": {
     "crate_name": "p2panda-file-sharing-gui",
     "workspace_integration": "Add \"file-sharing\" to the members array in the workspace root Cargo.toml.",
     "dependencies": {
-      "p2panda": "p2panda-blobs (with fs-store feature), p2panda-core, p2panda-net \u2014 all via path deps",
+      "p2panda": "p2panda-blobs (with fs-store feature), p2panda-core, p2panda-net — all via path deps",
       "gui": "bevy (0.15, minimal features for windowed app), bevy_egui (0.34 for egui integration)",
       "async": "tokio (full features), flume (mpmc channels for async bridge), futures-util",
       "serialization": "serde (with derive), ciborium (maintained CBOR implementation, replaces serde_cbor), data-encoding (base32 for share codes), bytes",
@@ -37,18 +30,9 @@
 }
 {
   "id": 2,
-  "category": "infrastructure",
   "title": "Add download_with_progress to p2panda-blobs",
   "description": "The current Blobs::download() method awaits completion internally, discarding the byte-level progress stream from iroh-blobs. Add a method that returns the DownloadProgress handle so callers can consume the stream of DownloadProgressItem events, which include Progress(u64) for byte counts.",
   "depends_on": [],
-  "inputs": [
-    "p2panda-blobs/src/blobs.rs",
-    "p2panda-blobs/src/lib.rs"
-  ],
-  "outputs": [
-    "p2panda-blobs/src/blobs.rs",
-    "p2panda-blobs/src/lib.rs"
-  ],
   "spec": {
     "new_method": "Add an async method download_with_progress(hash) to Blobs that resolves the provider list from the address book (same as existing download()), then returns the DownloadProgress struct from iroh_blobs::api::downloader instead of awaiting it. The existing download() should be refactored to call the new method internally.",
     "re_exports": "Re-export DownloadProgress and DownloadProgressItem from the p2panda-blobs public API so downstream crates don't need to depend on iroh-blobs directly.",
@@ -64,16 +48,10 @@
 }
 {
   "id": 3,
-  "category": "core",
   "title": "Manifest format as signed p2panda Operation",
   "description": "Define the directory manifest that describes a shared directory's contents. The manifest is a signed p2panda Operation: a Header with the sharer's public key and Ed25519 signature, and a Body containing CBOR-encoded directory metadata. This provides cryptographic proof of who created the share.",
-  "depends_on": [1],
-  "inputs": [
-    "p2panda-core/src/operation.rs (Header, Body, sign/verify API)",
-    "p2panda-core/src/cbor.rs (encode_cbor, decode_cbor helpers)"
-  ],
-  "outputs": [
-    "file-sharing/src/manifest.rs"
+  "depends_on": [
+    1
   ],
   "spec": {
     "manifest_data_structure": "A ManifestData struct with: version (u8, always 1), name (String, the directory's base name), and files (Vec of entries). Each file entry has: relative_path (String, forward-slash separated, relative to the shared directory root), size (u64, file size in bytes), and hash ([u8; 32], the iroh-blobs BLAKE3 hash of the file's content).",
@@ -91,13 +69,10 @@
 }
 {
   "id": 4,
-  "category": "core",
   "title": "Share code format",
   "description": "A share code is a compact, human-copyable string that encodes everything a downloader needs to find and retrieve a shared directory. It is exchanged out-of-band (copy-paste, chat message, etc).",
-  "depends_on": [1],
-  "inputs": [],
-  "outputs": [
-    "file-sharing/src/share_code.rs"
+  "depends_on": [
+    1
   ],
   "spec": {
     "contents": "A share code encodes three fields: collection_hash ([u8; 32], the HashSeq root hash identifying the collection), node_id ([u8; 32], the sharer's Ed25519 public key for address book bootstrap), and relay_url (Option<String>, the relay server URL if the sharer is using one).",
@@ -116,15 +91,10 @@
 }
 {
   "id": 5,
-  "category": "core",
   "title": "Gossip protocol messages",
   "description": "Define the binary message format for gossip announcements. When a sharer publishes a directory, they announce the collection hash on the gossip topic so that subscribers (downloaders already on the topic) learn about the content.",
-  "depends_on": [1],
-  "inputs": [
-    "p2panda-test-claude/src/protocol.rs (reference pattern: BlobAnnouncement with type-tag + hash + payload)"
-  ],
-  "outputs": [
-    "file-sharing/src/protocol.rs"
+  "depends_on": [
+    1
   ],
   "spec": {
     "message_format": "A CollectionAnnouncement containing the collection_hash (iroh_blobs::Hash, 32 bytes). Binary encoding: one-byte type tag (0x01) followed by the 32-byte hash. Total: 33 bytes.",
@@ -140,22 +110,16 @@
 }
 {
   "id": 6,
-  "category": "core",
   "title": "Node module with FsStore and persistent identity",
   "description": "A long-lived p2panda node that persists blob data and node identity across app restarts. Unlike the test-claude app which uses MemStore and generates a new key each run, this node uses FsStore for crash-recoverable blob storage and saves its Ed25519 private key to disk.",
-  "depends_on": [1, 2],
-  "inputs": [
-    "p2panda-test-claude/src/node.rs (reference pattern for component initialization order)",
-    "p2panda-blobs/src/blobs.rs (Blobs::new takes &Store; both MemStore and FsStore implement Deref<Target=Store>)",
-    "p2panda-blobs/src/lib.rs (FsStore re-exported when fs-store feature is enabled, which is the default)"
-  ],
-  "outputs": [
-    "file-sharing/src/node.rs"
+  "depends_on": [
+    1,
+    2
   ],
   "spec": {
     "persistent_key": "On first run, generate a new PrivateKey and write the raw 32-byte seed to data_dir/node.key. On subsequent runs, read the file and reconstruct the key. This gives the node a stable identity across restarts, which matters for address book entries other peers hold.",
     "fs_store": "Use FsStore::load(data_dir/blobs).await to create or open the persistent blob store. FsStore implements Deref<Target=Store> so it passes directly to Blobs::new(&fs_store, ...). The fs-store feature is already the default in p2panda-blobs.",
-    "component_initialization_order": "Same as test-claude: AddressBook \u2192 Endpoint (with private key, optional relay URL, optional insecure cert verify) \u2192 MdnsDiscovery (always Active mode for the GUI app) \u2192 Discovery \u2192 Gossip \u2192 Blobs. All components except Blobs take address_book and endpoint clones.",
+    "component_initialization_order": "Same as test-claude: AddressBook → Endpoint (with private key, optional relay URL, optional insecure cert verify) → MdnsDiscovery (always Active mode for the GUI app) → Discovery → Gossip → Blobs. All components except Blobs take address_book and endpoint clones.",
     "configuration": "NodeOptions struct with optional relay_url and insecure_skip_relay_cert_verify flag. No per-topic binding: the node handles multiple topics over its lifetime.",
     "data_directory": "Use the directories crate's ProjectDirs to locate the platform-appropriate data directory (~/Library/Application Support/p2panda-file-sharing on macOS).",
     "key_difference_from_test_app": "The test-claude node is ephemeral (MemStore, random key per run, single topic). This node is persistent (FsStore, saved key, multi-topic). The node struct should not hold a topic_id since it handles multiple shares."
@@ -170,18 +134,15 @@
 }
 {
   "id": 7,
-  "category": "core",
   "title": "Async bridge between Bevy and Tokio",
   "description": "Bevy runs its own event loop on the main thread. The p2panda networking stack is async (tokio). Bridge them with a dedicated network thread running a tokio Runtime, communicating via flume channels. This is a well-established pattern for Bevy apps with async backends.",
-  "depends_on": [1],
-  "inputs": [],
-  "outputs": [
-    "file-sharing/src/bridge.rs"
+  "depends_on": [
+    1
   ],
   "spec": {
-    "architecture": "Spawn a dedicated std::thread running a tokio::runtime::Runtime. The Bevy main thread and the network thread communicate through two flume channels: one for commands (UI \u2192 network) and one for events (network \u2192 UI). The Bevy side holds the command sender and event receiver as a Resource.",
+    "architecture": "Spawn a dedicated std::thread running a tokio::runtime::Runtime. The Bevy main thread and the network thread communicate through two flume channels: one for commands (UI → network) and one for events (network → UI). The Bevy side holds the command sender and event receiver as a Resource.",
     "command_types": "ShareDirectory (with transfer id and directory path), StartDownload (with transfer id, share code string, and output directory path), CancelTransfer (with transfer id).",
-    "event_types": "ShareReady (transfer id, share code string, total bytes, file count), DownloadStarted (transfer id, directory name, total bytes, file count), FileDownloadProgress (transfer id, file index, bytes downloaded \u2014 this is the byte-level progress from iroh-blobs), FileCompleted (transfer id, file index), TransferCompleted (transfer id), Error (transfer id, error message string).",
+    "event_types": "ShareReady (transfer id, share code string, total bytes, file count), DownloadStarted (transfer id, directory name, total bytes, file count), FileDownloadProgress (transfer id, file index, bytes downloaded — this is the byte-level progress from iroh-blobs), FileCompleted (transfer id, file index), TransferCompleted (transfer id), Error (transfer id, error message string).",
     "transfer_id": "A simple u64 counter assigned by the UI thread when creating a new transfer. Used to correlate commands and events.",
     "network_loop": "The network thread initializes the AppNode, then enters a loop that selects on incoming commands from the channel. Share and download operations are spawned as separate tokio tasks so they run concurrently. Each task sends events back through the event channel.",
     "nonblocking_polling": "The Bevy side uses try_recv() to drain all pending events each frame without blocking the render loop."
@@ -195,13 +156,10 @@
 }
 {
   "id": 8,
-  "category": "core",
   "title": "Transfer state model",
   "description": "Bevy ECS resource tracking all active and completed transfers. Updated by the network polling system and read by the UI system each frame.",
-  "depends_on": [1],
-  "inputs": [],
-  "outputs": [
-    "file-sharing/src/state.rs"
+  "depends_on": [
+    1
   ],
   "spec": {
     "transfer_registry": "A Bevy Resource containing a Vec of transfers and a monotonic ID counter. Provides methods to allocate a new ID, and to look up transfers by ID (both shared and mutable references).",
@@ -214,25 +172,18 @@
     "Structs compile and are usable as Bevy Resources",
     "Progress fraction returns 0.0 when no bytes downloaded, 1.0 when complete"
   ],
-  "passes" : true
+  "passes": true
 }
 {
   "id": 9,
-  "category": "core",
   "title": "Share directory flow",
   "description": "The complete flow for sharing a local directory: scan files, import into blob store, create signed manifest, build a HashSeq collection, pin it, announce on gossip, and produce a share code. The sharer must remain online so peers can download blobs from them.",
-  "depends_on": [2, 3, 4, 5, 6],
-  "inputs": [
-    "file-sharing/src/node.rs",
-    "file-sharing/src/manifest.rs",
-    "file-sharing/src/share_code.rs",
-    "file-sharing/src/protocol.rs",
-    "iroh-blobs Store API: add_path() streams a file from disk into the blob store (returns hash and size), add_bytes_with_opts() with BlobFormat::HashSeq creates a collection blob",
-    "iroh-blobs HashSeq: constructed from an iterator of hashes, serialized via into_inner() to Bytes, represents an ordered sequence of blob hashes",
-    "p2panda-blobs Pins: set(name, hash) pins a blob to prevent garbage collection"
-  ],
-  "outputs": [
-    "file-sharing/src/share.rs"
+  "depends_on": [
+    2,
+    3,
+    4,
+    5,
+    6
   ],
   "spec": {
     "directory_scanning": "Recursively walk the directory. Collect each regular file's absolute path, relative path (from the shared directory root, forward-slash separated), and size. Skip hidden files (starting with dot), symlinks, and empty directories. Sort files by relative path for deterministic ordering.",
@@ -255,31 +206,23 @@
 }
 {
   "id": 10,
-  "category": "core",
   "title": "Download flow with byte-level progress",
   "description": "The complete flow for downloading a shared directory: decode the share code, bootstrap into the peer network, download the collection and manifest, then download each file with byte-level progress reporting. Supports crash recovery by skipping already-downloaded blobs.",
-  "depends_on": [2, 3, 4, 5, 6],
-  "inputs": [
-    "file-sharing/src/node.rs",
-    "file-sharing/src/manifest.rs",
-    "file-sharing/src/share_code.rs",
-    "file-sharing/src/protocol.rs",
-    "p2panda-blobs Blobs: download_with_progress() returns DownloadProgress, .stream().await yields DownloadProgressItem::Progress(u64)",
-    "p2panda-blobs Blobs (via Deref<Target=Store>): has(hash) checks if blob exists, get_bytes(hash) reads complete blob content",
-    "p2panda-net AddressBook: insert_node_info(NodeInfo::from(EndpointAddr).bootstrap()) adds a bootstrap peer",
-    "p2panda-net iroh_endpoint: from_public_key() converts PublicKey to iroh NodeId, EndpointAddr::new().with_relay_url() builds address with relay"
-  ],
-  "outputs": [
-    "file-sharing/src/download.rs"
+  "depends_on": [
+    2,
+    3,
+    4,
+    5,
+    6
   ],
   "spec": {
     "share_code_decoding": "Decode the share code to get collection_hash, node_id, and optional relay_url.",
     "peer_bootstrap": "Convert the node_id to an EndpointAddr. If a relay_url is present, attach it. Insert into the address book as a bootstrap node. This tells the networking stack how to reach the sharer.",
     "collection_download": "Download the HashSeq collection blob by its hash. Parse it into a HashSeq to get the ordered list of blob hashes.",
     "manifest_download": "The first hash in the HashSeq is the manifest blob. Download it, deserialize the p2panda Operation, verify the signature, and decode the ManifestData to get the file list.",
-    "file_download_with_progress": "For each file in the manifest (corresponding to hashes at indices 1..N in the HashSeq): first check if the blob already exists locally via has(hash) \u2014 if so, skip it and emit a FileCompleted event (this is the crash recovery mechanism since FsStore persists to disk). Otherwise, call download_with_progress(hash) and consume the .stream() to get byte-level progress. Forward each Progress(u64) event as a FileDownloadProgress event to the UI. After download completes, read the blob content via get_bytes(hash) and write to the output directory, preserving the relative path from the manifest.",
+    "file_download_with_progress": "For each file in the manifest (corresponding to hashes at indices 1..N in the HashSeq): first check if the blob already exists locally via has(hash) — if so, skip it and emit a FileCompleted event (this is the crash recovery mechanism since FsStore persists to disk). Otherwise, call download_with_progress(hash) and consume the .stream() to get byte-level progress. Forward each Progress(u64) event as a FileDownloadProgress event to the UI. After download completes, read the blob content via get_bytes(hash) and write to the output directory, preserving the relative path from the manifest.",
     "directory_creation": "Create parent directories as needed when writing files. Sanitize relative paths to prevent directory traversal attacks (reject paths containing .., absolute paths, etc).",
-    "multi_source": "The iroh-blobs downloader automatically contacts all known peers in the address book. If multiple peers have the same content (e.g. the original sharer plus another downloader who already has it), the downloader splits the request across them using SplitStrategy and buffered_unordered(32). No special handling needed \u2014 just ensure all relevant peers are in the address book.",
+    "multi_source": "The iroh-blobs downloader automatically contacts all known peers in the address book. If multiple peers have the same content (e.g. the original sharer plus another downloader who already has it), the downloader splits the request across them using SplitStrategy and buffered_unordered(32). No special handling needed — just ensure all relevant peers are in the address book.",
     "completion": "After all files are downloaded and written, emit a TransferCompleted event.",
     "error_handling": "If a single file download fails, report the error but continue with remaining files. Emit per-file errors so the UI can show partial completion."
   },
@@ -294,20 +237,16 @@
 }
 {
   "id": 11,
-  "category": "core",
   "title": "Crash recovery persistence",
   "description": "Persist enough state to disk so that incomplete transfers can resume after the app exits or crashes. Blob data is already persisted by FsStore; this task handles the transfer metadata (which shares are active, which downloads are in progress, what share codes and output directories are being used).",
-  "depends_on": [8, 9, 10],
-  "inputs": [
-    "file-sharing/src/share.rs",
-    "file-sharing/src/download.rs"
-  ],
-  "outputs": [
-    "file-sharing/src/persist.rs"
+  "depends_on": [
+    8,
+    9,
+    10
   ],
   "spec": {
     "state_file": "A JSON file at data_dir/state.json containing the list of active downloads and active shares.",
-    "download_record": "Each download record stores: share_code, output_dir path, and collection_hash. The list of completed files does not need explicit tracking because the download flow already checks blobs.has(hash) for each file \u2014 FsStore persistence handles this automatically.",
+    "download_record": "Each download record stores: share_code, output_dir path, and collection_hash. The list of completed files does not need explicit tracking because the download flow already checks blobs.has(hash) for each file — FsStore persistence handles this automatically.",
     "share_record": "Each share record stores: source_dir path, share_code, and collection_hash. On restart, the share's blobs are already in FsStore; the app just needs to re-join gossip and re-announce.",
     "save_points": "Save state.json whenever: a new share is created, a new download starts, a transfer completes (remove from active list). Use atomic write (write to temp file, then rename) to prevent corruption.",
     "startup_recovery": "On app startup, load state.json. For each share record: re-derive the gossip topic, re-join, and re-announce the collection. For each download record: call the download flow which will skip already-present blobs and download only the missing ones.",
@@ -323,16 +262,11 @@
 }
 {
   "id": 12,
-  "category": "ui",
   "title": "Transfer list UI with progress bars and dialogs",
   "description": "The main application UI rendered with bevy_egui. Shows a scrollable list of all transfers with real-time progress, plus dialogs for creating shares and starting downloads.",
-  "depends_on": [7, 8],
-  "inputs": [
-    "file-sharing/src/bridge.rs (AsyncBridge resource, NetCommand)",
-    "file-sharing/src/state.rs (TransferRegistry, Transfer, Direction, TransferStatus)"
-  ],
-  "outputs": [
-    "file-sharing/src/ui.rs"
+  "depends_on": [
+    7,
+    8
   ],
   "spec": {
     "main_panel": "An egui CentralPanel with: a heading, a toolbar row with \"Share Directory...\" and \"Download\" buttons, a separator, and a vertically scrollable area listing all transfers.",
@@ -354,16 +288,11 @@
 }
 {
   "id": 13,
-  "category": "core",
   "title": "Network polling system",
   "description": "A Bevy system that runs each frame to drain all pending network events from the async bridge and update the transfer registry. This is the glue between the async network thread and the synchronous ECS world.",
-  "depends_on": [7, 8],
-  "inputs": [
-    "file-sharing/src/bridge.rs (AsyncBridge, NetEvent variants)",
-    "file-sharing/src/state.rs (TransferRegistry)"
-  ],
-  "outputs": [
-    "file-sharing/src/plugin.rs (contains the system function)"
+  "depends_on": [
+    7,
+    8
   ],
   "spec": {
     "polling_pattern": "Use a while-let loop with try_recv() to drain all pending events non-blockingly in a single frame. This ensures the UI stays responsive even during rapid progress updates.",
@@ -379,16 +308,14 @@
 }
 {
   "id": 14,
-  "category": "integration",
   "title": "Bevy plugin wiring",
   "description": "Wire all components together into a Bevy Plugin: spawn the network thread, insert resources, register systems in the correct order.",
-  "depends_on": [6, 7, 8, 12, 13],
-  "inputs": [
-    "All previous modules"
-  ],
-  "outputs": [
-    "file-sharing/src/plugin.rs",
-    "file-sharing/src/main.rs (update to use the plugin)"
+  "depends_on": [
+    6,
+    7,
+    8,
+    12,
+    13
   ],
   "spec": {
     "plugin_build": "In the Plugin::build method: determine the data directory using the directories crate, create flume channel pairs, spawn the network thread (which initializes the AppNode and enters the network loop), insert AsyncBridge, TransferRegistry, and UiState as Bevy Resources, and register the poll_network_events and ui_system as Update systems. Systems should be chained so polling runs before UI rendering.",
@@ -400,22 +327,15 @@
     "Sharing a directory results in a share code appearing in the UI",
     "Pasting a share code and clicking Start shows download progress"
   ],
-  "passes" : true
+  "passes": true
 }
 {
   "id": 15,
-  "category": "test",
   "title": "Integration test: local two-node directory transfer",
   "description": "End-to-end test verifying that a directory shared by one node can be downloaded by another node, with all files arriving correctly and byte-level progress events firing.",
-  "depends_on": [9, 10],
-  "inputs": [
-    "file-sharing/src/share.rs",
-    "file-sharing/src/download.rs",
-    "file-sharing/src/node.rs",
-    "p2panda-test-claude/tests/transfer.rs (reference for test setup patterns)"
-  ],
-  "outputs": [
-    "file-sharing/tests/transfer.rs"
+  "depends_on": [
+    9,
+    10
   ],
   "spec": {
     "test_setup": "Create separate temp directories for: node A's data, node B's data, the source directory, and the output directory. Populate the source directory with test files of varying sizes and nesting: a small text file (~100 bytes), a medium binary file (~100 KB of random data), and a file inside a subdirectory (~500 bytes).",
@@ -433,16 +353,10 @@
 }
 {
   "id": 16,
-  "category": "test",
   "title": "Integration test: relay-based transfer",
   "description": "Test that two nodes can share and download a directory when connected only through an Iroh relay server, verifying NAT-traversal capability.",
-  "depends_on": [15],
-  "inputs": [
-    "file-sharing/tests/transfer.rs",
-    "p2panda-test-claude/tests/transfer.rs (test_relay_bootstrap_transfer pattern: run_relay_server(), relay_url, insecure cert verify)"
-  ],
-  "outputs": [
-    "file-sharing/tests/transfer.rs (additional test function)"
+  "depends_on": [
+    15
   ],
   "spec": {
     "relay_setup": "Start an in-process Iroh dev relay server using iroh::test_utils (same as the test-claude relay tests). This gives a relay_url for both nodes.",
@@ -458,21 +372,16 @@
 }
 {
   "id": 17,
-  "category": "test",
   "title": "Integration test: crash recovery",
   "description": "Verify that a download interrupted mid-transfer can resume after restarting the node with the same FsStore data directory, without re-downloading already-completed files.",
-  "depends_on": [11, 15],
-  "inputs": [
-    "file-sharing/src/persist.rs",
-    "file-sharing/src/download.rs"
-  ],
-  "outputs": [
-    "file-sharing/tests/recovery.rs"
+  "depends_on": [
+    11,
+    15
   ],
   "spec": {
     "test_scenario": "Node A shares a directory with 3 files. Node B begins downloading. After the first file completes (verified by receiving a FileCompleted event for file index 0), drop node B entirely (simulating a crash). Then create a new AppNode for B using the SAME data directory (so FsStore retains the downloaded blob). Run the download flow again with the same share code.",
     "verification_criteria": "The resumed download should skip the first file (blobs.has() returns true), download only the remaining files, and produce FileCompleted events for all files. The output directory should contain all 3 files, byte-identical to the originals. Verify that no FileDownloadProgress events were emitted for the first file during the second run (proving it was skipped, not re-downloaded).",
-    "implementation_note": "The crash recovery mechanism is inherent in the download flow: it calls blobs.has(hash) before each file download. FsStore persists completed blobs to disk. No explicit checkpoint file is needed for this test \u2014 the blobs themselves are the checkpoint."
+    "implementation_note": "The crash recovery mechanism is inherent in the download flow: it calls blobs.has(hash) before each file download. FsStore persists completed blobs to disk. No explicit checkpoint file is needed for this test — the blobs themselves are the checkpoint."
   },
   "acceptance": [
     "Second download run skips the already-completed file",
@@ -483,16 +392,10 @@
 }
 {
   "id": 18,
-  "category": "test",
   "title": "Integration test: multi-source download",
   "description": "Verify that a downloader can fetch content from multiple peers simultaneously, which is the BitTorrent-style swarming behavior enabled by iroh-blobs' Downloader.",
-  "depends_on": [15],
-  "inputs": [
-    "file-sharing/src/download.rs",
-    "file-sharing/src/node.rs"
-  ],
-  "outputs": [
-    "file-sharing/tests/transfer.rs (additional test function)"
+  "depends_on": [
+    15
   ],
   "spec": {
     "test_scenario": "Three nodes: A (original sharer), B (first downloader who becomes a seeder), C (second downloader who should use both A and B as sources). Node A shares a directory with at least one large file (e.g. 1 MB) to make parallelism meaningful. Node B downloads the share from A completely. Then node C starts downloading the same share, with both A and B in its address book.",
@@ -509,23 +412,9 @@
 }
 {
   "id": 19,
-  "category": "infrastructure",
   "title": "Make sandboxed Rust verification environment reliable",
   "description": "Harden the local/docker sandbox workflow so PRD acceptance checks can run reproducibly for Rust tasks without manual apt installs or host-specific workarounds. This task exists because recent progress was blocked by missing linker/toolchain components, missing startup objects, and unreliable dependency fetching, which caused tasks to be marked passed without actually completing their feedback loops.",
   "depends_on": [],
-  "inputs": [
-    ".cargo/config.toml",
-    "ralph.sh",
-    "watch-ralph.sh",
-    "docker sandbox configuration or template build inputs used for codex-p2panda/claude-p2panda"
-  ],
-  "outputs": [
-    ".cargo/config.toml",
-    "ralph.sh",
-    "scripts/verify-in-sandbox.sh",
-    "scripts/bootstrap-sandbox-toolchain.sh",
-    "docs/dev-environment.md"
-  ],
   "spec": {
     "toolchain_baseline": "Ensure the sandbox image or bootstrap script installs the full linker/runtime toolchain required by the configured Rust target, including gcc, mold, and the target's startup objects/libc development packages so linking no longer fails with missing Scrt1.o/crti.o errors.",
     "config_alignment": "Either keep `.cargo/config.toml` aligned with tools guaranteed to exist in the sandbox, or adjust the config to use a linker setup that is actually present by default. The configured linker and rustflags must be valid inside the sandbox without manual intervention.",
@@ -545,23 +434,11 @@
 }
 {
   "id": 20,
-  "category": "ui",
   "title": "Recovered share display and status model rework",
   "description": "Fix recovered shares showing 'Recovered share' with 0/0 files after restart. Persist the directory name, file count, and total bytes in ShareRecord so recovered shares display identically to freshly created ones. Rework transfer status labels to use domain-appropriate terms: 'Seeding' for shares, 'Downloading' for in-progress downloads, 'Failed' for errors. Shares should show a 100% progress bar since the sharer has all data locally.",
-  "depends_on": [11, 13],
-  "inputs": [
-    "file-sharing/src/persist.rs (ShareRecord, DownloadRecord)",
-    "file-sharing/src/bridge.rs (recover_startup_state, ShareReady event)",
-    "file-sharing/src/state.rs (TransferStatus, Transfer)",
-    "file-sharing/src/plugin.rs (apply_network_event)",
-    "file-sharing/src/ui.rs (render_transfer_row)"
-  ],
-  "outputs": [
-    "file-sharing/src/persist.rs",
-    "file-sharing/src/bridge.rs",
-    "file-sharing/src/state.rs",
-    "file-sharing/src/plugin.rs",
-    "file-sharing/src/ui.rs"
+  "depends_on": [
+    11,
+    13
   ],
   "spec": {
     "share_record_fields": "Add directory_name (String), file_count (usize), and total_bytes (u64) to ShareRecord. Populate them from ShareSession when creating a new record. Use serde default for backward compatibility with existing state.json files.",
@@ -582,25 +459,10 @@
 }
 {
   "id": 21,
-  "category": "core",
   "title": "Per-share pause and resume",
   "description": "Allow pausing and resuming individual shares (both seeding uploads and in-progress downloads). Pausing a share stops all network activity for that share: leaves the gossip topic, stops serving blobs, and stops downloading. The paused state persists across app restarts. Each share has an inline pause/resume button in its transfer row.",
-  "depends_on": [20],
-  "inputs": [
-    "file-sharing/src/state.rs (TransferStatus, Transfer)",
-    "file-sharing/src/bridge.rs (NetworkCommand, default_handle_command, RuntimeState)",
-    "file-sharing/src/persist.rs (ShareRecord, DownloadRecord, StateStore)",
-    "file-sharing/src/plugin.rs (apply_network_event)",
-    "file-sharing/src/ui.rs (render_transfer_row)",
-    "file-sharing/src/share.rs (ShareSession, gossip handle, reannounce task)"
-  ],
-  "outputs": [
-    "file-sharing/src/state.rs",
-    "file-sharing/src/bridge.rs",
-    "file-sharing/src/persist.rs",
-    "file-sharing/src/plugin.rs",
-    "file-sharing/src/ui.rs",
-    "file-sharing/src/share.rs"
+  "depends_on": [
+    20
   ],
   "spec": {
     "paused_status": "Add TransferStatus::Paused variant. When paused, the UI shows 'Paused' label alongside the current progress bar (which stays at its last known position, e.g. 100% for a seeding share or 45% for a paused download).",
@@ -624,23 +486,10 @@
 }
 {
   "id": 22,
-  "category": "core",
   "title": "App-wide pause and resume",
   "description": "A global toggle that pauses all network activity across the entire app. When active, all shares stop serving and announcing, all downloads stop fetching. The global pause does not modify per-share pause flags: when global pause is lifted, only shares that were not individually paused resume.",
-  "depends_on": [21],
-  "inputs": [
-    "file-sharing/src/state.rs (TransferStatus, Transfer)",
-    "file-sharing/src/bridge.rs (NetworkCommand, RuntimeState)",
-    "file-sharing/src/persist.rs (PersistedState)",
-    "file-sharing/src/plugin.rs (apply_network_event, poll_network_events)",
-    "file-sharing/src/ui.rs (ui_system toolbar)"
-  ],
-  "outputs": [
-    "file-sharing/src/state.rs",
-    "file-sharing/src/bridge.rs",
-    "file-sharing/src/persist.rs",
-    "file-sharing/src/plugin.rs",
-    "file-sharing/src/ui.rs"
+  "depends_on": [
+    21
   ],
   "spec": {
     "global_pause_flag": "Add a global_paused boolean to PersistedState (persists across restarts, serde default false). Add a corresponding flag to the UI state or a dedicated Bevy Resource so the UI can read it.",
@@ -661,17 +510,10 @@
 }
 {
   "id": 23,
-  "category": "ui",
   "title": "Production-grade UI design review and overhaul",
   "description": "Review the current file-sharing app UI (see screenshot at file-sharing/Screenshot 2026-03-05 at 14.21.03.png) and redesign it to meet production-quality standards. This is a design-first task: analyze the current layout, typography, spacing, color usage, interaction patterns, and information hierarchy, then propose and implement concrete improvements following modern desktop app UI best practices.",
-  "depends_on": [20],
-  "inputs": [
-    "file-sharing/Screenshot 2026-03-05 at 14.21.03.png (current UI screenshot)",
-    "file-sharing/src/ui.rs (current UI implementation)",
-    "file-sharing/src/state.rs (Transfer, TransferStatus, Direction — data model driving the UI)"
-  ],
-  "outputs": [
-    "file-sharing/src/ui.rs"
+  "depends_on": [
+    20
   ],
   "spec": {
     "process": "Begin by analyzing the screenshot and current ui.rs code. Identify all issues with layout, spacing, typography, visual hierarchy, color, iconography, responsiveness, and interaction design. Propose a concrete redesign plan with specific changes before implementing.",
@@ -690,29 +532,9 @@
 }
 {
   "id": 24,
-  "category": "engineering",
   "title": "Global code review and architectural improvements",
   "description": "Perform a comprehensive code review of the entire file-sharing app codebase. The goals are: (1) ensure the code follows Rust and GUI app best practices, (2) improve architecture based on lessons learned during development, and (3) identify gaps in edge case and error handling. This is a review-and-refactor task, not a feature addition.",
   "depends_on": [],
-  "inputs": [
-    "file-sharing/src/main.rs",
-    "file-sharing/src/lib.rs",
-    "file-sharing/src/node.rs",
-    "file-sharing/src/bridge.rs",
-    "file-sharing/src/plugin.rs",
-    "file-sharing/src/download.rs",
-    "file-sharing/src/share.rs",
-    "file-sharing/src/persist.rs",
-    "file-sharing/src/state.rs",
-    "file-sharing/src/ui.rs",
-    "file-sharing/src/manifest.rs",
-    "file-sharing/src/protocol.rs",
-    "file-sharing/src/share_code.rs",
-    "file-sharing/Cargo.toml"
-  ],
-  "outputs": [
-    "All source files under file-sharing/src/"
-  ],
   "spec": {
     "process": "Read every source file in the crate. For each file, evaluate: error handling (are errors propagated correctly, are edge cases covered, could panics occur in production), API boundaries (are public interfaces minimal and well-defined), module responsibilities (is each module cohesive, are there misplaced concerns), resource management (are files/connections/tasks cleaned up properly), concurrency (are channels, async tasks, and thread interactions sound), and idiomatic Rust (naming, types, patterns). Produce a list of findings grouped by severity (critical, important, minor), then implement the fixes.",
     "areas": [
@@ -737,21 +559,9 @@
 }
 {
   "id": 25,
-  "category": "feature",
   "title": "Diagnostic view for network and app state inspection",
   "description": "Add a diagnostic view to the app that surfaces the internal state of the p2p networking stack and transfer engine. The primary use case is troubleshooting: understanding why transfers are slow, why peers are not connecting, or whether the node is healthy. This should answer questions like: Am I connected to other peers? Do I know about peers I'm not connected to? Were there connection errors? How long did connections take to establish? How much data has been transferred? Are there errors pointing at setup issues?",
   "depends_on": [],
-  "inputs": [
-    "file-sharing/src/node.rs (AppNode with endpoint, address_book, gossip, blobs)",
-    "file-sharing/src/bridge.rs (AsyncBridge, NetworkEvent, NetworkCommand)",
-    "file-sharing/src/state.rs (TransferRegistry, Transfer)",
-    "file-sharing/src/ui.rs (existing UI structure)"
-  ],
-  "outputs": [
-    "file-sharing/src/ui.rs (or new ui module files)",
-    "file-sharing/src/bridge.rs (new diagnostic events/queries)",
-    "file-sharing/src/state.rs (diagnostic state model)"
-  ],
   "spec": {
     "view_design": "A dedicated panel or tab in the app (not a modal) that can be toggled open. It should be always accessible, even when transfers are idle. The view should update in real time, not require manual refresh.",
     "sections": {
@@ -780,24 +590,9 @@
 }
 {
   "id": 26,
-  "category": "feature",
   "title": "Cancel in-progress transfers",
   "description": "Allow the user to cancel a transfer that is currently in progress (either upload or download). Cancellation should stop all network activity for that transfer, clean up any temporary state, and update the UI to reflect the cancelled status. Partially downloaded data should be left on disk so a future re-download of the same share code can potentially resume.",
   "depends_on": [],
-  "inputs": [
-    "file-sharing/src/ui.rs (transfer row rendering)",
-    "file-sharing/src/state.rs (Transfer, TransferStatus)",
-    "file-sharing/src/bridge.rs (AsyncBridge, NetworkCommand)",
-    "file-sharing/src/download.rs (download_share_with_progress)",
-    "file-sharing/src/share.rs (share_directory)"
-  ],
-  "outputs": [
-    "file-sharing/src/ui.rs",
-    "file-sharing/src/state.rs",
-    "file-sharing/src/bridge.rs",
-    "file-sharing/src/download.rs",
-    "file-sharing/src/share.rs"
-  ],
   "spec": {
     "ui": "Add a cancel button to each transfer row that is in Pending or Active status. The button should require a single click (no confirmation dialog — cancellation is not destructive since data is retained).",
     "cancellation_mechanism": "Add a CancelTransfer network command. The async worker should use a cancellation token (e.g. tokio CancellationToken or a shared AtomicBool) to signal the running download/share task to stop. The task should check the token at natural yield points (between file downloads, during blob transfers).",
@@ -817,22 +612,10 @@
 }
 {
   "id": 27,
-  "category": "feature",
   "title": "Remove completed and failed transfers from the list",
   "description": "Allow the user to remove transfers from the transfer list. For completed downloads this is cosmetic (hide from list). For completed shares (uploads), removal should also stop serving the share to other peers and clean up associated blobs and persistence records. This gives users control over what they are sharing and keeps the transfer list manageable.",
-  "depends_on": [26],
-  "inputs": [
-    "file-sharing/src/ui.rs (transfer row rendering)",
-    "file-sharing/src/state.rs (TransferRegistry, Transfer)",
-    "file-sharing/src/bridge.rs (AsyncBridge, NetworkCommand)",
-    "file-sharing/src/persist.rs (ShareRecord persistence)",
-    "file-sharing/src/download.rs (completed blob markers)"
-  ],
-  "outputs": [
-    "file-sharing/src/ui.rs",
-    "file-sharing/src/state.rs",
-    "file-sharing/src/bridge.rs",
-    "file-sharing/src/persist.rs"
+  "depends_on": [
+    26
   ],
   "spec": {
     "ui": "Add a remove/dismiss button (e.g. X icon) to each transfer row that is in Completed, Cancelled, or Error status. For shares that are still being served, show a confirmation since removal stops serving.",
@@ -854,19 +637,9 @@
 }
 {
   "id": 28,
-  "category": "feature",
   "title": "System notifications for transfer events",
   "description": "Send native OS notifications when important transfer events occur, particularly when the app window is not focused. Users often start a download or share and then switch to other work — they need to know when transfers complete or fail without watching the app.",
   "depends_on": [],
-  "inputs": [
-    "file-sharing/src/plugin.rs (poll_network_events, apply_network_event)",
-    "file-sharing/src/state.rs (TransferStatus)",
-    "file-sharing/Cargo.toml"
-  ],
-  "outputs": [
-    "file-sharing/src/plugin.rs",
-    "file-sharing/Cargo.toml"
-  ],
   "spec": {
     "events_to_notify": [
       "Download completed: '{name}' finished downloading ({file_count} files, {total_bytes})",
@@ -890,18 +663,9 @@
 }
 {
   "id": 29,
-  "category": "feature",
   "title": "Drag and drop folder to share",
   "description": "Allow the user to drag a folder from their file manager onto the app window to start sharing it, as an alternative to the 'Share Directory...' button and file dialog. This is a common desktop app pattern that makes sharing faster and more intuitive.",
   "depends_on": [],
-  "inputs": [
-    "file-sharing/src/ui.rs (ui_system, start_share_transfer)",
-    "file-sharing/src/plugin.rs (FileSharingPlugin)"
-  ],
-  "outputs": [
-    "file-sharing/src/ui.rs",
-    "file-sharing/src/plugin.rs"
-  ],
   "spec": {
     "interaction": "When the user drags a folder over the app window, show a visual drop zone indicator (e.g. overlay with 'Drop folder to share' text and a highlighted border). On drop, immediately start the share transfer — same behavior as selecting a folder via the file dialog.",
     "implementation": "Use bevy_egui's or winit's drag-and-drop event support. Bevy exposes FileDragAndDrop events from winit. Listen for these events in a bevy system and forward the dropped path to start_share_transfer.",
@@ -921,21 +685,9 @@
 }
 {
   "id": 30,
-  "category": "feature",
   "title": "Content integrity verification display",
   "description": "Show the user that downloaded content matches what the sharer published by displaying hash verification results in the UI. This builds trust in the p2p transfer — users should be able to see that what they received is exactly what was shared, with no tampering or corruption.",
   "depends_on": [],
-  "inputs": [
-    "file-sharing/src/download.rs (blob hashes, collection manifest)",
-    "file-sharing/src/state.rs (Transfer, FileProgress)",
-    "file-sharing/src/ui.rs (transfer row rendering)",
-    "file-sharing/src/manifest.rs (DirectoryManifest)"
-  ],
-  "outputs": [
-    "file-sharing/src/state.rs",
-    "file-sharing/src/ui.rs",
-    "file-sharing/src/download.rs"
-  ],
   "spec": {
     "what_to_show": "Each file in a completed download should display a verification status: verified (hash matches), or failed (hash mismatch or missing). The overall transfer should show an aggregate status: 'All files verified' or 'N files failed verification'. Show the content hash (truncated) for the overall collection.",
     "when_to_verify": "Verification happens naturally during the iroh-blobs download — blobs are content-addressed, so a successful download implies the hash matches. The key information to surface is: (1) the download completed via content-addressed transfer (inherent integrity), (2) the collection hash that identifies this exact set of files. If a blob hash mismatch occurs during download, iroh-blobs will error — surface this as a verification failure rather than a generic error.",
@@ -954,19 +706,9 @@
 }
 {
   "id": 31,
-  "category": "infrastructure",
   "title": "Multi-platform packaging and release builds",
   "description": "Set up CI pipelines and packaging scripts to produce distributable application bundles for macOS, Linux, and Windows. Users should be able to download and run the app without installing Rust or building from source.",
   "depends_on": [],
-  "inputs": [
-    "file-sharing/Cargo.toml",
-    "file-sharing/src/main.rs",
-    ".github/ (CI configuration if present)"
-  ],
-  "outputs": [
-    ".github/workflows/ (release workflow)",
-    "file-sharing/packaging/ (platform-specific packaging config)"
-  ],
   "spec": {
     "platforms": {
       "macos": "Produce a .app bundle inside a .dmg disk image. Include an Info.plist with app name, version, icon, and bundle identifier. Sign with an ad-hoc signature at minimum (proper Developer ID signing as a follow-up). Support both x86_64 and aarch64 (universal binary preferred, separate binaries acceptable).",
@@ -991,26 +733,9 @@
 }
 {
   "id": 32,
-  "category": "engineering",
   "title": "Dependency audit and Bevy 0.16 upgrade",
   "description": "Audit all workspace dependencies for available upgrades, then upgrade Bevy from 0.15 to 0.16 (or latest stable) and bevy_egui from the pinned 0.33 to a Bevy-0.16-compatible release (0.34+). The 0.33 pin was a workaround for a cross-version ECS trait incompatibility between bevy 0.15 and bevy_egui 0.34. This task resolves that technical debt and brings the full dependency tree up to date.",
   "depends_on": [],
-  "inputs": [
-    "Cargo.toml (workspace root)",
-    "file-sharing/Cargo.toml",
-    "Cargo.lock",
-    "file-sharing/src/main.rs",
-    "file-sharing/src/plugin.rs",
-    "file-sharing/src/ui.rs",
-    "file-sharing/src/bridge.rs",
-    "file-sharing/src/state.rs"
-  ],
-  "outputs": [
-    "Cargo.toml (workspace root)",
-    "file-sharing/Cargo.toml",
-    "Cargo.lock",
-    "All source files requiring migration changes"
-  ],
   "spec": {
     "phase_1_audit": "Run cargo outdated (or equivalent) across the entire workspace. Produce a list of dependencies with available upgrades, grouped by: patch (safe), minor (likely safe), major (breaking). Flag any dependencies with known security advisories via cargo audit.",
     "phase_2_non_breaking": "Apply all patch and minor dependency upgrades. Run the full test suite to confirm no regressions.",
@@ -1042,21 +767,10 @@
 }
 {
   "id": 33,
-  "category": "feature",
   "title": "Settings UI with default download directory",
   "description": "Add a settings panel to the app where users can configure persistent preferences. The first setting is a default download directory so users don't have to pick a destination folder for every download. Settings are persisted to disk and loaded on startup.",
-  "depends_on": [11],
-  "inputs": [
-    "file-sharing/src/ui.rs",
-    "file-sharing/src/persist.rs",
-    "file-sharing/src/bridge.rs",
-    "file-sharing/src/plugin.rs",
-    "file-sharing/src/state.rs"
-  ],
-  "outputs": [
-    "file-sharing/src/ui.rs",
-    "file-sharing/src/persist.rs",
-    "file-sharing/src/state.rs"
+  "depends_on": [
+    11
   ],
   "spec": {
     "settings_model": "Add an AppSettings struct persisted alongside the existing state.json (either in the same file or a separate settings.json in the same data directory). Fields: default_download_dir (Option<PathBuf>). When None, the app falls back to the platform Downloads directory as it does today.",
@@ -1078,21 +792,10 @@
 }
 {
   "id": 34,
-  "category": "feature",
   "title": "Relay server configuration settings",
   "description": "Add relay server configuration to the settings UI. Users should be able to choose between iroh's public testing relay, a custom self-hosted relay, or no relay at all. This is important for self-hosted and enterprise deployments where the public testing relay is not appropriate for production use.",
-  "depends_on": [33],
-  "inputs": [
-    "file-sharing/src/ui.rs (settings panel from Task 33)",
-    "file-sharing/src/persist.rs (AppSettings from Task 33)",
-    "file-sharing/src/node.rs (relay/endpoint configuration)",
-    "file-sharing/src/bridge.rs"
-  ],
-  "outputs": [
-    "file-sharing/src/ui.rs",
-    "file-sharing/src/persist.rs",
-    "file-sharing/src/node.rs",
-    "file-sharing/src/bridge.rs"
+  "depends_on": [
+    33
   ],
   "spec": {
     "settings_model": "Extend AppSettings with relay configuration fields: relay_mode (enum: TestingRelay, Relay, Disabled) and custom_relay_url (Option<String>). TestingRelay uses iroh's built-in public relay. Relay uses the user-provided URL. Disabled disables relay entirely (direct connections only). The default value for new installations is TestingRelay.",
@@ -1111,6 +814,32 @@
     "A restart-required notice is shown when relay settings are changed at runtime",
     "The relay configuration is applied during node startup",
     "TestingRelay is the default for new installations"
+  ],
+  "passes": false
+}
+{
+  "id": 35,
+  "title": "Remove a share and purge all associated data",
+  "description": "Allow the user to permanently remove a share in any state, stopping all activity and deleting all associated data from the blob store. This reclaims disk space and ensures the shared content is no longer stored locally. The original source directory on disk is never modified.",
+  "depends_on": [],
+  "spec": {
+    "ui": "Add a 'Remove' button to every share transfer row regardless of state (pending, active/seeding, paused, cancelled, error, completed). The button opens a confirmation dialog explaining that removal will stop serving the share and delete all associated blob data. The dialog should clearly state that the original source directory is not affected.",
+    "removal_flow": "When confirmed, the removal flow: (1) if the share is active — abort any in-flight share task, drop the gossip handle, leave the gossip topic, stop blob announcements and re-announcement tasks, stop serving blobs for that collection, (2) unpin the collection blob (HashSeq) so it and its referenced blobs become eligible for GC, (3) explicitly delete the collection blob, manifest blob, and all file blobs from the blob store, (4) delete the ShareRecord from persistence (state.json), (5) remove the transfer from the TransferRegistry so it disappears from the UI.",
+    "blob_deletion": "Delete blobs using the store's delete API. Delete in order: file blobs first, then the manifest blob, then the collection blob. If a blob is referenced by another active share (same file shared in multiple directories), do not delete it — check for shared references before deletion. Log any deletion failures but do not block the overall removal.",
+    "shared_blob_detection": "Before deleting a file blob, check whether any other active ShareRecord references the same blob hash. If so, skip deletion of that blob. This prevents breaking other active shares that include the same file.",
+    "source_directory": "The original source directory and its files are NEVER modified or deleted. The removal only affects data in the blob store and app persistence.",
+    "constraints": "Removal is permanent and not undoable — the share code becomes invalid and the content must be re-imported to share again. This is why confirmation is required."
+  },
+  "acceptance": [
+    "Every share row shows a Remove button regardless of transfer state",
+    "Clicking Remove shows a confirmation dialog explaining the consequences",
+    "Removing an active/seeding share stops all network activity for that share",
+    "After confirmation, the share disappears from the transfer list",
+    "The ShareRecord is deleted from state.json",
+    "All associated blobs (collection, manifest, files) are deleted from the blob store",
+    "Blobs shared by other active shares are not deleted",
+    "The share code no longer works for new download attempts after removal",
+    "The original source directory is not modified"
   ],
   "passes": false
 }
