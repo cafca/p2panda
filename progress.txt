@@ -753,3 +753,22 @@ What doesn't work:
 
 What doesn't work:
 - no additional blocker for Task 25 in this run
+
+# 2026-03-06 01:27 UTC
+
+- picked Task 32 (`Dependency audit and Bevy 0.16 upgrade`) as the highest-priority unfinished feature because security/dependency hygiene affects all remaining release work and runtime stability
+- implemented a concrete dependency-hardening fix in `p2panda-store/Cargo.toml`: set `sqlx` to `default-features = false` while keeping `sqlite` + `runtime-tokio`; this removes unused mysql/rsa dependency surface from the workspace lock
+- regenerated the lockfile under current constraints via `cargo update -p sqlx --offline`
+- reran feedback loops:
+  - `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-file-sharing-gui --tests --locked` (pass)
+  - `CARGO_BUILD_JOBS=1 ./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui --lib --locked` (pass, 68/68)
+  - `CARGO_NET_OFFLINE=true cargo audit --no-fetch --stale` (no vulnerability findings; only unmaintained warnings)
+  - `CARGO_BUILD_JOBS=1 ./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui --tests --locked` (blocked; linker killed by OOM when linking integration tests)
+  - `cargo outdated --workspace -R` (blocked by pre-release resolver conflict around `curve25519-dalek` between `p2panda-fuzz`/`p2panda-file-sharing` dependency graphs)
+  - `./scripts/verify-in-sandbox.sh -- bash -lc 'timeout 8 cargo run -q -p p2panda-file-sharing-gui >/tmp/p2panda-run.log 2>&1; ec=$?; cat /tmp/p2panda-run.log; exit $ec'` (timeout exit 124 with no startup errors observed during smoke window)
+- confirmed the previous `RUSTSEC-2023-0071` (`rsa` via `sqlx-mysql`) no longer appears in audit output after the sqlx feature fix
+- kept Task 32 `passes` as `false` in `PRD.jsonl` for this run
+
+What doesn't work:
+- Task 32 acceptance is still incomplete in this environment because full integration-test verification is blocked by sandbox linker OOM (`collect2: fatal error: ld terminated with signal 9 [Killed]`) during `--tests`
+- `cargo outdated` cannot currently produce a full workspace patch/minor report due a dependency-resolution conflict in temporary outdated resolution (`curve25519-dalek =5.0.0-pre.1` vs `=5.0.0-pre.6`), so the acceptance criterion about no remaining patch/minor upgrades cannot be proven yet
