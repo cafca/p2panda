@@ -558,3 +558,27 @@ What doesn't work:
 
 What doesn't work:
 - no additional blocker for Task 29 in this run
+
+# 2026-03-05 20:18
+
+- picked Task 27 (`Remove completed and failed transfers from the list`) as the highest-priority unfinished feature because Task 26 is already passing and Task 27 is the next transfer-lifecycle control dependency
+- implemented transfer-row removal UX in `file-sharing/src/ui.rs`:
+  - added `Remove` action button visibility for `Completed`, `Cancelled`, and `Error` transfers
+  - enforced that `Pending`/`Active` rows do not expose remove controls
+  - added share-removal confirmation dialog for completed upload shares (seeding rows)
+  - added toolbar `Clear completed` bulk action with confirmation when it includes serving shares
+  - wired completed share removal to backend cleanup by sending `NetworkCommand::CancelTransfer` before removing the row
+- extended `TransferRegistry` in `file-sharing/src/state.rs` with `remove(id)` and `retain(...)` helpers for deterministic single-row and bulk removal
+- tightened share-stop behavior in `file-sharing/src/bridge.rs` cancel path so removing/cancelling a share blocks serving hashes for that share and removes the persisted `ShareRecord`
+- added verification coverage:
+  - UI unit tests for remove-button eligibility and clear-completed behavior (`file-sharing/src/ui.rs`)
+  - integration test `removed_share_is_not_downloadable` in `file-sharing/tests/transfer.rs` to validate that after share removal, new download attempts with that share code fail
+- ran `cargo fmt --package p2panda-file-sharing-gui`
+- ran `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-file-sharing-gui --tests --locked`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui ui --lib --locked -- --nocapture`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui bridge --lib --locked -- --nocapture`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui --test transfer removed_share_is_not_downloadable --locked -- --nocapture`
+- confirmed Task 27 acceptance criteria in this run and updated Task 27 `passes` to `true` in `PRD.jsonl`
+
+What doesn't work:
+- no additional blocker for Task 27 in this run

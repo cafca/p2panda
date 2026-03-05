@@ -633,7 +633,7 @@
     "After removing a share, its share code no longer works for new download attempts",
     "Active/pending transfers cannot be removed (they must be cancelled first)"
   ],
-  "passes": false
+  "passes": true
 }
 {
   "id": 28,

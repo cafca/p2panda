@@ -21,6 +21,7 @@ enum TransferAction {
     Cancel { transfer_id: u64 },
     Pause { transfer_id: u64 },
     Resume { transfer_id: u64 },
+    Remove { transfer_id: u64 },
 }
 
 #[derive(Debug, Resource)]
@@ -37,6 +38,8 @@ pub struct UiState {
     pub settings_error: Option<String>,
     pub drag_drop_active: bool,
     pub drag_drop_error: Option<String>,
+    pending_share_removal: Option<u64>,
+    confirm_clear_completed: bool,
     folder_dialog: Option<(PendingDialog, flume::Receiver<Option<PathBuf>>)>,
 }
 
@@ -61,6 +64,8 @@ impl UiState {
             settings_error: None,
             drag_drop_active: false,
             drag_drop_error: None,
+            pending_share_removal: None,
+            confirm_clear_completed: false,
             folder_dialog: None,
         }
     }
@@ -229,6 +234,25 @@ pub fn ui_system(
                 }
             }
 
+            let has_completed = transfers
+                .transfers()
+                .iter()
+                .any(|transfer| matches!(transfer.status, TransferStatus::Completed));
+            if ui
+                .add_enabled(has_completed, egui::Button::new("Clear completed"))
+                .clicked()
+            {
+                let has_completed_upload = transfers
+                    .transfers()
+                    .iter()
+                    .any(|transfer| is_serving_share(transfer));
+                if has_completed_upload {
+                    ui_state.confirm_clear_completed = true;
+                } else {
+                    clear_completed_transfers(&mut transfers);
+                }
+            }
+
             ui.separator();
             if ui
                 .selectable_label(ui_state.show_settings_view, "Settings")
@@ -261,7 +285,7 @@ pub fn ui_system(
                 }
 
                 for action in pending_actions {
-                    apply_transfer_action(&mut transfers, &bridge, action);
+                    apply_transfer_action(&mut transfers, &mut ui_state, &bridge, action);
                 }
             });
         }
@@ -270,6 +294,9 @@ pub fn ui_system(
     if ui_state.download_dialog_open {
         render_download_dialog(ctx, &mut ui_state, &mut transfers, &bridge);
     }
+
+    render_share_removal_confirmation(ctx, &mut ui_state, &mut transfers, &bridge);
+    render_clear_completed_confirmation(ctx, &mut ui_state, &mut transfers, &bridge);
 
     if ui_state.drag_drop_active {
         render_drag_drop_overlay(ctx);
@@ -520,6 +547,12 @@ fn render_transfer_row(
                     transfer_id: transfer.id,
                 });
             }
+
+            if can_remove_transfer(transfer) && ui.button("Remove").clicked() {
+                action = Some(TransferAction::Remove {
+                    transfer_id: transfer.id,
+                });
+            }
         });
 
         match &transfer.status {
@@ -631,9 +664,21 @@ fn can_cancel_transfer(transfer: &Transfer) -> bool {
 
 fn apply_transfer_action(
     transfers: &mut TransferRegistry,
+    ui_state: &mut UiState,
     bridge: &AsyncBridge,
     action: TransferAction,
 ) {
+    if let TransferAction::Remove { transfer_id } = action {
+        if let Some(transfer) = transfers.get(transfer_id) {
+            if is_serving_share(transfer) {
+                ui_state.pending_share_removal = Some(transfer_id);
+                return;
+            }
+        }
+        let _ = transfers.remove(transfer_id);
+        return;
+    }
+
     let (transfer_id, command) = match action {
         TransferAction::Cancel { transfer_id } => {
             (transfer_id, NetworkCommand::CancelTransfer { transfer_id })
@@ -644,6 +689,7 @@ fn apply_transfer_action(
         TransferAction::Resume { transfer_id } => {
             (transfer_id, NetworkCommand::ResumeTransfer { transfer_id })
         }
+        TransferAction::Remove { .. } => unreachable!("handled above"),
     };
 
     if let Err(err) = bridge.send(command) {
@@ -658,8 +704,162 @@ fn apply_transfer_action(
             TransferAction::Cancel { .. } => TransferStatus::Cancelled,
             TransferAction::Pause { .. } => TransferStatus::Paused,
             TransferAction::Resume { .. } => TransferStatus::Active,
+            TransferAction::Remove { .. } => unreachable!("handled above"),
         };
     }
+}
+
+fn render_share_removal_confirmation(
+    ctx: &egui::Context,
+    ui_state: &mut UiState,
+    transfers: &mut TransferRegistry,
+    bridge: &AsyncBridge,
+) {
+    let Some(transfer_id) = ui_state.pending_share_removal else {
+        return;
+    };
+
+    let transfer_name = transfers
+        .get(transfer_id)
+        .map(|transfer| transfer.name.clone())
+        .unwrap_or_else(|| "this share".to_owned());
+
+    let mut keep_open = true;
+    let mut confirm = false;
+    let mut cancel = false;
+
+    egui::Window::new("Remove share?")
+        .collapsible(false)
+        .resizable(false)
+        .open(&mut keep_open)
+        .show(ctx, |ui| {
+            ui.label(format!(
+                "Removing '{transfer_name}' will stop serving this share and invalidate its share code."
+            ));
+            ui.label("The original source directory is not modified.");
+            ui.horizontal(|ui| {
+                if ui.button("Keep sharing").clicked() {
+                    cancel = true;
+                }
+                if ui.button("Remove share").clicked() {
+                    confirm = true;
+                }
+            });
+        });
+
+    if confirm {
+        remove_serving_share(transfers, bridge, transfer_id);
+        ui_state.pending_share_removal = None;
+        return;
+    }
+
+    if cancel || !keep_open {
+        ui_state.pending_share_removal = None;
+    }
+}
+
+fn render_clear_completed_confirmation(
+    ctx: &egui::Context,
+    ui_state: &mut UiState,
+    transfers: &mut TransferRegistry,
+    bridge: &AsyncBridge,
+) {
+    if !ui_state.confirm_clear_completed {
+        return;
+    }
+
+    let completed_uploads = transfers
+        .transfers()
+        .iter()
+        .filter(|transfer| is_serving_share(transfer))
+        .count();
+    if completed_uploads == 0 {
+        clear_completed_transfers(transfers);
+        ui_state.confirm_clear_completed = false;
+        return;
+    }
+
+    let mut keep_open = true;
+    let mut confirm = false;
+    let mut cancel = false;
+    egui::Window::new("Clear completed transfers?")
+        .collapsible(false)
+        .resizable(false)
+        .open(&mut keep_open)
+        .show(ctx, |ui| {
+            ui.label(format!(
+                "This will remove completed downloads and stop serving {completed_uploads} completed share(s)."
+            ));
+            ui.horizontal(|ui| {
+                if ui.button("Cancel").clicked() {
+                    cancel = true;
+                }
+                if ui.button("Clear completed").clicked() {
+                    confirm = true;
+                }
+            });
+        });
+
+    if confirm {
+        clear_completed_transfers_with_share_cleanup(transfers, bridge);
+        ui_state.confirm_clear_completed = false;
+        return;
+    }
+
+    if cancel || !keep_open {
+        ui_state.confirm_clear_completed = false;
+    }
+}
+
+fn clear_completed_transfers(transfers: &mut TransferRegistry) {
+    transfers.retain(|transfer| !matches!(transfer.status, TransferStatus::Completed));
+}
+
+fn clear_completed_transfers_with_share_cleanup(
+    transfers: &mut TransferRegistry,
+    bridge: &AsyncBridge,
+) {
+    let completed_ids: Vec<u64> = transfers
+        .transfers()
+        .iter()
+        .filter(|transfer| matches!(transfer.status, TransferStatus::Completed))
+        .map(|transfer| transfer.id)
+        .collect();
+
+    for transfer_id in completed_ids {
+        let Some(transfer) = transfers.get(transfer_id).cloned() else {
+            continue;
+        };
+        if is_serving_share(&transfer) {
+            remove_serving_share(transfers, bridge, transfer_id);
+        } else {
+            let _ = transfers.remove(transfer_id);
+        }
+    }
+}
+
+fn remove_serving_share(transfers: &mut TransferRegistry, bridge: &AsyncBridge, transfer_id: u64) {
+    if let Err(err) = bridge.send(NetworkCommand::CancelTransfer { transfer_id }) {
+        if let Some(transfer) = transfers.get_mut(transfer_id) {
+            transfer.status = TransferStatus::Error(err.to_string());
+        }
+        return;
+    }
+    let _ = transfers.remove(transfer_id);
+}
+
+fn can_remove_transfer(transfer: &Transfer) -> bool {
+    matches!(
+        transfer.status,
+        TransferStatus::Completed | TransferStatus::Cancelled | TransferStatus::Error(_)
+    )
+}
+
+fn is_serving_share(transfer: &Transfer) -> bool {
+    matches!(
+        (&transfer.direction, &transfer.status),
+        (Direction::Upload, TransferStatus::Completed)
+    )
 }
 
 fn start_share_transfer(
@@ -970,6 +1170,54 @@ mod tests {
         errored.status = TransferStatus::Error("boom".into());
         assert!(!can_cancel_transfer(&errored));
         assert!(!can_pause_transfer(&errored));
+    }
+
+    #[test]
+    fn remove_button_rules_match_transfer_status() {
+        let mut pending = Transfer::new(1, "pending", Direction::Download);
+        pending.status = TransferStatus::Pending;
+        assert!(!can_remove_transfer(&pending));
+
+        let mut active = Transfer::new(2, "active", Direction::Upload);
+        active.status = TransferStatus::Active;
+        assert!(!can_remove_transfer(&active));
+
+        let mut completed_download = Transfer::new(3, "done", Direction::Download);
+        completed_download.status = TransferStatus::Completed;
+        assert!(can_remove_transfer(&completed_download));
+
+        let mut completed_upload = Transfer::new(4, "seed", Direction::Upload);
+        completed_upload.status = TransferStatus::Completed;
+        assert!(can_remove_transfer(&completed_upload));
+        assert!(is_serving_share(&completed_upload));
+
+        let mut cancelled = Transfer::new(5, "cancelled", Direction::Download);
+        cancelled.status = TransferStatus::Cancelled;
+        assert!(can_remove_transfer(&cancelled));
+
+        let mut errored = Transfer::new(6, "errored", Direction::Download);
+        errored.status = TransferStatus::Error("boom".into());
+        assert!(can_remove_transfer(&errored));
+    }
+
+    #[test]
+    fn clear_completed_removes_only_completed_transfers() {
+        let mut registry = TransferRegistry::default();
+        let mut completed = Transfer::new(1, "done", Direction::Download);
+        completed.status = TransferStatus::Completed;
+        let mut active = Transfer::new(2, "active", Direction::Download);
+        active.status = TransferStatus::Active;
+        let mut errored = Transfer::new(3, "error", Direction::Download);
+        errored.status = TransferStatus::Error("boom".into());
+        registry.push(completed);
+        registry.push(active);
+        registry.push(errored);
+
+        clear_completed_transfers(&mut registry);
+
+        assert!(registry.get(1).is_none());
+        assert!(registry.get(2).is_some());
+        assert!(registry.get(3).is_some());
     }
 
     #[test]

@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use iroh::test_utils::run_relay_server;
+use p2panda_file_sharing_gui::bridge::{AsyncBridge, NetworkCommand, NetworkEvent};
 use p2panda_file_sharing_gui::download::{download_share_with_progress, DownloadEvent};
 use p2panda_file_sharing_gui::node::{AppNode, NodeOptions};
 use p2panda_file_sharing_gui::share::share_directory;
@@ -201,6 +202,123 @@ async fn multi_source_download_from_two_seeders() -> Result<()> {
     .context("multi-source transfer test timed out after 30 seconds")??;
 
     Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn removed_share_is_not_downloadable() -> Result<()> {
+    timeout(Duration::from_secs(40), async {
+        let (_relay_map, relay_url, _relay_server) = run_relay_server().await?;
+        let bridge_data_dir = tempdir()?;
+        let node_b_dir = tempdir()?;
+        let source_dir = tempdir()?;
+        let output_b = tempdir()?;
+
+        let source_root = source_dir.path().join("source");
+        fs::create_dir_all(&source_root)?;
+        fs::write(source_root.join("payload.txt"), b"share then remove")?;
+
+        let bridge = AsyncBridge::spawn_with_data_dir(
+            NodeOptions {
+                relay_url: Some(relay_url.clone()),
+                insecure_skip_relay_cert_verify: true,
+            },
+            bridge_data_dir.path().to_path_buf(),
+        )?;
+
+        bridge.send(NetworkCommand::ShareDirectory {
+            transfer_id: 1,
+            directory_path: source_root.clone(),
+        })?;
+        let share_code = wait_for_share_ready(&bridge, 1).await?;
+
+        bridge.send(NetworkCommand::CancelTransfer { transfer_id: 1 })?;
+        wait_for_transfer_cancelled(&bridge, 1).await?;
+
+        let node_b = AppNode::with_data_dir(
+            node_b_dir.path(),
+            NodeOptions {
+                relay_url: Some(relay_url.clone()),
+                insecure_skip_relay_cert_verify: true,
+            },
+        )
+        .await?;
+        let removed_attempt = timeout(
+            Duration::from_secs(10),
+            download_share_with_progress(&node_b, &share_code, output_b.path(), |_| {}),
+        )
+        .await
+        .context("timed out waiting for removed-share download attempt")?;
+        assert!(
+            removed_attempt.is_err(),
+            "expected removed share to be unavailable"
+        );
+
+        Ok::<(), anyhow::Error>(())
+    })
+    .await
+    .context("removed-share transfer test timed out")??;
+
+    Ok(())
+}
+
+async fn wait_for_share_ready(bridge: &AsyncBridge, transfer_id: u64) -> Result<String> {
+    let started = tokio::time::Instant::now();
+    loop {
+        if started.elapsed() > Duration::from_secs(15) {
+            anyhow::bail!("timed out waiting for ShareReady event");
+        }
+
+        if let Some(event) = bridge
+            .try_recv()
+            .map_err(|err| anyhow::anyhow!("bridge receive failed: {err}"))?
+        {
+            match event {
+                NetworkEvent::ShareReady {
+                    transfer_id: event_transfer_id,
+                    share_code,
+                    ..
+                } if event_transfer_id == transfer_id => return Ok(share_code),
+                NetworkEvent::Error {
+                    transfer_id: event_transfer_id,
+                    error_message,
+                } if event_transfer_id == transfer_id => {
+                    anyhow::bail!("share failed: {error_message}");
+                }
+                _ => {}
+            }
+        }
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+async fn wait_for_transfer_cancelled(bridge: &AsyncBridge, transfer_id: u64) -> Result<()> {
+    let started = tokio::time::Instant::now();
+    loop {
+        if started.elapsed() > Duration::from_secs(15) {
+            anyhow::bail!("timed out waiting for TransferCancelled event");
+        }
+
+        if let Some(event) = bridge
+            .try_recv()
+            .map_err(|err| anyhow::anyhow!("bridge receive failed: {err}"))?
+        {
+            match event {
+                NetworkEvent::TransferCancelled {
+                    transfer_id: event_transfer_id,
+                } if event_transfer_id == transfer_id => return Ok(()),
+                NetworkEvent::Error {
+                    transfer_id: event_transfer_id,
+                    error_message,
+                } if event_transfer_id == transfer_id => {
+                    anyhow::bail!("cancel failed: {error_message}");
+                }
+                _ => {}
+            }
+        }
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 }
 
 fn relay_bootstrap_node_info(node_id: p2panda_core::PublicKey, relay_url: RelayUrl) -> NodeInfo {

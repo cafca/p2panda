@@ -386,8 +386,14 @@ async fn default_handle_command(
             let mut runtime = state.inner.lock().await;
 
             if let Some(session) = runtime.live_shares.remove(&transfer_id) {
+                state
+                    .node
+                    .blobs
+                    .block_serving_hashes(share_hashes_for_session(&session));
                 runtime.store.remove_share_by_code(&session.share_code)?;
             } else if let Some(session) = runtime.recovered_shares.remove(&transfer_id) {
+                let hashes = share_hashes_for_record(&state.node, &session.record).await;
+                state.node.blobs.block_serving_hashes(hashes);
                 runtime
                     .store
                     .remove_share_by_code(&session.record.share_code)?;
@@ -398,12 +404,8 @@ async fn default_handle_command(
                     &active.record.output_dir,
                 )?;
             } else if let Some(record) = runtime.paused_shares.remove(&transfer_id) {
-                let hashes = share_hashes_for_record(&state.node, &record).await;
-                state.node.blobs.unblock_serving_hashes(hashes);
                 runtime.store.remove_share_by_code(&record.share_code)?;
             } else if let Some(record) = runtime.globally_paused_shares.remove(&transfer_id) {
-                let hashes = share_hashes_for_record(&state.node, &record).await;
-                state.node.blobs.unblock_serving_hashes(hashes);
                 runtime.store.remove_share_by_code(&record.share_code)?;
             } else if let Some(record) = runtime.paused_downloads.remove(&transfer_id) {
                 runtime

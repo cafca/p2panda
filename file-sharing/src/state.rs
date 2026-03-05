@@ -35,6 +35,21 @@ impl TransferRegistry {
     pub fn get_mut(&mut self, id: u64) -> Option<&mut Transfer> {
         self.transfers.iter_mut().find(|transfer| transfer.id == id)
     }
+
+    pub fn remove(&mut self, id: u64) -> Option<Transfer> {
+        let index = self
+            .transfers
+            .iter()
+            .position(|transfer| transfer.id == id)?;
+        Some(self.transfers.remove(index))
+    }
+
+    pub fn retain<F>(&mut self, mut keep: F)
+    where
+        F: FnMut(&Transfer) -> bool,
+    {
+        self.transfers.retain(|transfer| keep(transfer));
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
