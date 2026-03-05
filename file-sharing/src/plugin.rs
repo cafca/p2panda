@@ -61,13 +61,15 @@ fn apply_network_event(transfers: &mut TransferRegistry, event: NetworkEvent) ->
     match event {
         NetworkEvent::ShareReady {
             transfer_id,
+            directory_name,
             share_code,
             total_bytes,
             file_count,
         } => {
             let transfer = get_or_insert_transfer(transfers, transfer_id, || {
-                Transfer::new(transfer_id, "Recovered share", Direction::Upload)
+                Transfer::new(transfer_id, &directory_name, Direction::Upload)
             });
+            transfer.name = directory_name;
             transfer.share_code = Some(share_code);
             transfer.total_bytes = total_bytes;
             transfer.downloaded_bytes = total_bytes;
@@ -335,6 +337,7 @@ mod tests {
                 events
                     .send_async(NetworkEvent::ShareReady {
                         transfer_id,
+                        directory_name: "photos".into(),
                         share_code: "p2p-CODE".into(),
                         total_bytes: 5,
                         file_count: 1,
@@ -393,5 +396,51 @@ mod tests {
         assert_eq!(transfer.downloaded_bytes, 5);
         assert!(transfer.outbound_bytes_per_sec.is_finite());
         assert!(transfer.outbound_bytes_per_sec >= 0.0);
+    }
+
+    #[test]
+    fn recovered_share_ready_uses_persisted_name_and_counts() {
+        let bridge = spawn_test_bridge(|_, command, events| {
+            Box::pin(async move {
+                let transfer_id = match command {
+                    NetworkCommand::ShareDirectory { transfer_id, .. } => transfer_id,
+                    other => panic!("unexpected command: {other:?}"),
+                };
+
+                events
+                    .send_async(NetworkEvent::ShareReady {
+                        transfer_id,
+                        directory_name: "restored-share".into(),
+                        share_code: "p2p-RESTORE".into(),
+                        total_bytes: 77,
+                        file_count: 3,
+                    })
+                    .await?;
+                Ok(())
+            })
+        });
+
+        bridge
+            .send(NetworkCommand::ShareDirectory {
+                transfer_id: 555,
+                directory_path: PathBuf::from("/tmp/share"),
+            })
+            .unwrap();
+
+        let mut app = App::new();
+        app.insert_resource(bridge);
+        app.insert_resource(TransferRegistry::default());
+
+        std::thread::sleep(Duration::from_millis(50));
+        run_poll(&mut app);
+
+        let world = app.world();
+        let transfer = world.resource::<TransferRegistry>().get(555).unwrap();
+        assert_eq!(transfer.name, "restored-share");
+        assert_eq!(transfer.completed_file_count(), 3);
+        assert_eq!(transfer.file_count(), 3);
+        assert_eq!(transfer.downloaded_bytes, 77);
+        assert_eq!(transfer.total_bytes, 77);
+        assert_eq!(transfer.status, TransferStatus::Completed);
     }
 }

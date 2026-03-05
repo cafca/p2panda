@@ -196,25 +196,22 @@ fn render_transfer_row(ui: &mut egui::Ui, transfer: &Transfer) {
 
         match &transfer.status {
             TransferStatus::Pending => {
-                let label = match transfer.direction {
-                    Direction::Upload => "Importing...",
-                    Direction::Download => "Waiting...",
-                };
-                ui.label(label);
+                ui.label(status_label(transfer));
             }
-            TransferStatus::Active => {
-                let fraction = transfer.progress_fraction();
-                ui.add(egui::ProgressBar::new(fraction).text(format!(
-                    "{:.1}% ({}/{})",
-                    fraction * 100.0,
-                    format_bytes(transfer.downloaded_bytes),
-                    format_bytes(transfer.total_bytes),
-                )));
-            }
-            TransferStatus::Completed => {
-                ui.label("Done");
+            TransferStatus::Active | TransferStatus::Completed => {
+                ui.label(status_label(transfer));
+                if should_render_progress_bar(transfer) {
+                    let (fraction, downloaded_bytes) = match transfer.direction {
+                        Direction::Upload => (1.0, transfer.total_bytes),
+                        Direction::Download => {
+                            (transfer.progress_fraction(), transfer.downloaded_bytes)
+                        }
+                    };
+                    render_progress_bar(ui, fraction, downloaded_bytes, transfer.total_bytes);
+                }
             }
             TransferStatus::Error(message) => {
+                ui.colored_label(egui::Color32::RED, status_label(transfer));
                 ui.colored_label(egui::Color32::RED, message);
             }
         }
@@ -236,6 +233,37 @@ fn render_transfer_row(ui: &mut egui::Ui, transfer: &Transfer) {
             }
         }
     });
+}
+
+fn render_progress_bar(ui: &mut egui::Ui, fraction: f32, downloaded_bytes: u64, total_bytes: u64) {
+    ui.add(egui::ProgressBar::new(fraction).text(format!(
+        "{:.1}% ({}/{})",
+        fraction * 100.0,
+        format_bytes(downloaded_bytes),
+        format_bytes(total_bytes),
+    )));
+}
+
+fn status_label(transfer: &Transfer) -> &'static str {
+    match (&transfer.direction, &transfer.status) {
+        (Direction::Upload, TransferStatus::Pending) => "Importing...",
+        (Direction::Upload, TransferStatus::Active | TransferStatus::Completed) => "Seeding",
+        (Direction::Upload, TransferStatus::Error(_)) => "Failed",
+        (Direction::Download, TransferStatus::Pending) => "Waiting...",
+        (Direction::Download, TransferStatus::Active) => "Downloading",
+        (Direction::Download, TransferStatus::Completed) => "Done",
+        (Direction::Download, TransferStatus::Error(_)) => "Failed",
+    }
+}
+
+fn should_render_progress_bar(transfer: &Transfer) -> bool {
+    matches!(
+        (&transfer.direction, &transfer.status),
+        (
+            Direction::Upload,
+            TransferStatus::Active | TransferStatus::Completed
+        ) | (Direction::Download, TransferStatus::Active)
+    )
 }
 
 fn start_share_transfer(
@@ -436,5 +464,37 @@ mod tests {
     #[test]
     fn default_download_directory_appends_p2panda_folder() {
         assert!(default_download_directory().ends_with("p2panda"));
+    }
+
+    #[test]
+    fn status_labels_match_transfer_direction_and_state() {
+        let mut upload = Transfer::new(1, "upload", Direction::Upload);
+        upload.status = TransferStatus::Active;
+        assert_eq!(status_label(&upload), "Seeding");
+        upload.status = TransferStatus::Completed;
+        assert_eq!(status_label(&upload), "Seeding");
+
+        let mut download = Transfer::new(2, "download", Direction::Download);
+        download.status = TransferStatus::Active;
+        assert_eq!(status_label(&download), "Downloading");
+        download.status = TransferStatus::Completed;
+        assert_eq!(status_label(&download), "Done");
+        download.status = TransferStatus::Error("boom".into());
+        assert_eq!(status_label(&download), "Failed");
+    }
+
+    #[test]
+    fn progress_bar_rules_match_task_20_requirements() {
+        let mut upload = Transfer::new(1, "upload", Direction::Upload);
+        upload.status = TransferStatus::Active;
+        assert!(should_render_progress_bar(&upload));
+        upload.status = TransferStatus::Completed;
+        assert!(should_render_progress_bar(&upload));
+
+        let mut download = Transfer::new(2, "download", Direction::Download);
+        download.status = TransferStatus::Active;
+        assert!(should_render_progress_bar(&download));
+        download.status = TransferStatus::Completed;
+        assert!(!should_render_progress_bar(&download));
     }
 }

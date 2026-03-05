@@ -597,7 +597,7 @@
     "Failed transfers show 'Failed' status with the error message",
     "Existing state.json files without the new fields load without errors (serde defaults)"
   ],
-  "passes": false
+  "passes": true
 }
 
 {

@@ -55,6 +55,12 @@ pub struct ShareRecord {
     pub source_dir: PathBuf,
     pub share_code: String,
     pub collection_hash: String,
+    #[serde(default)]
+    pub directory_name: String,
+    #[serde(default)]
+    pub file_count: usize,
+    #[serde(default)]
+    pub total_bytes: u64,
 }
 
 impl ShareRecord {
@@ -62,11 +68,17 @@ impl ShareRecord {
         source_dir: impl Into<PathBuf>,
         share_code: impl Into<String>,
         collection_hash: BlobHash,
+        directory_name: impl Into<String>,
+        file_count: usize,
+        total_bytes: u64,
     ) -> Self {
         Self {
             source_dir: source_dir.into(),
             share_code: share_code.into(),
             collection_hash: collection_hash.to_hex(),
+            directory_name: directory_name.into(),
+            file_count,
+            total_bytes,
         }
     }
 
@@ -79,10 +91,19 @@ impl ShareRecord {
 
 impl From<&ShareSession> for ShareRecord {
     fn from(value: &ShareSession) -> Self {
+        let directory_name = value
+            .source_dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.is_empty())
+            .unwrap_or("Shared directory");
         ShareRecord::new(
             value.source_dir.clone(),
             value.share_code.clone(),
             value.collection_hash,
+            directory_name,
+            value.file_count(),
+            value.total_bytes,
         )
     }
 }
@@ -322,6 +343,9 @@ mod tests {
             dir.path().join("source"),
             "p2p-SHARE",
             hash,
+            "source",
+            2,
+            42,
         ))?;
         store.add_download(DownloadRecord::new(
             "p2p-DOWNLOAD",
@@ -335,6 +359,34 @@ mod tests {
         let loaded = load_state(dir.path())?;
         assert_eq!(loaded.active_shares.len(), 1);
         assert_eq!(loaded.active_downloads.len(), 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_state_without_share_metadata_fields_loads_with_defaults() -> Result<()> {
+        let dir = tempdir()?;
+        let state_path = dir.path().join(STATE_FILE_NAME);
+        std::fs::write(
+            &state_path,
+            r#"{
+  "active_shares": [
+    {
+      "source_dir": "/tmp/source",
+      "share_code": "p2p-LEGACY",
+      "collection_hash": "f627847f3d5ebecf169f2e08e10c22f14e8e3a25f8b73f7f15f2f6f5ddf7c905"
+    }
+  ],
+  "active_downloads": []
+}"#,
+        )?;
+
+        let state = load_state(dir.path())?;
+        assert_eq!(state.active_shares.len(), 1);
+        let share = &state.active_shares[0];
+        assert_eq!(share.directory_name, "");
+        assert_eq!(share.file_count, 0);
+        assert_eq!(share.total_bytes, 0);
 
         Ok(())
     }

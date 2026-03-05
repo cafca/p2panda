@@ -53,6 +53,7 @@ impl NetworkCommand {
 pub enum NetworkEvent {
     ShareReady {
         transfer_id: u64,
+        directory_name: String,
         share_code: String,
         total_bytes: u64,
         file_count: usize,
@@ -275,6 +276,13 @@ async fn default_handle_command(
             event_tx
                 .send(NetworkEvent::ShareReady {
                     transfer_id,
+                    directory_name: session
+                        .source_dir
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .filter(|name| !name.is_empty())
+                        .unwrap_or("Shared directory")
+                        .to_owned(),
                     share_code: session.share_code.clone(),
                     total_bytes: session.total_bytes,
                     file_count: session.file_count(),
@@ -398,9 +406,10 @@ async fn recover_startup_state(
         event_tx
             .send(NetworkEvent::ShareReady {
                 transfer_id,
+                directory_name: share.record.directory_name.clone(),
                 share_code: share.record.share_code.clone(),
-                total_bytes: 0,
-                file_count: 0,
+                total_bytes: share.record.total_bytes,
+                file_count: share.record.file_count,
             })
             .context("failed to send recovered ShareReady event")?;
         runtime.recovered_shares.insert(transfer_id, share);
@@ -491,6 +500,7 @@ mod tests {
                         events
                             .send_async(NetworkEvent::ShareReady {
                                 transfer_id,
+                                directory_name: "example".into(),
                                 share_code: "p2p-TEST".into(),
                                 total_bytes: 128,
                                 file_count: 3,
@@ -514,6 +524,7 @@ mod tests {
             wait_for_event(&bridge),
             NetworkEvent::ShareReady {
                 transfer_id: 7,
+                directory_name: "example".into(),
                 share_code: "p2p-TEST".into(),
                 total_bytes: 128,
                 file_count: 3,

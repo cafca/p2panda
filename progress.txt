@@ -328,3 +328,25 @@ What doesn't work:
 
 What doesn't work:
 - no additional blocker for Task 18 in this run
+
+# 2026-03-05 14:03
+
+- picked Task 20 (`Recovered share display and status model rework`) as the highest-priority unfinished feature because it gates three follow-on tasks (21, 22, and 23) and currently affects core post-restart UX correctness
+- extended `ShareRecord` in `file-sharing/src/persist.rs` with persisted `directory_name`, `file_count`, and `total_bytes` fields using serde defaults for backward compatibility, and populated them from `ShareSession`
+- updated recovery flow in `file-sharing/src/bridge.rs` so recovered `ShareReady` events carry persisted directory name/count/bytes instead of hardcoded `0/0`
+- updated event handling in `file-sharing/src/plugin.rs` so recovered/fresh `ShareReady` events set the transfer name from event data and retain completed upload semantics with full progress state
+- reworked status/presentation logic in `file-sharing/src/ui.rs` to render Task 20 labels (`Seeding`, `Downloading`, `Done`, `Failed`) and to keep the share progress bar visible at 100% for uploads
+- added/updated focused tests:
+  - legacy state-file compatibility for new `ShareRecord` fields
+  - recovered share metadata propagation into transfer registry
+  - UI status-label and progress-bar rules for share/download states
+- ran `cargo fmt --package p2panda-file-sharing-gui`
+- ran `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-file-sharing-gui --lib`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui persist --lib -- --nocapture`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui bridge --lib -- --nocapture`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui plugin --lib -- --nocapture`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui ui --lib -- --nocapture`
+- confirmed Task 20 acceptance criteria in this run and updated Task 20 `passes` to `true` in `PRD.jsonl`
+
+What doesn't work:
+- no additional blocker for Task 20 in this run
