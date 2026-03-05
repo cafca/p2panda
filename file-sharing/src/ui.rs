@@ -730,7 +730,7 @@ fn apply_transfer_action(
 ) {
     if let TransferAction::Remove { transfer_id } = action {
         if let Some(transfer) = transfers.get(transfer_id) {
-            if is_serving_share(transfer) {
+            if matches!(transfer.direction, Direction::Upload) {
                 ui_state.pending_share_removal = Some(transfer_id);
                 return;
             }
@@ -794,11 +794,11 @@ fn render_share_removal_confirmation(
         .open(&mut keep_open)
         .show(ctx, |ui| {
             ui.label(format!(
-                "Removing '{transfer_name}' will stop serving this share and invalidate its share code."
+                "Removing '{transfer_name}' will stop serving this share, invalidate its share code, and delete associated blob data."
             ));
             ui.label("The original source directory is not modified.");
             ui.horizontal(|ui| {
-                if ui.button("Keep sharing").clicked() {
+                if ui.button("Cancel").clicked() {
                     cancel = true;
                 }
                 if ui.button("Remove share").clicked() {
@@ -808,7 +808,7 @@ fn render_share_removal_confirmation(
         });
 
     if confirm {
-        remove_serving_share(transfers, bridge, transfer_id);
+        remove_share_transfer(transfers, bridge, transfer_id);
         ui_state.pending_share_removal = None;
         return;
     }
@@ -891,15 +891,15 @@ fn clear_completed_transfers_with_share_cleanup(
             continue;
         };
         if is_serving_share(&transfer) {
-            remove_serving_share(transfers, bridge, transfer_id);
+            remove_share_transfer(transfers, bridge, transfer_id);
         } else {
             let _ = transfers.remove(transfer_id);
         }
     }
 }
 
-fn remove_serving_share(transfers: &mut TransferRegistry, bridge: &AsyncBridge, transfer_id: u64) {
-    if let Err(err) = bridge.send(NetworkCommand::CancelTransfer { transfer_id }) {
+fn remove_share_transfer(transfers: &mut TransferRegistry, bridge: &AsyncBridge, transfer_id: u64) {
+    if let Err(err) = bridge.send(NetworkCommand::RemoveShare { transfer_id }) {
         if let Some(transfer) = transfers.get_mut(transfer_id) {
             transfer.status = TransferStatus::Error(err.to_string());
         }
@@ -909,6 +909,9 @@ fn remove_serving_share(transfers: &mut TransferRegistry, bridge: &AsyncBridge, 
 }
 
 fn can_remove_transfer(transfer: &Transfer) -> bool {
+    if matches!(transfer.direction, Direction::Upload) {
+        return true;
+    }
     matches!(
         transfer.status,
         TransferStatus::Completed | TransferStatus::Cancelled | TransferStatus::Error(_)
@@ -1277,28 +1280,36 @@ mod tests {
 
     #[test]
     fn remove_button_rules_match_transfer_status() {
-        let mut pending = Transfer::new(1, "pending", Direction::Download);
-        pending.status = TransferStatus::Pending;
-        assert!(!can_remove_transfer(&pending));
+        let mut pending_download = Transfer::new(1, "pending", Direction::Download);
+        pending_download.status = TransferStatus::Pending;
+        assert!(!can_remove_transfer(&pending_download));
 
-        let mut active = Transfer::new(2, "active", Direction::Upload);
-        active.status = TransferStatus::Active;
-        assert!(!can_remove_transfer(&active));
+        let mut pending_upload = Transfer::new(2, "pending-share", Direction::Upload);
+        pending_upload.status = TransferStatus::Pending;
+        assert!(can_remove_transfer(&pending_upload));
 
-        let mut completed_download = Transfer::new(3, "done", Direction::Download);
+        let mut active_upload = Transfer::new(3, "active-share", Direction::Upload);
+        active_upload.status = TransferStatus::Active;
+        assert!(can_remove_transfer(&active_upload));
+
+        let mut paused_upload = Transfer::new(4, "paused-share", Direction::Upload);
+        paused_upload.status = TransferStatus::Paused;
+        assert!(can_remove_transfer(&paused_upload));
+
+        let mut completed_download = Transfer::new(5, "done", Direction::Download);
         completed_download.status = TransferStatus::Completed;
         assert!(can_remove_transfer(&completed_download));
 
-        let mut completed_upload = Transfer::new(4, "seed", Direction::Upload);
+        let mut completed_upload = Transfer::new(6, "seed", Direction::Upload);
         completed_upload.status = TransferStatus::Completed;
         assert!(can_remove_transfer(&completed_upload));
         assert!(is_serving_share(&completed_upload));
 
-        let mut cancelled = Transfer::new(5, "cancelled", Direction::Download);
+        let mut cancelled = Transfer::new(7, "cancelled", Direction::Download);
         cancelled.status = TransferStatus::Cancelled;
         assert!(can_remove_transfer(&cancelled));
 
-        let mut errored = Transfer::new(6, "errored", Direction::Download);
+        let mut errored = Transfer::new(8, "errored", Direction::Download);
         errored.status = TransferStatus::Error("boom".into());
         assert!(can_remove_transfer(&errored));
     }

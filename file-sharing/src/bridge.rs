@@ -22,7 +22,7 @@ use crate::persist::{
     StateStore,
 };
 use crate::settings::load_settings;
-use crate::share::{share_directory, ShareSession};
+use crate::share::{share_directory, share_pin_name, ShareSession};
 use crate::share_code::decode_share_code;
 
 type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
@@ -40,6 +40,9 @@ pub enum NetworkCommand {
         output_directory: PathBuf,
     },
     CancelTransfer {
+        transfer_id: u64,
+    },
+    RemoveShare {
         transfer_id: u64,
     },
     PauseTransfer {
@@ -61,6 +64,7 @@ impl NetworkCommand {
             Self::ShareDirectory { transfer_id, .. }
             | Self::StartDownload { transfer_id, .. }
             | Self::CancelTransfer { transfer_id }
+            | Self::RemoveShare { transfer_id }
             | Self::PauseTransfer { transfer_id }
             | Self::ResumeTransfer { transfer_id } => *transfer_id,
         }
@@ -251,7 +255,9 @@ async fn run_network_loop<State, Worker>(
     > = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
 
     while let Ok(command) = command_rx.recv_async().await {
-        if let NetworkCommand::CancelTransfer { transfer_id } = &command {
+        if let NetworkCommand::CancelTransfer { transfer_id }
+        | NetworkCommand::RemoveShare { transfer_id } = &command
+        {
             if let Some(handle) = active_transfer_commands.lock().await.remove(transfer_id) {
                 handle.abort();
             }
@@ -425,6 +431,13 @@ async fn default_handle_command(
                     .remove_download_by_code(&record.share_code, &record.output_dir)?;
             }
             drop(runtime);
+            event_tx
+                .send(NetworkEvent::TransferCancelled { transfer_id })
+                .context("failed to send TransferCancelled event")?;
+            Ok(())
+        }
+        NetworkCommand::RemoveShare { transfer_id } => {
+            remove_share_and_purge(&state, transfer_id).await?;
             event_tx
                 .send(NetworkEvent::TransferCancelled { transfer_id })
                 .context("failed to send TransferCancelled event")?;
@@ -1072,6 +1085,94 @@ async fn share_hashes_for_record(node: &AppNode, record: &ShareRecord) -> Vec<Bl
     hashes
 }
 
+#[derive(Debug, Clone)]
+struct RemovedShare {
+    record: ShareRecord,
+    hashes: Vec<BlobHash>,
+}
+
+async fn remove_share_and_purge(state: &RuntimeState, transfer_id: u64) -> Result<()> {
+    let removed = {
+        let mut runtime = state.inner.lock().await;
+        let removed = if let Some(session) = runtime.live_shares.remove(&transfer_id) {
+            let hashes = share_hashes_for_session(&session);
+            state
+                .node
+                .blobs
+                .block_serving_hashes(hashes.iter().copied());
+            runtime.store.remove_share_by_code(&session.share_code)?;
+            Some(RemovedShare {
+                record: ShareRecord::from(&session),
+                hashes,
+            })
+        } else if let Some(recovered) = runtime.recovered_shares.remove(&transfer_id) {
+            let hashes = share_hashes_for_record(&state.node, &recovered.record).await;
+            state
+                .node
+                .blobs
+                .block_serving_hashes(hashes.iter().copied());
+            runtime
+                .store
+                .remove_share_by_code(&recovered.record.share_code)?;
+            Some(RemovedShare {
+                record: recovered.record,
+                hashes,
+            })
+        } else if let Some(record) = runtime.paused_shares.remove(&transfer_id) {
+            let hashes = share_hashes_for_record(&state.node, &record).await;
+            state
+                .node
+                .blobs
+                .block_serving_hashes(hashes.iter().copied());
+            runtime.store.remove_share_by_code(&record.share_code)?;
+            Some(RemovedShare { record, hashes })
+        } else if let Some(record) = runtime.globally_paused_shares.remove(&transfer_id) {
+            let hashes = share_hashes_for_record(&state.node, &record).await;
+            state
+                .node
+                .blobs
+                .block_serving_hashes(hashes.iter().copied());
+            runtime.store.remove_share_by_code(&record.share_code)?;
+            Some(RemovedShare { record, hashes })
+        } else {
+            None
+        };
+        removed
+    };
+
+    let Some(mut removed) = removed else {
+        return Ok(());
+    };
+
+    if removed.hashes.is_empty() {
+        removed.hashes = share_hashes_for_record(&state.node, &removed.record).await;
+    }
+
+    if let Err(err) = state
+        .node
+        .blobs
+        .store()
+        .tags()
+        .delete(share_pin_name(removed.record.collection_hash()?))
+        .await
+    {
+        warn!(
+            "failed to delete share pin for {}: {err}",
+            removed.record.collection_hash
+        );
+    }
+
+    // Give the GC actor a chance to observe unpinning before we validate removal in tests.
+    if let Err(err) = state.node.blobs.store().sync_db().await {
+        warn!("failed to sync blob store after share removal: {err}");
+    }
+    if let Err(err) = state.node.blobs.store().wait_idle().await {
+        warn!("failed waiting for blob store idleness after share removal: {err}");
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -1203,6 +1304,7 @@ mod tests {
                     NetworkCommand::ShareDirectory { transfer_id, .. } => (transfer_id, 200),
                     NetworkCommand::StartDownload { transfer_id, .. } => (transfer_id, 20),
                     NetworkCommand::CancelTransfer { transfer_id } => (transfer_id, 0),
+                    NetworkCommand::RemoveShare { transfer_id } => (transfer_id, 0),
                     NetworkCommand::PauseTransfer { transfer_id } => (transfer_id, 0),
                     NetworkCommand::ResumeTransfer { transfer_id } => (transfer_id, 0),
                 };

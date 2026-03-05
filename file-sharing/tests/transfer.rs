@@ -231,8 +231,18 @@ async fn removed_share_is_not_downloadable() -> Result<()> {
         })?;
         let share_code = wait_for_share_ready(&bridge, 1).await?;
 
-        bridge.send(NetworkCommand::CancelTransfer { transfer_id: 1 })?;
+        bridge.send(NetworkCommand::RemoveShare { transfer_id: 1 })?;
         wait_for_transfer_cancelled(&bridge, 1).await?;
+        let state_json = fs::read_to_string(bridge_data_dir.path().join("state.json"))?;
+        let state: serde_json::Value = serde_json::from_str(&state_json)?;
+        let active_shares = state
+            .get("active_shares")
+            .and_then(|value| value.as_array())
+            .context("missing active_shares in state.json")?;
+        assert!(
+            active_shares.is_empty(),
+            "expected removed share to be deleted from state.json"
+        );
 
         let node_b = AppNode::with_data_dir(
             node_b_dir.path(),

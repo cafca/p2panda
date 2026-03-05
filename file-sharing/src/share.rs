@@ -294,7 +294,7 @@ async fn import_files(node: &AppNode, files: &[ScannedFile]) -> Result<Vec<Share
     Ok(imported)
 }
 
-fn share_pin_name(collection_hash: BlobHash) -> String {
+pub(crate) fn share_pin_name(collection_hash: BlobHash) -> String {
     format!("share/{}", collection_hash.to_hex())
 }
 

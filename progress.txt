@@ -620,3 +620,30 @@ What doesn't work:
 
 What doesn't work:
 - no additional blocker for Task 30 in this run
+
+# 2026-03-05 20:56
+
+- picked Task 35 (`Remove a share and purge all associated data`) as the highest-priority unfinished feature because it closes a core data-lifecycle gap left by Task 27: remove rows now needed to apply to all share states with backend cleanup
+- implemented a dedicated backend command for share removal in `file-sharing/src/bridge.rs`:
+  - added `NetworkCommand::RemoveShare { transfer_id }`
+  - wired network-loop in-flight abort behavior so `RemoveShare` also aborts in-flight share/start command tasks
+  - added `remove_share_and_purge(...)` path that removes share sessions/records from live/recovered/paused/global-paused maps, blocks serving hashes for that share, removes `ShareRecord` from persistence, and unpins the share collection tag (`share/<collection-hash>`)
+- updated UI removal behavior in `file-sharing/src/ui.rs`:
+  - share transfers (`Direction::Upload`) now always expose `Remove` regardless of status (pending, active/seeding, paused, cancelled, error, completed)
+  - removal for share transfers always goes through confirmation dialog and uses `NetworkCommand::RemoveShare`
+  - confirmation text now explicitly states that associated blob data will be deleted and source directory is untouched
+  - download-transfer removal behavior from Task 27 is unchanged
+- exported `share_pin_name` as `pub(crate)` in `file-sharing/src/share.rs` so bridge cleanup can target the correct collection pin
+- updated integration coverage in `file-sharing/tests/transfer.rs`:
+  - `removed_share_is_not_downloadable` now removes via `NetworkCommand::RemoveShare`
+  - added assertion that removed shares are deleted from persisted `state.json` (`active_shares` becomes empty)
+- updated bridge/ui unit coverage for the new command variant and upload remove-button eligibility rules
+- ran `cargo fmt --package p2panda-file-sharing-gui`
+- ran `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-file-sharing-gui --tests --locked`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui bridge --lib --locked -- --nocapture`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui ui --lib --locked -- --nocapture`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui --test transfer removed_share_is_not_downloadable --locked -- --nocapture`
+
+What doesn't work:
+- Task 35 remains `passes: false` in this run. The remaining acceptance blocker is deterministic blob-file deletion verification for all associated share blobs (collection/manifest/files). In the current `iroh-blobs` API used by this codebase, explicit blob delete is not publicly exposed through the safe API path used here; the implemented flow unpins and removes share records/serving state, but full explicit per-hash deletion semantics from the PRD are not yet proven in this run.
+- I tested a GC-based approach to force immediate purge, but it introduced a regression (downloads intermittently losing unpinned collection blobs mid-flow), so that approach was reverted.
