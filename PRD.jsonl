@@ -1011,3 +1011,128 @@
   ],
   "passes": false
 }
+{
+  "id": 32,
+  "category": "engineering",
+  "title": "Dependency audit and Bevy 0.16 upgrade",
+  "description": "Audit all workspace dependencies for available upgrades, then upgrade Bevy from 0.15 to 0.16 (or latest stable) and bevy_egui from the pinned 0.33 to a Bevy-0.16-compatible release (0.34+). The 0.33 pin was a workaround for a cross-version ECS trait incompatibility between bevy 0.15 and bevy_egui 0.34. This task resolves that technical debt and brings the full dependency tree up to date.",
+  "depends_on": [],
+  "inputs": [
+    "Cargo.toml (workspace root)",
+    "file-sharing/Cargo.toml",
+    "Cargo.lock",
+    "file-sharing/src/main.rs",
+    "file-sharing/src/plugin.rs",
+    "file-sharing/src/ui.rs",
+    "file-sharing/src/bridge.rs",
+    "file-sharing/src/state.rs"
+  ],
+  "outputs": [
+    "Cargo.toml (workspace root)",
+    "file-sharing/Cargo.toml",
+    "Cargo.lock",
+    "All source files requiring migration changes"
+  ],
+  "spec": {
+    "phase_1_audit": "Run cargo outdated (or equivalent) across the entire workspace. Produce a list of dependencies with available upgrades, grouped by: patch (safe), minor (likely safe), major (breaking). Flag any dependencies with known security advisories via cargo audit.",
+    "phase_2_non_breaking": "Apply all patch and minor dependency upgrades. Run the full test suite to confirm no regressions.",
+    "phase_3_bevy_upgrade": {
+      "description": "Upgrade bevy to 0.16+ and bevy_egui to the matching compatible release. This is the primary breaking change and requires migration of Bevy APIs.",
+      "expected_changes": [
+        "Plugin trait and registration API changes between Bevy 0.15 and 0.16",
+        "System scheduling and ordering API (chain vs explicit ordering)",
+        "Resource insertion and access patterns",
+        "EguiPlugin registration and context access",
+        "Window configuration and DefaultPlugins builder",
+        "Any deprecated Bevy 0.15 APIs removed in 0.16"
+      ],
+      "reference": "Consult the official Bevy 0.15-to-0.16 migration guide"
+    },
+    "phase_4_remaining_majors": "Evaluate remaining major version upgrades (if any) on a case-by-case basis. Apply those that are straightforward; defer risky ones with a justification comment in Cargo.toml.",
+    "constraints": "Do not change application behavior or features. All existing tests must continue to pass. Remove the bevy_egui 0.33 pin workaround."
+  },
+  "acceptance": [
+    "bevy is upgraded to 0.16 or later stable release",
+    "bevy_egui is upgraded to a release compatible with the new bevy version (0.34+)",
+    "The bevy_egui 0.33 version pin workaround is removed",
+    "cargo audit reports no known vulnerabilities in the dependency tree",
+    "All existing lib and integration tests pass",
+    "The app starts and renders the transfer UI correctly (manual smoke test)",
+    "No other dependency has a known-available patch or minor upgrade left unapplied"
+  ],
+  "passes": false
+}
+{
+  "id": 33,
+  "category": "feature",
+  "title": "Settings UI with default download directory",
+  "description": "Add a settings panel to the app where users can configure persistent preferences. The first setting is a default download directory so users don't have to pick a destination folder for every download. Settings are persisted to disk and loaded on startup.",
+  "depends_on": [11],
+  "inputs": [
+    "file-sharing/src/ui.rs",
+    "file-sharing/src/persist.rs",
+    "file-sharing/src/bridge.rs",
+    "file-sharing/src/plugin.rs",
+    "file-sharing/src/state.rs"
+  ],
+  "outputs": [
+    "file-sharing/src/ui.rs",
+    "file-sharing/src/persist.rs",
+    "file-sharing/src/state.rs"
+  ],
+  "spec": {
+    "settings_model": "Add an AppSettings struct persisted alongside the existing state.json (either in the same file or a separate settings.json in the same data directory). Fields: default_download_dir (Option<PathBuf>). When None, the app falls back to the platform Downloads directory as it does today.",
+    "settings_ui": "Add a Settings view accessible from the toolbar (gear icon or 'Settings' button). The view should contain: (1) a 'Default download directory' row showing the current path with a 'Browse...' button that opens an rfd folder picker, and (2) a 'Reset to default' link that clears the override back to None. The settings view can be a separate panel/page or a modal — keep it simple.",
+    "integration": "When the user starts a download via share code and no destination is explicitly chosen, use the default download directory. If a default is set, skip the destination folder picker dialog and go straight to downloading. The user should still be able to override per-download if they want (e.g. via a 'Download to...' option that opens the picker regardless).",
+    "persistence": "Settings are saved immediately when changed. On startup, load settings before any transfers are resumed so recovered downloads use the correct default directory.",
+    "constraints": "Keep the settings UI minimal and expandable — future tasks will add more settings to this panel. Do not change the existing download flow for users who have not configured a default directory."
+  },
+  "acceptance": [
+    "A Settings view is accessible from the app toolbar",
+    "The user can browse and select a default download directory",
+    "The selected default directory persists across app restarts",
+    "Downloads use the configured default directory when no per-download override is chosen",
+    "The user can reset the default directory back to the platform default",
+    "The user can still override the destination for individual downloads",
+    "The settings file is created in the app data directory alongside existing persistence"
+  ],
+  "passes": false
+}
+{
+  "id": 34,
+  "category": "feature",
+  "title": "Relay server configuration settings",
+  "description": "Add relay server configuration to the settings UI. Users should be able to choose between iroh's public testing relay, a custom self-hosted relay, or no relay at all. This is important for self-hosted and enterprise deployments where the public testing relay is not appropriate for production use.",
+  "depends_on": [33],
+  "inputs": [
+    "file-sharing/src/ui.rs (settings panel from Task 33)",
+    "file-sharing/src/persist.rs (AppSettings from Task 33)",
+    "file-sharing/src/node.rs (relay/endpoint configuration)",
+    "file-sharing/src/bridge.rs"
+  ],
+  "outputs": [
+    "file-sharing/src/ui.rs",
+    "file-sharing/src/persist.rs",
+    "file-sharing/src/node.rs",
+    "file-sharing/src/bridge.rs"
+  ],
+  "spec": {
+    "settings_model": "Extend AppSettings with relay configuration fields: relay_mode (enum: TestingRelay, Relay, Disabled) and custom_relay_url (Option<String>). TestingRelay uses iroh's built-in public relay. Relay uses the user-provided URL. Disabled disables relay entirely (direct connections only). The default value for new installations is TestingRelay.",
+    "settings_ui": "Add a 'Relay Server' section to the settings panel with: (1) a radio group or dropdown for relay mode with labels 'Testing Relay (iroh)', 'Relay', and 'Disabled', (2) a text input for the relay URL that is only enabled when 'Relay' is selected, (3) a brief explanation of what the relay does ('Relay servers help connect peers who cannot reach each other directly. Data is encrypted end-to-end.'), (4) a note under 'Testing Relay (iroh)' indicating it is a public test server not intended for production use.",
+    "validation": "Validate the custom relay URL on save: it must be a valid URL with https scheme. Show an inline error if validation fails. Do not save an invalid URL.",
+    "node_integration": "Wire the relay setting into AppNode construction. When relay_mode is Relay, configure the iroh endpoint to use the custom relay URL. When Disabled, configure the endpoint with relay disabled. When TestingRelay, use iroh's default public relay. Changes take effect on next app restart — show a note in the UI ('Restart required to apply relay changes') if the relay setting is changed while the app is running.",
+    "constraints": "Do not attempt hot-reconfiguration of the relay — restarting the node cleanly is the safe approach. TestingRelay (iroh's public relay) must remain the out-of-box default for users who never touch settings."
+  },
+  "acceptance": [
+    "The settings panel has a Relay Server section with mode selection and custom URL input",
+    "Testing Relay mode is labeled 'Testing Relay (iroh)' and uses iroh's built-in public relay",
+    "Relay mode accepts a valid HTTPS relay URL and uses it for node connections",
+    "Disabled mode starts the node without relay support",
+    "Invalid custom relay URLs are rejected with a visible validation error",
+    "Relay settings persist across app restarts",
+    "A restart-required notice is shown when relay settings are changed at runtime",
+    "The relay configuration is applied during node startup",
+    "TestingRelay is the default for new installations"
+  ],
+  "passes": false
+}
