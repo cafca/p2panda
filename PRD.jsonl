@@ -680,3 +680,334 @@
   ],
   "passes": false
 }
+
+{
+  "id": 23,
+  "category": "ui",
+  "title": "Production-grade UI design review and overhaul",
+  "description": "Review the current file-sharing app UI (see screenshot at file-sharing/Screenshot 2026-03-05 at 14.21.03.png) and redesign it to meet production-quality standards. This is a design-first task: analyze the current layout, typography, spacing, color usage, interaction patterns, and information hierarchy, then propose and implement concrete improvements following modern desktop app UI best practices.",
+  "depends_on": [20],
+  "inputs": [
+    "file-sharing/Screenshot 2026-03-05 at 14.21.03.png (current UI screenshot)",
+    "file-sharing/src/ui.rs (current UI implementation)",
+    "file-sharing/src/state.rs (Transfer, TransferStatus, Direction — data model driving the UI)"
+  ],
+  "outputs": [
+    "file-sharing/src/ui.rs"
+  ],
+  "spec": {
+    "process": "Begin by analyzing the screenshot and current ui.rs code. Identify all issues with layout, spacing, typography, visual hierarchy, color, iconography, responsiveness, and interaction design. Propose a concrete redesign plan with specific changes before implementing.",
+    "scope": "This covers all visual and interaction aspects of the egui-based UI: the toolbar area, the transfer list, the download dialog, progress bars, text formatting, button styling, spacing/margins, empty states, and overall layout structure. It does not cover adding new features — only improving the presentation and usability of existing functionality.",
+    "quality_bar": "The result should look like a polished, intentionally designed desktop application — not a developer prototype. Every spacing value, font size, color choice, and layout decision should be deliberate. Reference established desktop apps (Transmission, Syncthing, AirDrop) for appropriate visual patterns in the file-sharing domain.",
+    "constraints": "Stay within egui's capabilities. Do not add new crate dependencies for UI unless absolutely necessary. Prefer egui's built-in styling system (Visuals, Spacing, text styles) over custom rendering where possible."
+  },
+  "acceptance": [
+    "All existing UI functionality is preserved (sharing, downloading, progress display, share code copy)",
+    "Visual hierarchy is clear: the most important information (transfer name, status, progress) is immediately scannable",
+    "Consistent spacing and alignment throughout the interface",
+    "The app looks intentionally designed rather than using raw egui defaults",
+    "The UI works well at the default window size (900x600) and remains usable when resized"
+  ],
+  "passes": false
+}
+{
+  "id": 24,
+  "category": "engineering",
+  "title": "Global code review and architectural improvements",
+  "description": "Perform a comprehensive code review of the entire file-sharing app codebase. The goals are: (1) ensure the code follows Rust and GUI app best practices, (2) improve architecture based on lessons learned during development, and (3) identify gaps in edge case and error handling. This is a review-and-refactor task, not a feature addition.",
+  "depends_on": [],
+  "inputs": [
+    "file-sharing/src/main.rs",
+    "file-sharing/src/lib.rs",
+    "file-sharing/src/node.rs",
+    "file-sharing/src/bridge.rs",
+    "file-sharing/src/plugin.rs",
+    "file-sharing/src/download.rs",
+    "file-sharing/src/share.rs",
+    "file-sharing/src/persist.rs",
+    "file-sharing/src/state.rs",
+    "file-sharing/src/ui.rs",
+    "file-sharing/src/manifest.rs",
+    "file-sharing/src/protocol.rs",
+    "file-sharing/src/share_code.rs",
+    "file-sharing/Cargo.toml"
+  ],
+  "outputs": [
+    "All source files under file-sharing/src/"
+  ],
+  "spec": {
+    "process": "Read every source file in the crate. For each file, evaluate: error handling (are errors propagated correctly, are edge cases covered, could panics occur in production), API boundaries (are public interfaces minimal and well-defined), module responsibilities (is each module cohesive, are there misplaced concerns), resource management (are files/connections/tasks cleaned up properly), concurrency (are channels, async tasks, and thread interactions sound), and idiomatic Rust (naming, types, patterns). Produce a list of findings grouped by severity (critical, important, minor), then implement the fixes.",
+    "areas": [
+      "Error handling: unwrap/expect in non-test code, missing error propagation, swallowed errors, unclear error messages",
+      "Edge cases: empty directories, very large files, network disconnections mid-transfer, concurrent transfers, disk full, permission errors",
+      "Architecture: module boundaries and responsibilities, async bridge design, state management between bevy ECS and async runtime",
+      "Resource cleanup: graceful shutdown, temporary file cleanup, blob store consistency",
+      "Type safety: stringly-typed data that could use newtypes, missing validations at API boundaries",
+      "Testability: code that is hard to test due to tight coupling, missing test coverage for error paths"
+    ],
+    "constraints": "Do not change external behavior or public APIs without flagging it. Preserve all existing tests. Keep changes focused — this is about correctness and maintainability, not style preferences."
+  },
+  "acceptance": [
+    "All existing tests pass after changes",
+    "No unwrap/expect calls remain in non-test production code paths (or each is justified with a comment)",
+    "Error types and messages are actionable — a user or developer can understand what went wrong and what to do",
+    "No resource leaks: temporary files, tasks, and connections are cleaned up on all code paths including errors",
+    "Module responsibilities are clear and documented where non-obvious",
+    "Edge cases identified during review either have handling or are documented as known limitations"
+  ],
+  "passes": false
+}
+{
+  "id": 25,
+  "category": "feature",
+  "title": "Diagnostic view for network and app state inspection",
+  "description": "Add a diagnostic view to the app that surfaces the internal state of the p2p networking stack and transfer engine. The primary use case is troubleshooting: understanding why transfers are slow, why peers are not connecting, or whether the node is healthy. This should answer questions like: Am I connected to other peers? Do I know about peers I'm not connected to? Were there connection errors? How long did connections take to establish? How much data has been transferred? Are there errors pointing at setup issues?",
+  "depends_on": [],
+  "inputs": [
+    "file-sharing/src/node.rs (AppNode with endpoint, address_book, gossip, blobs)",
+    "file-sharing/src/bridge.rs (AsyncBridge, NetworkEvent, NetworkCommand)",
+    "file-sharing/src/state.rs (TransferRegistry, Transfer)",
+    "file-sharing/src/ui.rs (existing UI structure)"
+  ],
+  "outputs": [
+    "file-sharing/src/ui.rs (or new ui module files)",
+    "file-sharing/src/bridge.rs (new diagnostic events/queries)",
+    "file-sharing/src/state.rs (diagnostic state model)"
+  ],
+  "spec": {
+    "view_design": "A dedicated panel or tab in the app (not a modal) that can be toggled open. It should be always accessible, even when transfers are idle. The view should update in real time, not require manual refresh.",
+    "sections": {
+      "node_identity": "Node ID (public key), relay URL if configured, local listening addresses",
+      "peer_connections": "Table of known peers: node ID (truncated), connection state (connected/known/disconnected), how discovered (mDNS/relay/manual), time since last seen, current round-trip time if connected",
+      "connection_history": "Recent connection events: successful connects, failed attempts with error reason, time to establish connection. Capped ring buffer (e.g. last 100 events) to avoid unbounded memory growth.",
+      "transfer_stats": "Total bytes sent and received (all time for this session), number of active transfers, number of completed transfers, number of failed transfers",
+      "error_log": "Recent errors from the networking layer and blob store, with timestamps. Ring buffer capped at last 50 entries. Errors should include enough context to diagnose issues (e.g. 'failed to connect to peer X: connection refused' not just 'connection error').",
+      "gossip_state": "Active gossip topics, number of peers per topic"
+    },
+    "data_plumbing": "The async node (running on the tokio runtime) needs to expose diagnostic data to the bevy UI thread. Extend the AsyncBridge with a query/response mechanism or periodic diagnostic snapshots sent as NetworkEvents. Avoid polling the node on every frame — use a reasonable refresh interval (e.g. 1-2 seconds).",
+    "constraints": "The diagnostic view must not impact transfer performance. All data collection should be lightweight. The view should work even when no transfers are active. Do not expose sensitive data (full private keys). Truncate node IDs for readability but allow copying full IDs."
+  },
+  "acceptance": [
+    "The diagnostic view is accessible from the main UI via a toggle button or tab",
+    "Node identity section shows the node's public key and relay URL",
+    "Connected peers are listed with their connection state and discovery method",
+    "Connection failures are visible with error reasons and timestamps",
+    "Total bytes transferred (sent/received) are displayed for the current session",
+    "Recent errors are listed with enough context to diagnose networking issues",
+    "The view updates in real time without manual refresh",
+    "The diagnostic view does not cause noticeable performance degradation",
+    "All diagnostic data is bounded (ring buffers) to prevent unbounded memory growth"
+  ],
+  "passes": false
+}
+{
+  "id": 26,
+  "category": "feature",
+  "title": "Cancel in-progress transfers",
+  "description": "Allow the user to cancel a transfer that is currently in progress (either upload or download). Cancellation should stop all network activity for that transfer, clean up any temporary state, and update the UI to reflect the cancelled status. Partially downloaded data should be left on disk so a future re-download of the same share code can potentially resume.",
+  "depends_on": [],
+  "inputs": [
+    "file-sharing/src/ui.rs (transfer row rendering)",
+    "file-sharing/src/state.rs (Transfer, TransferStatus)",
+    "file-sharing/src/bridge.rs (AsyncBridge, NetworkCommand)",
+    "file-sharing/src/download.rs (download_share_with_progress)",
+    "file-sharing/src/share.rs (share_directory)"
+  ],
+  "outputs": [
+    "file-sharing/src/ui.rs",
+    "file-sharing/src/state.rs",
+    "file-sharing/src/bridge.rs",
+    "file-sharing/src/download.rs",
+    "file-sharing/src/share.rs"
+  ],
+  "spec": {
+    "ui": "Add a cancel button to each transfer row that is in Pending or Active status. The button should require a single click (no confirmation dialog — cancellation is not destructive since data is retained).",
+    "cancellation_mechanism": "Add a CancelTransfer network command. The async worker should use a cancellation token (e.g. tokio CancellationToken or a shared AtomicBool) to signal the running download/share task to stop. The task should check the token at natural yield points (between file downloads, during blob transfers).",
+    "status": "Add a TransferStatus::Cancelled variant. Cancelled transfers remain visible in the transfer list with a 'Cancelled' label.",
+    "cleanup": "On cancellation: stop sending/receiving blob data, leave already-downloaded blobs and completion markers on disk, release any temp pins. Do not delete the transfer from the registry.",
+    "constraints": "Cancellation should take effect within a few seconds — do not wait for a large blob transfer to complete before checking the token."
+  },
+  "acceptance": [
+    "Each in-progress transfer row has a visible cancel button",
+    "Clicking cancel stops network activity for that transfer within a few seconds",
+    "The transfer status changes to Cancelled in the UI",
+    "Already-downloaded files and blobs are preserved on disk",
+    "Cancelling one transfer does not affect other active transfers",
+    "The cancel button is not shown for already-completed, cancelled, or errored transfers"
+  ],
+  "passes": false
+}
+{
+  "id": 27,
+  "category": "feature",
+  "title": "Remove completed and failed transfers from the list",
+  "description": "Allow the user to remove transfers from the transfer list. For completed downloads this is cosmetic (hide from list). For completed shares (uploads), removal should also stop serving the share to other peers and clean up associated blobs and persistence records. This gives users control over what they are sharing and keeps the transfer list manageable.",
+  "depends_on": [26],
+  "inputs": [
+    "file-sharing/src/ui.rs (transfer row rendering)",
+    "file-sharing/src/state.rs (TransferRegistry, Transfer)",
+    "file-sharing/src/bridge.rs (AsyncBridge, NetworkCommand)",
+    "file-sharing/src/persist.rs (ShareRecord persistence)",
+    "file-sharing/src/download.rs (completed blob markers)"
+  ],
+  "outputs": [
+    "file-sharing/src/ui.rs",
+    "file-sharing/src/state.rs",
+    "file-sharing/src/bridge.rs",
+    "file-sharing/src/persist.rs"
+  ],
+  "spec": {
+    "ui": "Add a remove/dismiss button (e.g. X icon) to each transfer row that is in Completed, Cancelled, or Error status. For shares that are still being served, show a confirmation since removal stops serving.",
+    "download_removal": "Removing a completed download removes it from the TransferRegistry and the UI. Downloaded files on the user's filesystem are NOT deleted. Blob store data and completion markers may optionally be cleaned up to reclaim disk space.",
+    "share_removal": "Removing a share stops serving it: leave the gossip topic, unpin the collection and file blobs, delete the ShareRecord from persistence. The original source directory is NOT modified. After removal, the share code becomes invalid for new downloaders.",
+    "bulk_actions": "Add a 'Clear completed' action that removes all Completed transfers at once.",
+    "constraints": "Removal of shares must be confirmed since it is not easily reversible (the share code stops working). Removal of downloads and errored/cancelled transfers needs no confirmation."
+  },
+  "acceptance": [
+    "Completed, cancelled, and errored transfers show a remove button",
+    "Removing a completed download hides it from the list without deleting downloaded files",
+    "Removing a share stops serving it and deletes the persistence record",
+    "Share removal requires user confirmation",
+    "A 'Clear completed' bulk action removes all finished transfers at once",
+    "After removing a share, its share code no longer works for new download attempts",
+    "Active/pending transfers cannot be removed (they must be cancelled first)"
+  ],
+  "passes": false
+}
+{
+  "id": 28,
+  "category": "feature",
+  "title": "System notifications for transfer events",
+  "description": "Send native OS notifications when important transfer events occur, particularly when the app window is not focused. Users often start a download or share and then switch to other work — they need to know when transfers complete or fail without watching the app.",
+  "depends_on": [],
+  "inputs": [
+    "file-sharing/src/plugin.rs (poll_network_events, apply_network_event)",
+    "file-sharing/src/state.rs (TransferStatus)",
+    "file-sharing/Cargo.toml"
+  ],
+  "outputs": [
+    "file-sharing/src/plugin.rs",
+    "file-sharing/Cargo.toml"
+  ],
+  "spec": {
+    "events_to_notify": [
+      "Download completed: '{name}' finished downloading ({file_count} files, {total_bytes})",
+      "Share ready: '{name}' is now available for download (share code ready)",
+      "Transfer failed: '{name}' failed: {error_message}"
+    ],
+    "behavior": "Notifications should only fire when the app window is not focused. Use the notify-rust crate (or equivalent cross-platform crate) for native OS notifications. Each notification should include the transfer name and a brief summary. Clicking a notification should bring the app window to the foreground if the OS supports it.",
+    "rate_limiting": "Do not spam notifications. If multiple transfers complete within a short window (e.g. 2 seconds), batch them into a single notification like '3 transfers completed'.",
+    "preferences": "No preferences UI for now — notifications are always on. A future PRD can add a toggle if users find them noisy.",
+    "constraints": "Must work on macOS, Linux, and Windows. Degrade gracefully if the notification system is unavailable (log a warning, do not crash)."
+  },
+  "acceptance": [
+    "A native OS notification appears when a download completes while the app is not focused",
+    "A native OS notification appears when a share becomes ready while the app is not focused",
+    "A native OS notification appears when a transfer fails while the app is not focused",
+    "No notifications fire while the app window is focused",
+    "Rapid sequential completions are batched into a single notification",
+    "The app does not crash if the notification system is unavailable"
+  ],
+  "passes": false
+}
+{
+  "id": 29,
+  "category": "feature",
+  "title": "Drag and drop folder to share",
+  "description": "Allow the user to drag a folder from their file manager onto the app window to start sharing it, as an alternative to the 'Share Directory...' button and file dialog. This is a common desktop app pattern that makes sharing faster and more intuitive.",
+  "depends_on": [],
+  "inputs": [
+    "file-sharing/src/ui.rs (ui_system, start_share_transfer)",
+    "file-sharing/src/plugin.rs (FileSharingPlugin)"
+  ],
+  "outputs": [
+    "file-sharing/src/ui.rs",
+    "file-sharing/src/plugin.rs"
+  ],
+  "spec": {
+    "interaction": "When the user drags a folder over the app window, show a visual drop zone indicator (e.g. overlay with 'Drop folder to share' text and a highlighted border). On drop, immediately start the share transfer — same behavior as selecting a folder via the file dialog.",
+    "implementation": "Use bevy_egui's or winit's drag-and-drop event support. Bevy exposes FileDragAndDrop events from winit. Listen for these events in a bevy system and forward the dropped path to start_share_transfer.",
+    "validation": "Only accept directory paths. If a file is dropped instead of a directory, show a brief error message in the UI (e.g. 'Only directories can be shared'). If multiple items are dropped, share each directory and ignore files.",
+    "visual_feedback": "The drop zone indicator should be clearly visible — use a semi-transparent overlay covering the main panel. Remove the indicator when the drag leaves the window or after a drop.",
+    "constraints": "Must work on macOS and Linux at minimum. Windows support is desirable but not blocking if winit has limitations."
+  },
+  "acceptance": [
+    "Dragging a folder over the app window shows a visible drop zone indicator",
+    "Dropping a folder starts sharing it (same as the Share Directory button)",
+    "Dropping a file shows an error message instead of crashing or silently failing",
+    "The drop zone indicator disappears when the drag leaves the window",
+    "Multiple dropped directories each start a separate share",
+    "The existing Share Directory button continues to work unchanged"
+  ],
+  "passes": false
+}
+{
+  "id": 30,
+  "category": "feature",
+  "title": "Content integrity verification display",
+  "description": "Show the user that downloaded content matches what the sharer published by displaying hash verification results in the UI. This builds trust in the p2p transfer — users should be able to see that what they received is exactly what was shared, with no tampering or corruption.",
+  "depends_on": [],
+  "inputs": [
+    "file-sharing/src/download.rs (blob hashes, collection manifest)",
+    "file-sharing/src/state.rs (Transfer, FileProgress)",
+    "file-sharing/src/ui.rs (transfer row rendering)",
+    "file-sharing/src/manifest.rs (DirectoryManifest)"
+  ],
+  "outputs": [
+    "file-sharing/src/state.rs",
+    "file-sharing/src/ui.rs",
+    "file-sharing/src/download.rs"
+  ],
+  "spec": {
+    "what_to_show": "Each file in a completed download should display a verification status: verified (hash matches), or failed (hash mismatch or missing). The overall transfer should show an aggregate status: 'All files verified' or 'N files failed verification'. Show the content hash (truncated) for the overall collection.",
+    "when_to_verify": "Verification happens naturally during the iroh-blobs download — blobs are content-addressed, so a successful download implies the hash matches. The key information to surface is: (1) the download completed via content-addressed transfer (inherent integrity), (2) the collection hash that identifies this exact set of files. If a blob hash mismatch occurs during download, iroh-blobs will error — surface this as a verification failure rather than a generic error.",
+    "ui_placement": "In the transfer row, show a small verification badge or icon next to completed transfers (e.g. a checkmark with 'Verified'). In an expanded/detail view, show per-file hashes. The collection hash should be copyable (useful for out-of-band verification between sharer and downloader).",
+    "for_shares": "Shared directories should also show their collection hash, so the sharer can communicate it to the downloader for independent verification.",
+    "constraints": "Do not re-hash files after download — rely on iroh-blobs' content-addressing guarantees. The verification display is informational, not a separate verification pass."
+  },
+  "acceptance": [
+    "Completed downloads show a verification status (e.g. 'Verified' badge)",
+    "The collection hash is displayed and copyable for both shares and downloads",
+    "If a blob integrity error occurs during download, it is surfaced as a verification failure with a clear message",
+    "The verification display does not trigger additional disk I/O or re-hashing",
+    "Shares display their collection hash so it can be communicated to downloaders"
+  ],
+  "passes": false
+}
+{
+  "id": 31,
+  "category": "infrastructure",
+  "title": "Multi-platform packaging and release builds",
+  "description": "Set up CI pipelines and packaging scripts to produce distributable application bundles for macOS, Linux, and Windows. Users should be able to download and run the app without installing Rust or building from source.",
+  "depends_on": [],
+  "inputs": [
+    "file-sharing/Cargo.toml",
+    "file-sharing/src/main.rs",
+    ".github/ (CI configuration if present)"
+  ],
+  "outputs": [
+    ".github/workflows/ (release workflow)",
+    "file-sharing/packaging/ (platform-specific packaging config)"
+  ],
+  "spec": {
+    "platforms": {
+      "macos": "Produce a .app bundle inside a .dmg disk image. Include an Info.plist with app name, version, icon, and bundle identifier. Sign with an ad-hoc signature at minimum (proper Developer ID signing as a follow-up). Support both x86_64 and aarch64 (universal binary preferred, separate binaries acceptable).",
+      "linux": "Produce an AppImage that runs on major distributions without installation. Include a .desktop file and icon. Also produce a .tar.gz with the binary and a minimal README for users who prefer manual installation.",
+      "windows": "Produce a .msi installer using WiX or equivalent. Include an app icon and start menu shortcut. Also produce a standalone .zip with the .exe for portable use."
+    },
+    "ci": "Use GitHub Actions. Trigger release builds on git tags matching 'v*'. Build on native runners for each platform (macos-latest, ubuntu-latest, windows-latest). Upload artifacts to a GitHub Release. Include checksums (SHA-256) for all artifacts.",
+    "versioning": "Read version from file-sharing/Cargo.toml. The tag, Cargo.toml version, and artifact filenames must all agree.",
+    "app_metadata": "App name: 'p2panda File Sharing'. Set a proper app icon (create a placeholder if no icon exists yet). Include version info accessible from within the app (e.g. in the window title or an about dialog).",
+    "constraints": "Keep the CI workflow maintainable — prefer cargo-bundle, cargo-packager, or similar established tooling over custom scripts where possible. Build times should be reasonable (under 20 minutes per platform)."
+  },
+  "acceptance": [
+    "A GitHub Actions workflow produces release artifacts for macOS, Linux, and Windows on tagged commits",
+    "macOS: a .dmg containing a .app bundle that launches on a clean macOS system",
+    "Linux: an AppImage that launches on Ubuntu 22.04+ without additional dependencies",
+    "Windows: a .msi installer and a standalone .zip that work on Windows 10+",
+    "All artifacts include SHA-256 checksums",
+    "The app version is visible within the application",
+    "Artifacts are automatically uploaded to a GitHub Release"
+  ],
+  "passes": false
+}
