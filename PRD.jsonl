@@ -35,7 +35,6 @@
   ],
   "passes": true
 }
-
 {
   "id": 2,
   "category": "infrastructure",
@@ -63,7 +62,6 @@
   ],
   "passes": true
 }
-
 {
   "id": 3,
   "category": "core",
@@ -91,7 +89,6 @@
   ],
   "passes": true
 }
-
 {
   "id": 4,
   "category": "core",
@@ -117,7 +114,6 @@
   ],
   "passes": true
 }
-
 {
   "id": 5,
   "category": "core",
@@ -142,7 +138,6 @@
   ],
   "passes": true
 }
-
 {
   "id": 6,
   "category": "core",
@@ -173,7 +168,6 @@
   ],
   "passes": true
 }
-
 {
   "id": 7,
   "category": "core",
@@ -199,7 +193,6 @@
   ],
   "passes": true
 }
-
 {
   "id": 8,
   "category": "core",
@@ -223,7 +216,6 @@
   ],
   "passes" : true
 }
-
 {
   "id": 9,
   "category": "core",
@@ -261,7 +253,6 @@
   ],
   "passes": true
 }
-
 {
   "id": 10,
   "category": "core",
@@ -301,7 +292,6 @@
   ],
   "passes": true
 }
-
 {
   "id": 11,
   "category": "core",
@@ -331,7 +321,6 @@
   ],
   "passes": true
 }
-
 {
   "id": 12,
   "category": "ui",
@@ -363,7 +352,6 @@
   ],
   "passes": true
 }
-
 {
   "id": 13,
   "category": "core",
@@ -389,7 +377,6 @@
   ],
   "passes": true
 }
-
 {
   "id": 14,
   "category": "integration",
@@ -415,7 +402,6 @@
   ],
   "passes" : true
 }
-
 {
   "id": 15,
   "category": "test",
@@ -445,7 +431,6 @@
   ],
   "passes": true
 }
-
 {
   "id": 16,
   "category": "test",
@@ -471,7 +456,6 @@
   ],
   "passes": true
 }
-
 {
   "id": 17,
   "category": "test",
@@ -497,7 +481,6 @@
   ],
   "passes": true
 }
-
 {
   "id": 18,
   "category": "test",
@@ -524,7 +507,6 @@
   ],
   "passes": true
 }
-
 {
   "id": 19,
   "category": "infrastructure",
@@ -561,7 +543,6 @@
   ],
   "passes": true
 }
-
 {
   "id": 20,
   "category": "ui",
@@ -599,7 +580,6 @@
   ],
   "passes": true
 }
-
 {
   "id": 21,
   "category": "core",
@@ -642,7 +622,6 @@
   ],
   "passes": true
 }
-
 {
   "id": 22,
   "category": "core",
@@ -680,7 +659,6 @@
   ],
   "passes": true
 }
-
 {
   "id": 23,
   "category": "ui",
