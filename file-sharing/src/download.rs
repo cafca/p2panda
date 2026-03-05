@@ -422,13 +422,12 @@ where
         .await
         .with_context(|| format!("failed to write {}", destination.display()))?;
 
-    mark_blob_completed(&node.data_dir, file_hash)
-        .with_context(|| {
-            format!(
-                "failed to record completed blob for {}",
-                manifest_file.relative_path
-            )
-        })?;
+    mark_blob_completed(&node.data_dir, file_hash).with_context(|| {
+        format!(
+            "failed to record completed blob for {}",
+            manifest_file.relative_path
+        )
+    })?;
 
     node.blobs
         .pins()

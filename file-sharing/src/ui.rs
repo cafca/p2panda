@@ -173,7 +173,15 @@ fn render_download_dialog(
         .open(&mut is_open)
         .show(ctx, |ui| {
             ui.label("Share code");
-            ui.text_edit_singleline(&mut ui_state.download_share_code_input);
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut ui_state.download_share_code_input)
+                        .desired_width(360.0),
+                );
+                if ui.button("Paste").clicked() {
+                    paste_into_text(&mut ui_state.download_share_code_input);
+                }
+            });
 
             ui.separator();
             ui.horizontal(|ui| {
@@ -296,11 +304,10 @@ fn render_transfer_row(
                     let mut share_code_text = code.clone();
                     ui.add(
                         egui::TextEdit::singleline(&mut share_code_text)
-                            .interactive(false)
                             .desired_width(280.0),
                     );
                     if ui.button("Copy").clicked() {
-                        ui.ctx().copy_text(code.clone());
+                        copy_text(ui.ctx(), code);
                     }
                 });
             }
@@ -477,6 +484,21 @@ fn format_bytes(bytes: u64) -> String {
         1024..=1_048_575 => format!("{:.1} KB", bytes as f64 / KIB),
         1_048_576..=1_073_741_823 => format!("{:.1} MB", bytes as f64 / MIB),
         _ => format!("{:.1} GB", bytes as f64 / GIB),
+    }
+}
+
+fn copy_text(ctx: &egui::Context, text: &str) {
+    ctx.copy_text(text.to_owned());
+    if let Ok(mut clipboard) = arboard::Clipboard::new() {
+        let _ = clipboard.set_text(text.to_owned());
+    }
+}
+
+fn paste_into_text(target: &mut String) {
+    if let Ok(mut clipboard) = arboard::Clipboard::new() {
+        if let Ok(contents) = clipboard.get_text() {
+            *target = contents.trim().to_owned();
+        }
     }
 }
 
