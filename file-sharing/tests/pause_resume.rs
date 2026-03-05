@@ -43,6 +43,13 @@ async fn pausing_one_share_does_not_affect_another_and_resumed_share_downloads()
     })
     .await?;
 
+    let paused_download_attempt =
+        download_share_with_progress(&downloader, &share_one, output_a.path(), |_| {}).await;
+    assert!(
+        paused_download_attempt.is_err(),
+        "paused share should not be downloadable"
+    );
+
     let downloaded_share_two =
         download_share_with_progress(&downloader, &share_two, output_b.path(), |_| {}).await;
     assert!(

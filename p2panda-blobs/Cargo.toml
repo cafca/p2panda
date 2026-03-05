@@ -30,6 +30,7 @@ iroh-blobs = { version = "0.98", default-features = false }
 p2panda-net = { path = "../p2panda-net", version = "0.5.1" }
 thiserror = "2"
 tracing = "0.1"
+tokio = { version = "1", features = ["rt"] }
 
 [dev-dependencies]
 p2panda-net = { path = "../p2panda-net", features = ["test_utils"] }

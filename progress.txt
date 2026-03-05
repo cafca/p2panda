@@ -400,3 +400,20 @@ What doesn't work:
 
 What doesn't work:
 - Task 21 acceptance is still incomplete: pausing a seeding share does not currently stop it from serving blobs to downloaders (I validated this during this run with a relay-backed integration attempt; a paused share remained downloadable). This blocks truthfully setting Task 21 to passing until share-level serving can be disabled while paused.
+
+# 2026-03-05 16:07
+
+- picked Task 21 (`Per-share pause and resume`) as the highest-priority unfinished feature because it is the direct gate for Task 22 and the only remaining blocker was that paused seeding shares were still serving blobs
+- implemented hash-level serving control in `p2panda-blobs` by wiring `iroh-blobs` provider request interception (Get/GetMany) and adding `block_serving_hashes` / `unblock_serving_hashes` APIs
+- wired Task 21 pause/resume paths in `file-sharing/src/bridge.rs` to block all hashes for paused shares (collection + manifest + files) and unblock on resume/cancel; added paused-share hash blocking on startup recovery
+- made paused-share hash resolution resilient for recovery by falling back gracefully when collection metadata cannot be expanded from local store
+- strengthened Task 21 integration coverage in `file-sharing/tests/pause_resume.rs` to assert paused shares are not downloadable and become downloadable again after resume, while preserving per-share independence
+- added the runtime dependency `tokio` to `p2panda-blobs` for the internal provider event task
+- ran `cargo fmt --package p2panda-blobs --package p2panda-file-sharing-gui`
+- ran `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-file-sharing-gui --tests --locked --offline`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui bridge --lib --locked --offline -- --nocapture`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui --test pause_resume --locked --offline -- --nocapture`
+- updated Task 21 `passes` to `true` in `PRD.jsonl`
+
+What doesn't work:
+- no additional blocker for Task 21 in this run

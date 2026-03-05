@@ -11,6 +11,9 @@ use tokio::task::JoinHandle as TokioJoinHandle;
 use anyhow::{Context, Result};
 use bevy::prelude::Resource;
 use flume::{Receiver, Sender, TryRecvError};
+use iroh_blobs::hashseq::HashSeq;
+use p2panda_blobs::Hash as BlobHash;
+use tracing::warn;
 
 use crate::download::{download_share_with_progress, DownloadEvent};
 use crate::node::{AppNode, NodeOptions};
@@ -354,6 +357,8 @@ async fn default_handle_command(
             }
 
             if let Some(record) = runtime.paused_shares.remove(&transfer_id) {
+                let hashes = share_hashes_for_record(&state.node, &record).await;
+                state.node.blobs.unblock_serving_hashes(hashes);
                 runtime.store.remove_share_by_code(&record.share_code)?;
                 return Ok(());
             }
@@ -434,6 +439,8 @@ async fn pause_transfer(
     let mut runtime = state.inner.lock().await;
 
     if let Some(session) = runtime.live_shares.remove(&transfer_id) {
+        let blocked_hashes = share_hashes_for_session(&session);
+        state.node.blobs.block_serving_hashes(blocked_hashes);
         let mut record = ShareRecord::from(&session);
         record.paused = true;
         runtime.store.add_share(record.clone())?;
@@ -446,6 +453,8 @@ async fn pause_transfer(
 
     if let Some(recovered) = runtime.recovered_shares.remove(&transfer_id) {
         let mut record = recovered.record;
+        let blocked_hashes = share_hashes_for_record(&state.node, &record).await;
+        state.node.blobs.block_serving_hashes(blocked_hashes);
         record.paused = true;
         runtime.store.add_share(record.clone())?;
         runtime.paused_shares.insert(transfer_id, record);
@@ -485,8 +494,19 @@ async fn resume_transfer(
         let mut runtime = state.inner.lock().await;
         runtime.paused_shares.remove(&transfer_id)
     } {
+        let blocked_hashes = share_hashes_for_record(&state.node, &record).await;
+        state
+            .node
+            .blobs
+            .unblock_serving_hashes(blocked_hashes.iter().copied());
         record.paused = false;
-        let recovered = resume_share_record(&state.node, &record).await?;
+        let recovered = match resume_share_record(&state.node, &record).await {
+            Ok(recovered) => recovered,
+            Err(err) => {
+                state.node.blobs.block_serving_hashes(blocked_hashes);
+                return Err(err);
+            }
+        };
         {
             let mut runtime = state.inner.lock().await;
             runtime.store.add_share(record.clone())?;
@@ -598,6 +618,8 @@ async fn recover_startup_state(
         .iter()
         .filter(|record| record.paused)
     {
+        let blocked_hashes = share_hashes_for_record(&state.node, share).await;
+        state.node.blobs.block_serving_hashes(blocked_hashes);
         let transfer_id = state.next_recovery_transfer_id();
         event_tx
             .send(NetworkEvent::ShareReady {
@@ -677,6 +699,45 @@ async fn recover_startup_state(
     }
 
     Ok(())
+}
+
+fn share_hashes_for_session(session: &ShareSession) -> Vec<BlobHash> {
+    let mut hashes = Vec::with_capacity(session.files.len() + 2);
+    hashes.push(session.collection_hash);
+    hashes.push(session.manifest_hash);
+    hashes.extend(session.files.iter().map(|file| file.hash));
+    hashes
+}
+
+async fn share_hashes_for_record(node: &AppNode, record: &ShareRecord) -> Vec<BlobHash> {
+    let collection_hash = match record.collection_hash() {
+        Ok(hash) => hash,
+        Err(err) => {
+            warn!(
+                "failed to parse collection hash {} from persisted share record: {err}",
+                record.collection_hash
+            );
+            return Vec::new();
+        }
+    };
+    let mut hashes = Vec::new();
+    hashes.push(collection_hash);
+
+    match node.blobs.get_bytes(collection_hash).await {
+        Ok(collection_bytes) => match HashSeq::new(collection_bytes) {
+            Some(hash_seq) => hashes.extend(hash_seq.into_iter()),
+            None => warn!(
+                "collection blob {} is not a valid hash sequence while resolving paused share hashes",
+                record.collection_hash
+            ),
+        },
+        Err(err) => warn!(
+            "failed to load collection blob {} for paused share hash resolution: {err}",
+            record.collection_hash
+        ),
+    }
+
+    hashes
 }
 
 #[cfg(test)]

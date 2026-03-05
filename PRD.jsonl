@@ -640,7 +640,7 @@
     "Paused state survives app restart: a share paused before exit remains paused after restart",
     "Pausing share A does not affect the status of share B"
   ],
-  "passes": false
+  "passes": true
 }
 
 {
