@@ -350,3 +350,37 @@ What doesn't work:
 
 What doesn't work:
 - no additional blocker for Task 20 in this run
+
+# 2026-03-05 14:46
+
+- picked Task 21 (`Per-share pause and resume`) as the highest-priority unfinished feature because it directly unlocks Task 22 (`App-wide pause and resume`) and depends only on already-passing Task 20
+- implemented per-transfer paused state across runtime + UI:
+  - added `TransferStatus::Paused` to the transfer model
+  - added `NetworkCommand::PauseTransfer` and `NetworkCommand::ResumeTransfer`
+  - added `NetworkEvent::TransferPaused` and `NetworkEvent::TransferResumed`
+  - wired plugin event handling so pause/resume events immediately update transfer rows
+- implemented bridge/runtime pause/resume behavior:
+  - pausing live/recovered shares now drops active share sessions, persists `paused = true`, and keeps paused records keyed by transfer id
+  - resuming paused shares now re-joins gossip/re-announces via persisted record recovery and emits `ShareReady` to restore seeding metadata in UI
+  - download operations now run in tracked Tokio tasks (`ActiveDownload`), allowing in-progress download pause via task abort while preserving persisted download records
+  - resuming paused downloads restarts `download_share_with_progress` from persisted records
+- implemented persistence for paused state:
+  - added `paused` (serde default `false`) to both `ShareRecord` and `DownloadRecord`
+  - upgraded `StateStore::add_share` / `add_download` to upsert existing records so pause flag transitions are persisted
+  - startup recovery now skips paused shares/downloads and emits paused transfer events so paused rows remain paused after restart
+- added/updated tests for pause-related model compatibility:
+  - persistence tests now assert default `paused=false` behavior for current and legacy state files
+  - UI tests now cover paused status labels and paused progress-bar rendering rules
+- ran feedback loops:
+  - `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-file-sharing-gui --lib`
+  - `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui bridge --lib -- --nocapture`
+  - `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui ui --lib -- --nocapture`
+  - `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui persist --lib -- --nocapture`
+  - `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui plugin --lib -- --nocapture`
+- updated Task 21 `passes` field in `PRD.jsonl` and left it `false` for this run
+
+What doesn't work:
+- Task 21 acceptance remains partially unverified in this run:
+  - no integration assertion yet proving that a paused seeding share stops gossip announcements end-to-end (the current re-announce cadence and existing tests do not directly validate this)
+  - no integration assertion yet proving resume of a mid-flight paused download skips already-completed files in a pause/resume cycle
+  - no direct two-share independence integration test yet (`pause A` leaves `B` unaffected)

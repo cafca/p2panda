@@ -13,6 +13,12 @@ enum PendingDialog {
     DownloadDestination,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TransferAction {
+    Pause { transfer_id: u64 },
+    Resume { transfer_id: u64 },
+}
+
 #[derive(Debug, Resource)]
 pub struct UiState {
     pub download_dialog_open: bool,
@@ -99,8 +105,15 @@ pub fn ui_system(
                 ui.label("No active transfers");
             }
 
+            let mut pending_actions = Vec::new();
             for transfer in transfers.transfers() {
-                render_transfer_row(ui, transfer);
+                if let Some(action) = render_transfer_row(ui, transfer) {
+                    pending_actions.push(action);
+                }
+            }
+
+            for action in pending_actions {
+                apply_transfer_action(&mut transfers, &bridge, action);
             }
         });
     });
@@ -171,7 +184,9 @@ fn render_download_dialog(
     ui_state.download_dialog_open = is_open;
 }
 
-fn render_transfer_row(ui: &mut egui::Ui, transfer: &Transfer) {
+fn render_transfer_row(ui: &mut egui::Ui, transfer: &Transfer) -> Option<TransferAction> {
+    let mut action = None;
+
     ui.group(|ui| {
         ui.horizontal(|ui| {
             let icon = match transfer.direction {
@@ -192,13 +207,33 @@ fn render_transfer_row(ui: &mut egui::Ui, transfer: &Transfer) {
                 "{} /s",
                 format_bytes(bytes_per_sec.max(0.0) as u64)
             ));
+
+            match transfer.status {
+                TransferStatus::Paused => {
+                    if ui.button("Resume").clicked() {
+                        action = Some(TransferAction::Resume {
+                            transfer_id: transfer.id,
+                        });
+                    }
+                }
+                TransferStatus::Error(_) => {
+                    ui.add_enabled(false, egui::Button::new("Pause"));
+                }
+                _ => {
+                    if can_pause_transfer(transfer) && ui.button("Pause").clicked() {
+                        action = Some(TransferAction::Pause {
+                            transfer_id: transfer.id,
+                        });
+                    }
+                }
+            }
         });
 
         match &transfer.status {
             TransferStatus::Pending => {
                 ui.label(status_label(transfer));
             }
-            TransferStatus::Active | TransferStatus::Completed => {
+            TransferStatus::Active | TransferStatus::Paused | TransferStatus::Completed => {
                 ui.label(status_label(transfer));
                 if should_render_progress_bar(transfer) {
                     let (fraction, downloaded_bytes) = match transfer.direction {
@@ -233,6 +268,8 @@ fn render_transfer_row(ui: &mut egui::Ui, transfer: &Transfer) {
             }
         }
     });
+
+    action
 }
 
 fn render_progress_bar(ui: &mut egui::Ui, fraction: f32, downloaded_bytes: u64, total_bytes: u64) {
@@ -248,9 +285,11 @@ fn status_label(transfer: &Transfer) -> &'static str {
     match (&transfer.direction, &transfer.status) {
         (Direction::Upload, TransferStatus::Pending) => "Importing...",
         (Direction::Upload, TransferStatus::Active | TransferStatus::Completed) => "Seeding",
+        (Direction::Upload, TransferStatus::Paused) => "Paused",
         (Direction::Upload, TransferStatus::Error(_)) => "Failed",
         (Direction::Download, TransferStatus::Pending) => "Waiting...",
         (Direction::Download, TransferStatus::Active) => "Downloading",
+        (Direction::Download, TransferStatus::Paused) => "Paused",
         (Direction::Download, TransferStatus::Completed) => "Done",
         (Direction::Download, TransferStatus::Error(_)) => "Failed",
     }
@@ -261,9 +300,53 @@ fn should_render_progress_bar(transfer: &Transfer) -> bool {
         (&transfer.direction, &transfer.status),
         (
             Direction::Upload,
-            TransferStatus::Active | TransferStatus::Completed
-        ) | (Direction::Download, TransferStatus::Active)
+            TransferStatus::Active | TransferStatus::Paused | TransferStatus::Completed
+        ) | (
+            Direction::Download,
+            TransferStatus::Active | TransferStatus::Paused
+        )
     )
+}
+
+fn can_pause_transfer(transfer: &Transfer) -> bool {
+    match (&transfer.direction, &transfer.status) {
+        (_, TransferStatus::Paused | TransferStatus::Error(_)) => false,
+        (
+            Direction::Upload,
+            TransferStatus::Pending | TransferStatus::Active | TransferStatus::Completed,
+        ) => true,
+        (Direction::Download, TransferStatus::Pending | TransferStatus::Active) => true,
+        (Direction::Download, TransferStatus::Completed) => false,
+    }
+}
+
+fn apply_transfer_action(
+    transfers: &mut TransferRegistry,
+    bridge: &AsyncBridge,
+    action: TransferAction,
+) {
+    let (transfer_id, command) = match action {
+        TransferAction::Pause { transfer_id } => {
+            (transfer_id, NetworkCommand::PauseTransfer { transfer_id })
+        }
+        TransferAction::Resume { transfer_id } => {
+            (transfer_id, NetworkCommand::ResumeTransfer { transfer_id })
+        }
+    };
+
+    if let Err(err) = bridge.send(command) {
+        if let Some(transfer) = transfers.get_mut(transfer_id) {
+            transfer.status = TransferStatus::Error(err.to_string());
+        }
+        return;
+    }
+
+    if let Some(transfer) = transfers.get_mut(transfer_id) {
+        transfer.status = match action {
+            TransferAction::Pause { .. } => TransferStatus::Paused,
+            TransferAction::Resume { .. } => TransferStatus::Active,
+        };
+    }
 }
 
 fn start_share_transfer(
@@ -473,10 +556,14 @@ mod tests {
         assert_eq!(status_label(&upload), "Seeding");
         upload.status = TransferStatus::Completed;
         assert_eq!(status_label(&upload), "Seeding");
+        upload.status = TransferStatus::Paused;
+        assert_eq!(status_label(&upload), "Paused");
 
         let mut download = Transfer::new(2, "download", Direction::Download);
         download.status = TransferStatus::Active;
         assert_eq!(status_label(&download), "Downloading");
+        download.status = TransferStatus::Paused;
+        assert_eq!(status_label(&download), "Paused");
         download.status = TransferStatus::Completed;
         assert_eq!(status_label(&download), "Done");
         download.status = TransferStatus::Error("boom".into());
@@ -490,9 +577,13 @@ mod tests {
         assert!(should_render_progress_bar(&upload));
         upload.status = TransferStatus::Completed;
         assert!(should_render_progress_bar(&upload));
+        upload.status = TransferStatus::Paused;
+        assert!(should_render_progress_bar(&upload));
 
         let mut download = Transfer::new(2, "download", Direction::Download);
         download.status = TransferStatus::Active;
+        assert!(should_render_progress_bar(&download));
+        download.status = TransferStatus::Paused;
         assert!(should_render_progress_bar(&download));
         download.status = TransferStatus::Completed;
         assert!(!should_render_progress_bar(&download));

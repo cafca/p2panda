@@ -142,6 +142,18 @@ fn apply_network_event(transfers: &mut TransferRegistry, event: NetworkEvent) ->
             transfer.status = TransferStatus::Completed;
             false
         }
+        NetworkEvent::TransferPaused { transfer_id } => {
+            if let Some(transfer) = transfers.get_mut(transfer_id) {
+                transfer.status = TransferStatus::Paused;
+            }
+            false
+        }
+        NetworkEvent::TransferResumed { transfer_id } => {
+            if let Some(transfer) = transfers.get_mut(transfer_id) {
+                transfer.status = TransferStatus::Active;
+            }
+            false
+        }
         NetworkEvent::Error {
             transfer_id,
             error_message,

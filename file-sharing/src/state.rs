@@ -47,6 +47,7 @@ pub enum Direction {
 pub enum TransferStatus {
     Pending,
     Active,
+    Paused,
     Completed,
     Error(String),
 }

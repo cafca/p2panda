@@ -6,15 +6,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::thread::{self, JoinHandle};
+use tokio::task::JoinHandle as TokioJoinHandle;
 
 use anyhow::{Context, Result};
 use bevy::prelude::Resource;
 use flume::{Receiver, Sender, TryRecvError};
 
-use crate::download::{download_share_with_progress, DownloadEvent, DownloadSession};
+use crate::download::{download_share_with_progress, DownloadEvent};
 use crate::node::{AppNode, NodeOptions};
 use crate::persist::{
-    resume_active_transfers, DownloadRecord, RecoveredShare, ShareRecord, StateStore,
+    resume_active_transfers, resume_share_record, DownloadRecord, RecoveredShare, ShareRecord,
+    StateStore,
 };
 use crate::share::{share_directory, ShareSession};
 use crate::share_code::decode_share_code;
@@ -36,6 +38,12 @@ pub enum NetworkCommand {
     CancelTransfer {
         transfer_id: u64,
     },
+    PauseTransfer {
+        transfer_id: u64,
+    },
+    ResumeTransfer {
+        transfer_id: u64,
+    },
 }
 
 impl NetworkCommand {
@@ -44,7 +52,9 @@ impl NetworkCommand {
             Self::RecoverStartup => u64::MAX,
             Self::ShareDirectory { transfer_id, .. }
             | Self::StartDownload { transfer_id, .. }
-            | Self::CancelTransfer { transfer_id } => *transfer_id,
+            | Self::CancelTransfer { transfer_id }
+            | Self::PauseTransfer { transfer_id }
+            | Self::ResumeTransfer { transfer_id } => *transfer_id,
         }
     }
 }
@@ -79,6 +89,12 @@ pub enum NetworkEvent {
     Error {
         transfer_id: u64,
         error_message: String,
+    },
+    TransferPaused {
+        transfer_id: u64,
+    },
+    TransferResumed {
+        transfer_id: u64,
     },
 }
 
@@ -236,7 +252,14 @@ struct RuntimeInner {
     store: StateStore,
     live_shares: HashMap<u64, ShareSession>,
     recovered_shares: HashMap<u64, RecoveredShare>,
-    active_downloads: HashMap<u64, DownloadSession>,
+    paused_shares: HashMap<u64, ShareRecord>,
+    active_downloads: HashMap<u64, ActiveDownload>,
+    paused_downloads: HashMap<u64, DownloadRecord>,
+}
+
+struct ActiveDownload {
+    record: DownloadRecord,
+    handle: TokioJoinHandle<()>,
 }
 
 impl RuntimeState {
@@ -249,7 +272,9 @@ impl RuntimeState {
                 store,
                 live_shares: HashMap::new(),
                 recovered_shares: HashMap::new(),
+                paused_shares: HashMap::new(),
                 active_downloads: HashMap::new(),
+                paused_downloads: HashMap::new(),
             }),
             next_recovery_transfer_id: AtomicU64::new(1_000_000),
         })
@@ -300,31 +325,9 @@ async fn default_handle_command(
             output_directory,
         } => {
             let decoded = decode_share_code(&share_code)?;
-            {
-                let mut runtime = state.inner.lock().await;
-                runtime.store.add_download(DownloadRecord::new(
-                    share_code.clone(),
-                    output_directory.clone(),
-                    decoded.collection_hash(),
-                ))?;
-            }
-
-            let session = download_share_with_progress(
-                &state.node,
-                &share_code,
-                &output_directory,
-                |event| emit_download_event(&event_tx, transfer_id, event),
-            )
-            .await?;
-
-            {
-                let mut runtime = state.inner.lock().await;
-                runtime
-                    .store
-                    .remove_download_by_code(&share_code, &output_directory)?;
-                runtime.active_downloads.insert(transfer_id, session);
-            }
-            Ok(())
+            let record =
+                DownloadRecord::new(share_code, output_directory, decoded.collection_hash());
+            start_download_task(state, transfer_id, record, event_tx).await
         }
         NetworkCommand::CancelTransfer { transfer_id } => {
             let mut runtime = state.inner.lock().await;
@@ -341,15 +344,190 @@ async fn default_handle_command(
                 return Ok(());
             }
 
-            if runtime.active_downloads.remove(&transfer_id).is_some() {
-                return Err(anyhow::anyhow!(
-                    "cancel for active downloads is not implemented yet"
-                ));
+            if let Some(active) = runtime.active_downloads.remove(&transfer_id) {
+                active.handle.abort();
+                runtime.store.remove_download_by_code(
+                    &active.record.share_code,
+                    &active.record.output_dir,
+                )?;
+                return Ok(());
+            }
+
+            if let Some(record) = runtime.paused_shares.remove(&transfer_id) {
+                runtime.store.remove_share_by_code(&record.share_code)?;
+                return Ok(());
+            }
+
+            if let Some(record) = runtime.paused_downloads.remove(&transfer_id) {
+                runtime
+                    .store
+                    .remove_download_by_code(&record.share_code, &record.output_dir)?;
+                return Ok(());
             }
 
             Err(anyhow::anyhow!("unknown transfer id {transfer_id}"))
         }
+        NetworkCommand::PauseTransfer { transfer_id } => {
+            pause_transfer(state, transfer_id, event_tx).await
+        }
+        NetworkCommand::ResumeTransfer { transfer_id } => {
+            resume_transfer(state, transfer_id, event_tx).await
+        }
     }
+}
+
+async fn start_download_task(
+    state: Arc<RuntimeState>,
+    transfer_id: u64,
+    record: DownloadRecord,
+    event_tx: Sender<NetworkEvent>,
+) -> Result<()> {
+    {
+        let mut runtime = state.inner.lock().await;
+        runtime.store.add_download(record.clone())?;
+    }
+
+    let task_state = Arc::clone(&state);
+    let task_record = record.clone();
+    let task_event_tx = event_tx.clone();
+    let handle = tokio::spawn(async move {
+        let result = download_share_with_progress(
+            &task_state.node,
+            &task_record.share_code,
+            &task_record.output_dir,
+            |event| emit_download_event(&task_event_tx, transfer_id, event),
+        )
+        .await;
+
+        let mut runtime = task_state.inner.lock().await;
+        runtime.active_downloads.remove(&transfer_id);
+
+        match result {
+            Ok(_) => {
+                let _ = runtime
+                    .store
+                    .remove_download_by_code(&task_record.share_code, &task_record.output_dir);
+                runtime.paused_downloads.remove(&transfer_id);
+            }
+            Err(err) => {
+                let _ = task_event_tx.send(NetworkEvent::Error {
+                    transfer_id,
+                    error_message: err.to_string(),
+                });
+            }
+        }
+    });
+
+    let mut runtime = state.inner.lock().await;
+    runtime
+        .active_downloads
+        .insert(transfer_id, ActiveDownload { record, handle });
+
+    Ok(())
+}
+
+async fn pause_transfer(
+    state: Arc<RuntimeState>,
+    transfer_id: u64,
+    event_tx: Sender<NetworkEvent>,
+) -> Result<()> {
+    let mut runtime = state.inner.lock().await;
+
+    if let Some(session) = runtime.live_shares.remove(&transfer_id) {
+        let mut record = ShareRecord::from(&session);
+        record.paused = true;
+        runtime.store.add_share(record.clone())?;
+        runtime.paused_shares.insert(transfer_id, record);
+        event_tx
+            .send(NetworkEvent::TransferPaused { transfer_id })
+            .context("failed to send TransferPaused event")?;
+        return Ok(());
+    }
+
+    if let Some(recovered) = runtime.recovered_shares.remove(&transfer_id) {
+        let mut record = recovered.record;
+        record.paused = true;
+        runtime.store.add_share(record.clone())?;
+        runtime.paused_shares.insert(transfer_id, record);
+        event_tx
+            .send(NetworkEvent::TransferPaused { transfer_id })
+            .context("failed to send TransferPaused event")?;
+        return Ok(());
+    }
+
+    if let Some(active) = runtime.active_downloads.remove(&transfer_id) {
+        active.handle.abort();
+        let mut record = active.record;
+        record.paused = true;
+        runtime.store.add_download(record.clone())?;
+        runtime.paused_downloads.insert(transfer_id, record);
+        event_tx
+            .send(NetworkEvent::TransferPaused { transfer_id })
+            .context("failed to send TransferPaused event")?;
+        return Ok(());
+    }
+
+    if runtime.paused_shares.contains_key(&transfer_id)
+        || runtime.paused_downloads.contains_key(&transfer_id)
+    {
+        return Ok(());
+    }
+
+    Err(anyhow::anyhow!("unknown transfer id {transfer_id}"))
+}
+
+async fn resume_transfer(
+    state: Arc<RuntimeState>,
+    transfer_id: u64,
+    event_tx: Sender<NetworkEvent>,
+) -> Result<()> {
+    if let Some(mut record) = {
+        let mut runtime = state.inner.lock().await;
+        runtime.paused_shares.remove(&transfer_id)
+    } {
+        record.paused = false;
+        let recovered = resume_share_record(&state.node, &record).await?;
+        {
+            let mut runtime = state.inner.lock().await;
+            runtime.store.add_share(record.clone())?;
+            runtime.recovered_shares.insert(transfer_id, recovered);
+        }
+        event_tx
+            .send(NetworkEvent::TransferResumed { transfer_id })
+            .context("failed to send TransferResumed event")?;
+        event_tx
+            .send(NetworkEvent::ShareReady {
+                transfer_id,
+                directory_name: record.directory_name,
+                share_code: record.share_code,
+                total_bytes: record.total_bytes,
+                file_count: record.file_count,
+            })
+            .context("failed to send ShareReady event for resumed share")?;
+        return Ok(());
+    }
+
+    if let Some(mut record) = {
+        let mut runtime = state.inner.lock().await;
+        runtime.paused_downloads.remove(&transfer_id)
+    } {
+        record.paused = false;
+        start_download_task(Arc::clone(&state), transfer_id, record, event_tx.clone()).await?;
+        event_tx
+            .send(NetworkEvent::TransferResumed { transfer_id })
+            .context("failed to send TransferResumed event")?;
+        return Ok(());
+    }
+
+    let runtime = state.inner.lock().await;
+    if runtime.active_downloads.contains_key(&transfer_id)
+        || runtime.live_shares.contains_key(&transfer_id)
+        || runtime.recovered_shares.contains_key(&transfer_id)
+    {
+        return Ok(());
+    }
+
+    Err(anyhow::anyhow!("unknown transfer id {transfer_id}"))
 }
 
 fn emit_download_event(event_tx: &Sender<NetworkEvent>, transfer_id: u64, event: DownloadEvent) {
@@ -415,6 +593,27 @@ async fn recover_startup_state(
         runtime.recovered_shares.insert(transfer_id, share);
     }
 
+    for share in persisted_state
+        .active_shares
+        .iter()
+        .filter(|record| record.paused)
+    {
+        let transfer_id = state.next_recovery_transfer_id();
+        event_tx
+            .send(NetworkEvent::ShareReady {
+                transfer_id,
+                directory_name: share.directory_name.clone(),
+                share_code: share.share_code.clone(),
+                total_bytes: share.total_bytes,
+                file_count: share.file_count,
+            })
+            .context("failed to send paused ShareReady event")?;
+        event_tx
+            .send(NetworkEvent::TransferPaused { transfer_id })
+            .context("failed to send paused TransferPaused event")?;
+        runtime.paused_shares.insert(transfer_id, share.clone());
+    }
+
     for download in recovered.downloads {
         let transfer_id = state.next_recovery_transfer_id();
         event_tx
@@ -453,6 +652,28 @@ async fn recover_startup_state(
                 .parent()
                 .unwrap_or(&download.output_root),
         )?;
+    }
+
+    for download in persisted_state
+        .active_downloads
+        .iter()
+        .filter(|record| record.paused)
+    {
+        let transfer_id = state.next_recovery_transfer_id();
+        event_tx
+            .send(NetworkEvent::DownloadStarted {
+                transfer_id,
+                directory_name: "Download".into(),
+                total_bytes: 0,
+                file_count: 0,
+            })
+            .context("failed to send paused DownloadStarted event")?;
+        event_tx
+            .send(NetworkEvent::TransferPaused { transfer_id })
+            .context("failed to send paused download TransferPaused event")?;
+        runtime
+            .paused_downloads
+            .insert(transfer_id, download.clone());
     }
 
     Ok(())
@@ -582,6 +803,8 @@ mod tests {
                     NetworkCommand::ShareDirectory { transfer_id, .. } => (transfer_id, 200),
                     NetworkCommand::StartDownload { transfer_id, .. } => (transfer_id, 20),
                     NetworkCommand::CancelTransfer { transfer_id } => (transfer_id, 0),
+                    NetworkCommand::PauseTransfer { transfer_id } => (transfer_id, 0),
+                    NetworkCommand::ResumeTransfer { transfer_id } => (transfer_id, 0),
                 };
 
                 tokio::time::sleep(Duration::from_millis(delay_ms)).await;

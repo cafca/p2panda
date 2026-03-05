@@ -28,6 +28,8 @@ pub struct DownloadRecord {
     pub share_code: String,
     pub output_dir: PathBuf,
     pub collection_hash: String,
+    #[serde(default)]
+    pub paused: bool,
 }
 
 impl DownloadRecord {
@@ -40,6 +42,7 @@ impl DownloadRecord {
             share_code: share_code.into(),
             output_dir: output_dir.into(),
             collection_hash: collection_hash.to_hex(),
+            paused: false,
         }
     }
 
@@ -61,6 +64,8 @@ pub struct ShareRecord {
     pub file_count: usize,
     #[serde(default)]
     pub total_bytes: u64,
+    #[serde(default)]
+    pub paused: bool,
 }
 
 impl ShareRecord {
@@ -79,6 +84,7 @@ impl ShareRecord {
             directory_name: directory_name.into(),
             file_count,
             total_bytes,
+            paused: false,
         }
     }
 
@@ -145,25 +151,35 @@ impl StateStore {
     }
 
     pub fn add_share(&mut self, record: ShareRecord) -> Result<()> {
-        if !self
+        if let Some(existing) = self
             .state
             .active_shares
-            .iter()
-            .any(|existing| existing.share_code == record.share_code)
+            .iter_mut()
+            .find(|existing| existing.share_code == record.share_code)
         {
-            self.state.active_shares.push(record);
-            self.save()?;
+            if *existing != record {
+                *existing = record;
+                self.save()?;
+            }
+            return Ok(());
         }
+        self.state.active_shares.push(record);
+        self.save()?;
         Ok(())
     }
 
     pub fn add_download(&mut self, record: DownloadRecord) -> Result<()> {
-        if !self.state.active_downloads.iter().any(|existing| {
+        if let Some(existing) = self.state.active_downloads.iter_mut().find(|existing| {
             existing.share_code == record.share_code && existing.output_dir == record.output_dir
         }) {
-            self.state.active_downloads.push(record);
-            self.save()?;
+            if *existing != record {
+                *existing = record;
+                self.save()?;
+            }
+            return Ok(());
         }
+        self.state.active_downloads.push(record);
+        self.save()?;
         Ok(())
     }
 
@@ -204,28 +220,10 @@ pub async fn resume_shares(node: &AppNode, state: &PersistedState) -> Result<Vec
     let mut recovered = Vec::with_capacity(state.active_shares.len());
 
     for record in &state.active_shares {
-        let collection_hash = record.collection_hash()?;
-        let topic_id = derive_topic(*collection_hash.as_bytes());
-        let handle = node
-            .join_topic(topic_id)
-            .await
-            .with_context(|| format!("failed to join topic for {}", record.share_code))?;
-
-        handle
-            .publish(CollectionAnnouncement::new(collection_hash).encode())
-            .await
-            .with_context(|| {
-                format!(
-                    "failed to re-announce collection {}",
-                    record.collection_hash
-                )
-            })?;
-
-        recovered.push(RecoveredShare {
-            record: record.clone(),
-            topic_id,
-            handle,
-        });
+        if record.paused {
+            continue;
+        }
+        recovered.push(resume_share_record(node, record).await?);
     }
 
     Ok(recovered)
@@ -238,6 +236,9 @@ pub async fn resume_downloads(
     let mut resumed = Vec::with_capacity(state.active_downloads.len());
 
     for record in &state.active_downloads {
+        if record.paused {
+            continue;
+        }
         resumed.push(
             download_share(node, &record.share_code, &record.output_dir)
                 .await
@@ -262,6 +263,31 @@ pub async fn resume_active_transfers(
     let downloads = resume_downloads(node, state).await?;
 
     Ok(RecoveryState { shares, downloads })
+}
+
+pub async fn resume_share_record(node: &AppNode, record: &ShareRecord) -> Result<RecoveredShare> {
+    let collection_hash = record.collection_hash()?;
+    let topic_id = derive_topic(*collection_hash.as_bytes());
+    let handle = node
+        .join_topic(topic_id)
+        .await
+        .with_context(|| format!("failed to join topic for {}", record.share_code))?;
+
+    handle
+        .publish(CollectionAnnouncement::new(collection_hash).encode())
+        .await
+        .with_context(|| {
+            format!(
+                "failed to re-announce collection {}",
+                record.collection_hash
+            )
+        })?;
+
+    Ok(RecoveredShare {
+        record: record.clone(),
+        topic_id,
+        handle,
+    })
 }
 
 fn state_file_path(data_dir: &Path) -> PathBuf {
@@ -359,6 +385,8 @@ mod tests {
         let loaded = load_state(dir.path())?;
         assert_eq!(loaded.active_shares.len(), 1);
         assert_eq!(loaded.active_downloads.len(), 1);
+        assert!(!loaded.active_shares[0].paused);
+        assert!(!loaded.active_downloads[0].paused);
 
         Ok(())
     }
@@ -387,6 +415,7 @@ mod tests {
         assert_eq!(share.directory_name, "");
         assert_eq!(share.file_count, 0);
         assert_eq!(share.total_bytes, 0);
+        assert!(!share.paused);
 
         Ok(())
     }
