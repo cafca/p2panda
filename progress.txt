@@ -536,3 +536,25 @@ What doesn't work:
 What doesn't work:
 - no additional blocker for Task 34 in this run
 - added plugin unit tests for relay-mode startup mapping (`TestingRelay`, `Relay`, `Disabled`) and re-ran `plugin`/`settings` verification loops after the test additions
+
+# 2026-03-05 20:12
+
+- picked Task 29 (`Drag and drop folder to share`) as the highest-priority unfinished feature because it improves the core share initiation path and is a direct UX accelerator for the app's primary action
+- implemented drag-and-drop folder sharing in `file-sharing/src/ui.rs`:
+  - added Bevy `FileDragAndDrop` event handling in `ui_system`
+  - added a drag/drop state handler (`handle_drag_drop_events`) that starts shares for dropped directories
+  - added directory validation so dropped files are ignored with an inline UI error (`Only directories can be shared`)
+  - added support for multiple dropped directories by handling each dropped directory event independently
+  - added a foreground drop-zone overlay (`Drop folder to share`) while a drag is hovering and removed it on drag cancel/drop
+- preserved existing share flow via `Share Directory...` button (no behavior change to dialog-based sharing path)
+- added focused UI tests for Task 29 behavior:
+  - `dropping_directories_starts_share_and_ignores_files`
+  - `dropping_only_files_sets_error_and_starts_no_transfer`
+  - `hover_cancel_turns_off_drag_overlay`
+- ran `cargo fmt --package p2panda-file-sharing-gui`
+- ran `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-file-sharing-gui --lib --locked`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui ui --lib --locked -- --nocapture`
+- confirmed Task 29 acceptance criteria in this run and updated Task 29 `passes` to `true` in `PRD.jsonl`
+
+What doesn't work:
+- no additional blocker for Task 29 in this run

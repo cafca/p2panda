@@ -681,7 +681,7 @@
     "Multiple dropped directories each start a separate share",
     "The existing Share Directory button continues to work unchanged"
   ],
-  "passes": false
+  "passes": true
 }
 {
   "id": 30,

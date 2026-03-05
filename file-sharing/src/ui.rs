@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
-use bevy::prelude::{Res, ResMut, Resource};
+use bevy::prelude::{EventReader, Res, ResMut, Resource};
+use bevy::window::FileDragAndDrop;
 use bevy_egui::{egui, EguiContexts};
 
 use crate::bridge::{AsyncBridge, NetworkCommand};
@@ -34,6 +35,8 @@ pub struct UiState {
     pub custom_relay_url_input: String,
     pub relay_restart_required: bool,
     pub settings_error: Option<String>,
+    pub drag_drop_active: bool,
+    pub drag_drop_error: Option<String>,
     folder_dialog: Option<(PendingDialog, flume::Receiver<Option<PathBuf>>)>,
 }
 
@@ -56,6 +59,8 @@ impl UiState {
             custom_relay_url_input: String::new(),
             relay_restart_required: false,
             settings_error: None,
+            drag_drop_active: false,
+            drag_drop_error: None,
             folder_dialog: None,
         }
     }
@@ -84,13 +89,77 @@ fn open_folder_dialog() -> flume::Receiver<Option<PathBuf>> {
     rx
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DragDropUiEvent {
+    Hovered,
+    Dropped(PathBuf),
+    HoveredCanceled,
+}
+
+fn handle_drag_drop_events(
+    ui_state: &mut UiState,
+    transfers: &mut TransferRegistry,
+    bridge: &AsyncBridge,
+    events: impl IntoIterator<Item = DragDropUiEvent>,
+) {
+    let mut rejected = 0usize;
+    let mut started_share = false;
+
+    for event in events {
+        match event {
+            DragDropUiEvent::Hovered => {
+                ui_state.drag_drop_active = true;
+            }
+            DragDropUiEvent::HoveredCanceled => {
+                ui_state.drag_drop_active = false;
+            }
+            DragDropUiEvent::Dropped(path) => {
+                ui_state.drag_drop_active = false;
+                if matches!(
+                    std::fs::metadata(&path).map(|metadata| metadata.is_dir()),
+                    Ok(true)
+                ) {
+                    ui_state.pending_share_path = Some(path.clone());
+                    start_share_transfer(transfers, bridge, path);
+                    started_share = true;
+                } else {
+                    rejected = rejected.saturating_add(1);
+                }
+            }
+        }
+    }
+
+    if started_share {
+        ui_state.drag_drop_error = None;
+    } else if rejected > 0 {
+        ui_state.drag_drop_error = Some(if rejected == 1 {
+            "Only directories can be shared".to_owned()
+        } else {
+            format!("Only directories can be shared ({rejected} files ignored)")
+        });
+    }
+}
+
 pub fn ui_system(
     mut egui_contexts: EguiContexts,
     mut ui_state: ResMut<UiState>,
     mut transfers: ResMut<TransferRegistry>,
     bridge: Res<AsyncBridge>,
     mut settings_store: ResMut<SettingsStore>,
+    mut drag_and_drop_events: EventReader<FileDragAndDrop>,
 ) {
+    let drag_drop_events = drag_and_drop_events
+        .read()
+        .map(|event| match event {
+            FileDragAndDrop::HoveredFile { .. } => DragDropUiEvent::Hovered,
+            FileDragAndDrop::HoveredFileCanceled { .. } => DragDropUiEvent::HoveredCanceled,
+            FileDragAndDrop::DroppedFile { path_buf, .. } => {
+                DragDropUiEvent::Dropped(path_buf.clone())
+            }
+        })
+        .collect::<Vec<_>>();
+    handle_drag_drop_events(&mut ui_state, &mut transfers, &bridge, drag_drop_events);
+
     // Check if a pending folder dialog has completed.
     if let Some((purpose, rx)) = &ui_state.folder_dialog {
         if let Ok(result) = rx.try_recv() {
@@ -170,6 +239,10 @@ pub fn ui_system(
         });
 
         ui.separator();
+        if let Some(error) = &ui_state.drag_drop_error {
+            ui.colored_label(egui::Color32::RED, error);
+            ui.separator();
+        }
 
         if ui_state.show_settings_view {
             render_settings_view(ui, &mut ui_state, &mut settings_store, dialog_busy);
@@ -197,6 +270,10 @@ pub fn ui_system(
     if ui_state.download_dialog_open {
         render_download_dialog(ctx, &mut ui_state, &mut transfers, &bridge);
     }
+
+    if ui_state.drag_drop_active {
+        render_drag_drop_overlay(ctx);
+    }
 }
 
 pub fn render_transfer_ui(
@@ -205,8 +282,16 @@ pub fn render_transfer_ui(
     transfers: ResMut<TransferRegistry>,
     bridge: Res<AsyncBridge>,
     settings_store: ResMut<SettingsStore>,
+    drag_and_drop_events: EventReader<FileDragAndDrop>,
 ) {
-    ui_system(egui_contexts, ui_state, transfers, bridge, settings_store);
+    ui_system(
+        egui_contexts,
+        ui_state,
+        transfers,
+        bridge,
+        settings_store,
+        drag_and_drop_events,
+    );
 }
 
 fn render_download_dialog(
@@ -267,6 +352,29 @@ fn render_download_dialog(
     }
 
     ui_state.download_dialog_open = is_open;
+}
+
+fn render_drag_drop_overlay(ctx: &egui::Context) {
+    let rect = ctx.screen_rect();
+    let painter = ctx.layer_painter(egui::LayerId::new(
+        egui::Order::Foreground,
+        egui::Id::new("drag_drop_overlay"),
+    ));
+
+    painter.rect_filled(rect, 0.0, egui::Color32::from_black_alpha(140));
+    painter.rect_stroke(
+        rect.shrink(18.0),
+        8.0,
+        egui::Stroke::new(2.0, egui::Color32::from_rgb(120, 220, 180)),
+        egui::StrokeKind::Middle,
+    );
+    painter.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        "Drop folder to share",
+        egui::TextStyle::Heading.resolve(&ctx.style()),
+        egui::Color32::WHITE,
+    );
 }
 
 fn render_settings_view(
@@ -862,5 +970,92 @@ mod tests {
         errored.status = TransferStatus::Error("boom".into());
         assert!(!can_cancel_transfer(&errored));
         assert!(!can_pause_transfer(&errored));
+    }
+
+    #[test]
+    fn dropping_directories_starts_share_and_ignores_files() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let folder = temp.path().join("photos");
+        let file = temp.path().join("notes.txt");
+        std::fs::create_dir(&folder)?;
+        std::fs::write(&file, b"not a directory")?;
+
+        let bridge = spawn_test_bridge(|_, command, _| {
+            Box::pin(async move {
+                match command {
+                    NetworkCommand::ShareDirectory { .. } => Ok(()),
+                    other => panic!("unexpected command: {other:?}"),
+                }
+            })
+        });
+        let mut state = UiState::default();
+        let mut registry = TransferRegistry::default();
+
+        handle_drag_drop_events(
+            &mut state,
+            &mut registry,
+            &bridge,
+            [
+                DragDropUiEvent::Hovered,
+                DragDropUiEvent::Dropped(folder.clone()),
+                DragDropUiEvent::Dropped(file),
+            ],
+        );
+
+        assert!(!state.drag_drop_active);
+        assert_eq!(state.pending_share_path, Some(folder));
+        assert!(state.drag_drop_error.is_none());
+        assert_eq!(registry.transfers().len(), 1);
+        assert_eq!(registry.transfers()[0].direction, Direction::Upload);
+        Ok(())
+    }
+
+    #[test]
+    fn dropping_only_files_sets_error_and_starts_no_transfer() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let file = temp.path().join("notes.txt");
+        std::fs::write(&file, b"not a directory")?;
+
+        let bridge = spawn_test_bridge(|_, command, _| {
+            Box::pin(async move {
+                panic!("unexpected command: {command:?}");
+            })
+        });
+        let mut state = UiState::default();
+        let mut registry = TransferRegistry::default();
+
+        handle_drag_drop_events(
+            &mut state,
+            &mut registry,
+            &bridge,
+            [DragDropUiEvent::Dropped(file)],
+        );
+
+        assert_eq!(
+            state.drag_drop_error.as_deref(),
+            Some("Only directories can be shared")
+        );
+        assert_eq!(registry.transfers().len(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn hover_cancel_turns_off_drag_overlay() {
+        let bridge = spawn_test_bridge(|_, command, _| {
+            Box::pin(async move {
+                panic!("unexpected command: {command:?}");
+            })
+        });
+        let mut state = UiState::default();
+        let mut registry = TransferRegistry::default();
+
+        handle_drag_drop_events(
+            &mut state,
+            &mut registry,
+            &bridge,
+            [DragDropUiEvent::Hovered, DragDropUiEvent::HoveredCanceled],
+        );
+
+        assert!(!state.drag_drop_active);
     }
 }
