@@ -508,3 +508,31 @@ What doesn't work:
 
 What doesn't work:
 - no additional blocker for Task 33 in this run
+
+# 2026-03-05 20:08
+
+- picked Task 34 (`Relay server configuration settings`) as the highest-priority unfinished feature because Task 33 is now complete and relay-mode configurability is the next startup-configuration gate
+- extended `file-sharing/src/settings.rs` with persisted relay configuration:
+  - added `RelayMode` enum (`TestingRelay`, `Relay`, `Disabled`) with default `TestingRelay`
+  - added `custom_relay_url` to `AppSettings`
+  - added relay URL resolution for node startup (`AppSettings::relay_url_for_node`)
+  - added `SettingsStore::set_relay_config(...)` with HTTPS validation and persistence
+- wired relay settings into node startup in `file-sharing/src/plugin.rs`:
+  - removed relay URL env var as primary source
+  - `resolve_node_options` now derives relay URL from persisted settings
+  - `TestingRelay` maps to iroh testing relay URL, `Relay` uses validated custom HTTPS URL, `Disabled` uses no relay URL
+- implemented Task-34 settings UI in `file-sharing/src/ui.rs`:
+  - added a `Relay Server` section with mode radios labeled `Testing Relay (iroh)`, `Relay`, and `Disabled`
+  - added relay URL text input enabled only in `Relay` mode
+  - added explanatory relay text and testing-relay caution note
+  - added inline error handling for invalid relay URLs and a `Restart required to apply relay changes` notice after successful runtime changes
+- ran `cargo fmt --package p2panda-file-sharing-gui`
+- ran `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-file-sharing-gui --lib --locked`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui settings --lib --locked -- --nocapture`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui ui --lib --locked -- --nocapture`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui plugin --lib --locked -- --nocapture`
+- confirmed Task 34 acceptance criteria in this run and updated Task 34 `passes` to `true` in `PRD.jsonl`
+
+What doesn't work:
+- no additional blocker for Task 34 in this run
+- added plugin unit tests for relay-mode startup mapping (`TestingRelay`, `Relay`, `Disabled`) and re-ran `plugin`/`settings` verification loops after the test additions

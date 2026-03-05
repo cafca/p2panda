@@ -2,14 +2,43 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use p2panda_net::iroh_endpoint::RelayUrl;
 use serde::{Deserialize, Serialize};
 
 const SETTINGS_FILE_NAME: &str = "settings.json";
+const TESTING_RELAY_URL: &str = "https://use1-1.relay.iroh.network.";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RelayMode {
+    #[default]
+    TestingRelay,
+    Relay,
+    Disabled,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct AppSettings {
     #[serde(default)]
     pub default_download_dir: Option<PathBuf>,
+    #[serde(default)]
+    pub relay_mode: RelayMode,
+    #[serde(default)]
+    pub custom_relay_url: Option<String>,
+}
+
+impl AppSettings {
+    pub fn relay_url_for_node(&self) -> Result<Option<RelayUrl>> {
+        match self.relay_mode {
+            RelayMode::TestingRelay => Ok(Some(TESTING_RELAY_URL.parse()?)),
+            RelayMode::Relay => {
+                let relay_url = normalize_custom_relay_url(self.custom_relay_url.as_deref())
+                    .ok_or_else(|| anyhow::anyhow!("Relay mode requires a custom relay URL"))?;
+                Ok(Some(parse_https_relay_url(&relay_url)?))
+            }
+            RelayMode::Disabled => Ok(None),
+        }
+    }
 }
 
 #[derive(Debug, bevy::prelude::Resource)]
@@ -39,6 +68,33 @@ impl SettingsStore {
             self.save()?;
         }
         Ok(())
+    }
+
+    pub fn set_relay_config(
+        &mut self,
+        relay_mode: RelayMode,
+        custom_relay_url: Option<String>,
+    ) -> Result<bool> {
+        let normalized_custom_relay_url =
+            normalize_custom_relay_url(custom_relay_url.as_deref()).map(str::to_owned);
+
+        if matches!(relay_mode, RelayMode::Relay) {
+            let relay_url = normalized_custom_relay_url.as_deref().ok_or_else(|| {
+                anyhow::anyhow!("Relay URL is required when relay mode is 'Relay'")
+            })?;
+            parse_https_relay_url(relay_url)?;
+        }
+
+        let changed = self.settings.relay_mode != relay_mode
+            || self.settings.custom_relay_url != normalized_custom_relay_url;
+
+        if changed {
+            self.settings.relay_mode = relay_mode;
+            self.settings.custom_relay_url = normalized_custom_relay_url;
+            self.save()?;
+        }
+
+        Ok(changed)
     }
 
     fn save(&self) -> Result<()> {
@@ -91,6 +147,17 @@ fn write_atomic(path: &Path, settings: &AppSettings) -> Result<()> {
     Ok(())
 }
 
+fn normalize_custom_relay_url(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
+}
+
+fn parse_https_relay_url(value: &str) -> Result<RelayUrl> {
+    if !value.to_ascii_lowercase().starts_with("https://") {
+        anyhow::bail!("Relay URL must use https://");
+    }
+    Ok(value.parse().context("Invalid relay URL")?)
+}
+
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
@@ -103,6 +170,7 @@ mod tests {
         let dir = tempdir()?;
         let settings = load_settings(dir.path())?;
         assert_eq!(settings, AppSettings::default());
+        assert_eq!(settings.relay_mode, RelayMode::TestingRelay);
         Ok(())
     }
 
@@ -123,6 +191,54 @@ mod tests {
         store.set_default_download_dir(None)?;
         let loaded = load_settings(dir.path())?;
         assert_eq!(loaded.default_download_dir, None);
+
+        Ok(())
+    }
+
+    #[test]
+    fn relay_settings_persist_and_validate_https_custom_url() -> Result<()> {
+        let dir = tempdir()?;
+        let mut store = SettingsStore::load(dir.path())?;
+
+        assert!(store
+            .set_relay_config(RelayMode::Relay, Some("http://relay.example.com".into()))
+            .is_err());
+
+        assert!(store.set_relay_config(RelayMode::Relay, Some("https://relay.example.com".into()))?);
+        let loaded = load_settings(dir.path())?;
+        assert_eq!(loaded.relay_mode, RelayMode::Relay);
+        assert_eq!(
+            loaded.custom_relay_url.as_deref(),
+            Some("https://relay.example.com")
+        );
+
+        assert!(store.set_relay_config(RelayMode::Disabled, loaded.custom_relay_url.clone())?);
+        let loaded = load_settings(dir.path())?;
+        assert_eq!(loaded.relay_mode, RelayMode::Disabled);
+
+        Ok(())
+    }
+
+    #[test]
+    fn relay_url_for_node_matches_mode() -> Result<()> {
+        let mut settings = AppSettings::default();
+        let relay_url = settings
+            .relay_url_for_node()?
+            .expect("testing relay should be configured");
+        assert!(relay_url.to_string().contains("relay.iroh.network"));
+
+        settings.relay_mode = RelayMode::Disabled;
+        assert!(settings.relay_url_for_node()?.is_none());
+
+        settings.relay_mode = RelayMode::Relay;
+        settings.custom_relay_url = Some("https://relay.example.com".into());
+        assert_eq!(
+            settings.relay_url_for_node()?.unwrap().to_string(),
+            "https://relay.example.com/"
+        );
+
+        settings.custom_relay_url = Some("http://relay.example.com".into());
+        assert!(settings.relay_url_for_node().is_err());
 
         Ok(())
     }

@@ -815,7 +815,7 @@
     "The relay configuration is applied during node startup",
     "TestingRelay is the default for new installations"
   ],
-  "passes": false
+  "passes": true
 }
 {
   "id": 35,

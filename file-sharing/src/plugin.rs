@@ -8,12 +8,11 @@ use flume::TryRecvError;
 
 use crate::bridge::{AsyncBridge, NetworkEvent};
 use crate::node::NodeOptions;
-use crate::settings::SettingsStore;
+use crate::settings::{AppSettings, SettingsStore};
 use crate::state::{Direction, FileProgress, Transfer, TransferRegistry, TransferStatus};
 use crate::ui::{default_download_directory, ui_system, UiState};
 
 pub struct FileSharingPlugin;
-const RELAY_URL_ENV: &str = "P2PANDA_FILE_SHARING_RELAY_URL";
 const INSECURE_SKIP_RELAY_CERT_VERIFY_ENV: &str =
     "P2PANDA_FILE_SHARING_INSECURE_SKIP_RELAY_CERT_VERIFY";
 
@@ -22,15 +21,18 @@ impl Plugin for FileSharingPlugin {
         let data_dir = resolve_data_dir().expect("failed to resolve file-sharing data directory");
         let settings_store =
             SettingsStore::load(&data_dir).expect("failed to load app settings from disk");
-        let ui_state = UiState::with_default_download_directory(
+        let settings = settings_store.settings().clone();
+        let ui_state = UiState::with_settings(
             settings_store
                 .settings()
                 .default_download_dir
                 .clone()
                 .unwrap_or_else(default_download_directory),
+            settings.relay_mode,
+            settings.custom_relay_url.clone(),
         );
         let bridge = AsyncBridge::spawn_with_data_dir(
-            resolve_node_options().expect("failed to resolve node options"),
+            resolve_node_options(&settings).expect("failed to resolve node options"),
             data_dir,
         )
         .expect("failed to initialize async bridge");
@@ -50,17 +52,8 @@ pub(crate) fn resolve_data_dir() -> Result<std::path::PathBuf> {
         .with_context(|| format!("failed to resolve app data directory for {APP_NAME}"))
 }
 
-fn resolve_node_options() -> Result<NodeOptions> {
-    let relay_url = std::env::var(RELAY_URL_ENV)
-        .ok()
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty())
-        .map(|value| {
-            value
-                .parse()
-                .with_context(|| format!("invalid relay URL in {RELAY_URL_ENV}: {value}"))
-        })
-        .transpose()?;
+fn resolve_node_options(settings: &AppSettings) -> Result<NodeOptions> {
+    let relay_url = settings.relay_url_for_node()?;
 
     let insecure_skip_relay_cert_verify = std::env::var(INSECURE_SKIP_RELAY_CERT_VERIFY_ENV)
         .ok()
@@ -272,6 +265,7 @@ mod tests {
 
     use super::*;
     use crate::bridge::{NetworkCommand, NetworkEvent};
+    use crate::settings::{AppSettings, RelayMode};
     use crate::state::{Direction, Transfer};
 
     type BoxFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'static>>;
@@ -529,5 +523,42 @@ mod tests {
         assert_eq!(transfer.downloaded_bytes, 77);
         assert_eq!(transfer.total_bytes, 77);
         assert_eq!(transfer.status, TransferStatus::Completed);
+    }
+
+    #[test]
+    fn resolve_node_options_uses_testing_relay_by_default() -> Result<()> {
+        let options = resolve_node_options(&AppSettings::default())?;
+        let relay = options
+            .relay_url
+            .expect("testing relay should be configured");
+        assert!(relay.to_string().contains("relay.iroh.network"));
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_node_options_uses_custom_relay_when_selected() -> Result<()> {
+        let settings = AppSettings {
+            relay_mode: RelayMode::Relay,
+            custom_relay_url: Some("https://relay.example.com".into()),
+            ..Default::default()
+        };
+        let options = resolve_node_options(&settings)?;
+        assert_eq!(
+            options.relay_url.unwrap().to_string(),
+            "https://relay.example.com/"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_node_options_disables_relay_when_disabled_mode_selected() -> Result<()> {
+        let settings = AppSettings {
+            relay_mode: RelayMode::Disabled,
+            custom_relay_url: Some("https://relay.example.com".into()),
+            ..Default::default()
+        };
+        let options = resolve_node_options(&settings)?;
+        assert!(options.relay_url.is_none());
+        Ok(())
     }
 }

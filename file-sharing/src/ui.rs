@@ -4,7 +4,7 @@ use bevy::prelude::{Res, ResMut, Resource};
 use bevy_egui::{egui, EguiContexts};
 
 use crate::bridge::{AsyncBridge, NetworkCommand};
-use crate::settings::SettingsStore;
+use crate::settings::{RelayMode, SettingsStore};
 use crate::state::{Direction, Transfer, TransferRegistry, TransferStatus};
 
 /// Which file dialog is currently open.
@@ -30,6 +30,9 @@ pub struct UiState {
     pub download_share_code_input: String,
     pub pending_share_path: Option<PathBuf>,
     pub selected_download_directory: PathBuf,
+    pub relay_mode: RelayMode,
+    pub custom_relay_url_input: String,
+    pub relay_restart_required: bool,
     pub settings_error: Option<String>,
     folder_dialog: Option<(PendingDialog, flume::Receiver<Option<PathBuf>>)>,
 }
@@ -49,9 +52,23 @@ impl UiState {
             download_share_code_input: String::new(),
             pending_share_path: None,
             selected_download_directory: default_download_directory,
+            relay_mode: RelayMode::TestingRelay,
+            custom_relay_url_input: String::new(),
+            relay_restart_required: false,
             settings_error: None,
             folder_dialog: None,
         }
+    }
+
+    pub fn with_settings(
+        default_download_directory: PathBuf,
+        relay_mode: RelayMode,
+        custom_relay_url: Option<String>,
+    ) -> Self {
+        let mut state = Self::with_default_download_directory(default_download_directory);
+        state.relay_mode = relay_mode;
+        state.custom_relay_url_input = custom_relay_url.unwrap_or_default();
+        state
     }
 }
 
@@ -283,6 +300,61 @@ fn render_settings_view(
         ui.colored_label(
             egui::Color32::RED,
             format!("Failed to save settings: {error}"),
+        );
+    }
+
+    ui.separator();
+    ui.heading("Relay Server");
+    ui.label("Relay servers help connect peers who cannot reach each other directly. Data is encrypted end-to-end.");
+
+    let mut relay_changed = false;
+    relay_changed |= ui
+        .radio_value(
+            &mut ui_state.relay_mode,
+            RelayMode::TestingRelay,
+            "Testing Relay (iroh)",
+        )
+        .changed();
+    relay_changed |= ui
+        .radio_value(&mut ui_state.relay_mode, RelayMode::Relay, "Relay")
+        .changed();
+    relay_changed |= ui
+        .radio_value(&mut ui_state.relay_mode, RelayMode::Disabled, "Disabled")
+        .changed();
+
+    if matches!(ui_state.relay_mode, RelayMode::TestingRelay) {
+        ui.small("Public testing server from iroh; not intended for production use.");
+    }
+
+    ui.horizontal(|ui| {
+        ui.label("Relay URL");
+        let text_edit =
+            egui::TextEdit::singleline(&mut ui_state.custom_relay_url_input).desired_width(360.0);
+        let response = ui.add_enabled(matches!(ui_state.relay_mode, RelayMode::Relay), text_edit);
+        relay_changed |= response.changed();
+    });
+
+    if relay_changed {
+        match settings_store.set_relay_config(
+            ui_state.relay_mode,
+            Some(ui_state.custom_relay_url_input.clone()),
+        ) {
+            Ok(changed) => {
+                if changed {
+                    ui_state.relay_restart_required = true;
+                }
+                ui_state.settings_error = None;
+            }
+            Err(err) => {
+                ui_state.settings_error = Some(err.to_string());
+            }
+        }
+    }
+
+    if ui_state.relay_restart_required {
+        ui.colored_label(
+            egui::Color32::YELLOW,
+            "Restart required to apply relay changes",
         );
     }
 }
