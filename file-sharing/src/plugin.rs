@@ -12,11 +12,14 @@ use crate::state::{Direction, FileProgress, Transfer, TransferRegistry, Transfer
 use crate::ui::{ui_system, UiState};
 
 pub struct FileSharingPlugin;
+const RELAY_URL_ENV: &str = "P2PANDA_FILE_SHARING_RELAY_URL";
+const INSECURE_SKIP_RELAY_CERT_VERIFY_ENV: &str =
+    "P2PANDA_FILE_SHARING_INSECURE_SKIP_RELAY_CERT_VERIFY";
 
 impl Plugin for FileSharingPlugin {
     fn build(&self, app: &mut App) {
         let bridge = AsyncBridge::spawn_with_data_dir(
-            NodeOptions::default(),
+            resolve_node_options().expect("failed to resolve node options"),
             resolve_data_dir().expect("failed to resolve file-sharing data directory"),
         )
         .expect("failed to initialize async bridge");
@@ -33,6 +36,41 @@ pub(crate) fn resolve_data_dir() -> Result<std::path::PathBuf> {
     ProjectDirs::from("", "", APP_NAME)
         .map(|dirs| dirs.data_dir().to_path_buf())
         .with_context(|| format!("failed to resolve app data directory for {APP_NAME}"))
+}
+
+fn resolve_node_options() -> Result<NodeOptions> {
+    let relay_url = std::env::var(RELAY_URL_ENV)
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            value
+                .parse()
+                .with_context(|| format!("invalid relay URL in {RELAY_URL_ENV}: {value}"))
+        })
+        .transpose()?;
+
+    let insecure_skip_relay_cert_verify = std::env::var(INSECURE_SKIP_RELAY_CERT_VERIFY_ENV)
+        .ok()
+        .map(|value| parse_bool_env_var(&value, INSECURE_SKIP_RELAY_CERT_VERIFY_ENV))
+        .transpose()?
+        .unwrap_or(false);
+
+    Ok(NodeOptions {
+        relay_url,
+        insecure_skip_relay_cert_verify,
+    })
+}
+
+fn parse_bool_env_var(value: &str, name: &str) -> Result<bool> {
+    let normalized = value.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "1" | "true" | "yes" | "on" => Ok(true),
+        "0" | "false" | "no" | "off" => Ok(false),
+        _ => anyhow::bail!(
+            "invalid boolean value for {name}: {value} (expected true/false, 1/0, yes/no, on/off)"
+        ),
+    }
 }
 
 pub fn poll_network_events(
