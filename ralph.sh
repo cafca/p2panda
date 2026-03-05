@@ -98,14 +98,12 @@ case "$PROVIDER" in
   claude)
     SANDBOX="${SANDBOX:-claude-p2panda}"
     TEMPLATE="${TEMPLATE:-claude-p2panda-template:latest}"
-    AGENT_BIN="claude"
-    AGENT_ARGS=(--print --verbose "$PROMPT")
+    AGENT_ARGS=(--print --verbose)
     ;;
   codex)
     SANDBOX="${SANDBOX:-codex-p2panda}"
     TEMPLATE="${TEMPLATE:-codex-p2panda-template:latest}"
-    AGENT_BIN="codex"
-    AGENT_ARGS=(exec --color never "$PROMPT")
+    AGENT_ARGS=(exec --color never)
     ;;
   *)
     echo "Unsupported provider: $PROVIDER" >&2
@@ -115,22 +113,14 @@ case "$PROVIDER" in
 esac
 
 ensure_sandbox() {
-  if docker ps --format '{{.Names}}' | grep -Fxq "$SANDBOX"; then
+  if docker sandbox ls -q 2>/dev/null | grep -Fxq "$SANDBOX"; then
     return 0
   fi
-
-  if docker ps -a --format '{{.Names}}' | grep -Fxq "$SANDBOX"; then
-    docker start "$SANDBOX" >/dev/null
-    return 0
-  fi
-
-  docker run -d \
+  docker sandbox create \
     --name "$SANDBOX" \
-    -v "$REPO_ROOT:$REPO_ROOT" \
-    -v /var/run/docker.sock:/var/run/docker.sock \
-    -w "$REPO_ROOT" \
-    "$TEMPLATE" \
-    sleep infinity >/dev/null
+    -t "$TEMPLATE" \
+    "$PROVIDER" \
+    "$REPO_ROOT"
 }
 
 set -x
@@ -145,11 +135,9 @@ for ((i=1; i<=ITERATIONS; i++)); do
   ensure_sandbox
 
   result=$(
-    docker exec \
-      -i \
-      -e CODEX_PROMPT="$PROMPT" \
+    docker sandbox run \
       "$SANDBOX" \
-      bash -lc "cd $(printf '%q' "$REPO_ROOT") && exec $(printf '%q ' "$AGENT_BIN" "${AGENT_ARGS[@]}") \"\$CODEX_PROMPT\"" \
+      -- "${AGENT_ARGS[@]}" "$PROMPT" \
       2>&1 | tee /dev/tty
   )
 
