@@ -763,7 +763,7 @@
     "The app starts and renders the transfer UI correctly (manual smoke test)",
     "No other dependency has a known-available patch or minor upgrade left unapplied"
   ],
-  "passes": false
+  "passes":  false
 }
 {
   "id": 33,
