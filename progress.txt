@@ -258,6 +258,18 @@ What doesn't work:
 What doesn't work:
 - Task 8 remains `passes: false`; the crate now compiles, but the focused lib test run is blocked by an unrelated pre-existing compile error in `file-sharing/src/share_code.rs` test code (`E0283` ambiguous `.into()` in `derived_topic_is_deterministic`), so the new state tests could not complete in this run
 
+# 2026-03-05 22:58
+
+- picked Task 32 (`Dependency audit and Bevy 0.16 upgrade`) as the highest-priority remaining unfinished feature because it is a cross-cutting stability prerequisite for future release confidence and Task 31 packaging work
+- verified the Bevy migration state in `file-sharing/Cargo.toml`: `bevy = 0.16` and `bevy_egui = 0.34` are already in place, and the previous `bevy_egui 0.33` workaround pin is no longer present
+- ran `cargo audit -q`; there are no blocking vulnerabilities, but there are transitive unmaintained warnings (`RUSTSEC-2023-0089`, `RUSTSEC-2024-0436`, `RUSTSEC-2024-0370`) in upstream crates
+- attempted `cargo outdated -R --workspace`; it failed due an upstream resolver conflict in pre-release crypto deps (`curve25519-dalek` selected as `5.0.0-pre.1` vs required `5.0.0-pre.6` through `x25519-dalek 3.0.0-pre.6`)
+- ran `./scripts/verify-in-sandbox.sh -- cargo check --workspace --all-targets`; this is blocked by missing toolchain component `c++` when building `libfuzzer-sys` in the fuzz target graph
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui --lib --tests -- --nocapture`; all lib and integration tests for the app crate passed (unit + pause/resume + recovery + transfer)
+
+What doesn't work:
+- Task 32 remains `passes: false`; full dependency-upgrade closure cannot be verified in this run because `cargo outdated --workspace` fails on an upstream pre-release resolver conflict and full-workspace `cargo check --all-targets` is blocked by missing `c++` for `libfuzzer-sys`
+
 # 2026-03-04 18:26
 
 - picked Task 18 (`Integration test: multi-source download`) as the highest-priority unfinished feature because it is the last remaining transfer integration behavior in the PRD critical path
