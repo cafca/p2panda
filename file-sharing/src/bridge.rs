@@ -255,7 +255,11 @@ impl Drop for AsyncBridge {
         drop(replacement_rx);
         drop(old_tx);
 
-        if let Some(runtime_thread) = self.runtime_thread.lock().unwrap().take() {
+        let mut runtime_thread_guard = match self.runtime_thread.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if let Some(runtime_thread) = runtime_thread_guard.take() {
             let _ = runtime_thread.join();
         }
     }

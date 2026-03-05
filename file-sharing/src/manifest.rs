@@ -103,11 +103,9 @@ impl SignedManifest {
             "manifest blob too short for header length prefix"
         );
 
-        let header_len = u32::from_be_bytes(
-            bytes[..HEADER_LENGTH_PREFIX_SIZE]
-                .try_into()
-                .expect("length prefix slice must be exactly 4 bytes"),
-        ) as usize;
+        let mut header_len_prefix = [0u8; HEADER_LENGTH_PREFIX_SIZE];
+        header_len_prefix.copy_from_slice(&bytes[..HEADER_LENGTH_PREFIX_SIZE]);
+        let header_len = u32::from_be_bytes(header_len_prefix) as usize;
         let header_end = HEADER_LENGTH_PREFIX_SIZE
             .checked_add(header_len)
             .ok_or_else(|| anyhow!("manifest header length overflow"))?;

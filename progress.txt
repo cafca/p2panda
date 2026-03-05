@@ -807,3 +807,22 @@ What doesn't work:
 
 What doesn't work:
 - no additional blocker for Task 23 in this run
+
+# 2026-03-05 22:27 UTC
+
+- picked Task 24 (`Global code review and architectural improvements`) as the highest-priority unfinished feature because it is the main correctness/maintainability gate still open while packaging/dependency tasks remain environment-constrained
+- performed a focused production-code review pass and fixed panic-prone paths discovered during that review:
+  - `file-sharing/src/plugin.rs`: removed startup `expect` panics; added fallible plugin initialization with actionable error context and a startup-error UI fallback (`Startup Error` panel) so initialization failures surface clearly without crashing the app
+  - `file-sharing/src/plugin.rs`: hardened `get_or_insert_transfer` insertion path to avoid `expect` and keep transfer ID consistency
+  - `file-sharing/src/bridge.rs`: removed `Mutex::lock().unwrap()` from `AsyncBridge::drop` and handled poisoned-lock recovery during shutdown to avoid panic in cleanup paths
+  - `file-sharing/src/manifest.rs`: removed deserialization `expect` on header-length prefix extraction
+- validated Task 24 feedback loops in this run:
+  - `cargo fmt --package p2panda-file-sharing-gui`
+  - `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-file-sharing-gui --tests --locked` (pass)
+  - `CARGO_BUILD_JOBS=1 ./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui --lib --locked` (pass, 68/68)
+  - `CARGO_BUILD_JOBS=1 ./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui --tests --locked` (blocked at integration-test link step)
+  - audited non-test `file-sharing/src/*.rs` for `unwrap/expect`; none remain in production paths
+- kept Task 24 `passes` as `false` in `PRD.jsonl` for this run
+
+What doesn't work:
+- Task 24 acceptance is still incomplete in this sandbox because `All existing tests pass after changes` cannot be proven: integration-test binaries fail to link due sandbox memory pressure (`collect2: fatal error: ld terminated with signal 9 [Killed]`, observed while linking test `recovery`)

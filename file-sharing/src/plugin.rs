@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use bevy::app::Plugin;
 use bevy::prelude::{App, IntoScheduleConfigs, Query, Res, ResMut, Update, With};
 use bevy::window::{PrimaryWindow, Window};
+use bevy_egui::{egui, EguiContexts};
 use directories::ProjectDirs;
 use flume::TryRecvError;
 
@@ -24,6 +25,17 @@ pub(crate) struct DiagnosticsPollState {
     last_requested_at: Instant,
 }
 
+#[derive(bevy::prelude::Resource)]
+struct PluginStartupError {
+    message: String,
+}
+
+struct PluginResources {
+    bridge: AsyncBridge,
+    settings_store: SettingsStore,
+    ui_state: UiState,
+}
+
 impl Default for DiagnosticsPollState {
     fn default() -> Self {
         Self {
@@ -34,33 +46,51 @@ impl Default for DiagnosticsPollState {
 
 impl Plugin for FileSharingPlugin {
     fn build(&self, app: &mut App) {
-        let data_dir = resolve_data_dir().expect("failed to resolve file-sharing data directory");
-        let settings_store =
-            SettingsStore::load(&data_dir).expect("failed to load app settings from disk");
-        let settings = settings_store.settings().clone();
-        let ui_state = UiState::with_settings(
-            settings_store
-                .settings()
-                .default_download_dir
-                .clone()
-                .unwrap_or_else(default_download_directory),
-            settings.relay_mode,
-            settings.custom_relay_url.clone(),
-        );
-        let bridge = AsyncBridge::spawn_with_data_dir(
-            resolve_node_options(&settings).expect("failed to resolve node options"),
-            data_dir,
-        )
-        .expect("failed to initialize async bridge");
-
-        app.insert_resource(bridge);
-        app.insert_resource(TransferRegistry::default());
-        app.insert_resource(settings_store);
-        app.insert_resource(ui_state);
-        app.insert_resource(NotificationState::default());
-        app.insert_resource(DiagnosticsPollState::default());
-        app.add_systems(Update, (poll_network_events, ui_system).chain());
+        match initialize_plugin_resources() {
+            Ok(resources) => {
+                app.insert_resource(resources.bridge);
+                app.insert_resource(TransferRegistry::default());
+                app.insert_resource(resources.settings_store);
+                app.insert_resource(resources.ui_state);
+                app.insert_resource(NotificationState::default());
+                app.insert_resource(DiagnosticsPollState::default());
+                app.add_systems(Update, (poll_network_events, ui_system).chain());
+            }
+            Err(err) => {
+                tracing::error!("failed to initialize file-sharing plugin: {err:#}");
+                app.insert_resource(PluginStartupError {
+                    message: err.to_string(),
+                });
+                app.add_systems(Update, render_startup_error_ui);
+            }
+        }
     }
+}
+
+fn initialize_plugin_resources() -> Result<PluginResources> {
+    let data_dir = resolve_data_dir().context("failed to resolve file-sharing data directory")?;
+    let settings_store =
+        SettingsStore::load(&data_dir).context("failed to load app settings from disk")?;
+    let settings = settings_store.settings().clone();
+    let ui_state = UiState::with_settings(
+        settings_store
+            .settings()
+            .default_download_dir
+            .clone()
+            .unwrap_or_else(default_download_directory),
+        settings.relay_mode,
+        settings.custom_relay_url.clone(),
+    );
+    let node_options =
+        resolve_node_options(&settings).context("failed to resolve node options from settings")?;
+    let bridge = AsyncBridge::spawn_with_data_dir(node_options, data_dir)
+        .context("failed to initialize async bridge")?;
+
+    Ok(PluginResources {
+        bridge,
+        settings_store,
+        ui_state,
+    })
 }
 
 pub(crate) fn resolve_data_dir() -> Result<std::path::PathBuf> {
@@ -94,6 +124,21 @@ fn parse_bool_env_var(value: &str, name: &str) -> Result<bool> {
             "invalid boolean value for {name}: {value} (expected true/false, 1/0, yes/no, on/off)"
         ),
     }
+}
+
+fn render_startup_error_ui(
+    mut egui_contexts: EguiContexts,
+    startup_error: Res<PluginStartupError>,
+) {
+    let ctx = egui_contexts.ctx_mut();
+    egui::CentralPanel::default().show(ctx, |ui| {
+        ui.heading("Startup Error");
+        ui.separator();
+        ui.label("The file-sharing runtime failed to initialize.");
+        ui.label("Check logs for details, then restart the app after fixing the issue.");
+        ui.add_space(8.0);
+        ui.monospace(&startup_error.message);
+    });
 }
 
 pub(crate) fn poll_network_events(
@@ -298,12 +343,21 @@ fn get_or_insert_transfer<F>(
 where
     F: FnOnce() -> Transfer,
 {
-    if transfers.get(transfer_id).is_none() {
-        transfers.push(make_transfer());
+    let existing_index = {
+        let transfers_ref = transfers.transfers();
+        transfers_ref
+            .iter()
+            .position(|transfer| transfer.id == transfer_id)
+    };
+    if let Some(index) = existing_index {
+        return &mut transfers.transfers_mut()[index];
     }
-    transfers
-        .get_mut(transfer_id)
-        .expect("transfer must exist after insertion")
+
+    let mut transfer = make_transfer();
+    transfer.id = transfer_id;
+    transfers.push(transfer);
+    let index = transfers.transfers().len().saturating_sub(1);
+    &mut transfers.transfers_mut()[index]
 }
 
 fn ensure_file_slot(transfer: &mut crate::state::Transfer, file_index: usize) {
