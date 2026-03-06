@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -82,9 +83,20 @@ pub struct ShareOwnershipRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContactFollowRecord {
+    pub author: PublicKey,
+    pub profile_id: String,
+    pub followed_profile_id: String,
+    pub nickname: Option<String>,
+    pub recorded_at: u64,
+    pub active: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProfileRecord {
     Metadata(ProfileMetadataRecord),
     ShareOwnership(ShareOwnershipRecord),
+    ContactFollow(ContactFollowRecord),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -106,6 +118,14 @@ enum ProfileRecordBody {
         source_contact_profile_id: Option<String>,
         #[serde(default)]
         source_contact_display_name: Option<String>,
+    },
+    ContactFollow {
+        profile_id: String,
+        followed_profile_id: String,
+        #[serde(default)]
+        nickname: Option<String>,
+        recorded_at: u64,
+        active: bool,
     },
 }
 
@@ -213,7 +233,7 @@ impl ProfileStore {
             .into_iter()
             .filter_map(|record| match record {
                 ProfileRecord::Metadata(record) => Some(record),
-                ProfileRecord::ShareOwnership(_) => None,
+                ProfileRecord::ShareOwnership(_) | ProfileRecord::ContactFollow(_) => None,
             })
             .collect())
     }
@@ -225,8 +245,32 @@ impl ProfileStore {
             .filter_map(|record| match record {
                 ProfileRecord::Metadata(_) => None,
                 ProfileRecord::ShareOwnership(record) => Some(record),
+                ProfileRecord::ContactFollow(_) => None,
             })
             .collect())
+    }
+
+    pub fn contact_follow_records(&self) -> Result<Vec<ContactFollowRecord>> {
+        Ok(self
+            .records()?
+            .into_iter()
+            .filter_map(|record| match record {
+                ProfileRecord::ContactFollow(record) => Some(record),
+                ProfileRecord::Metadata(_) | ProfileRecord::ShareOwnership(_) => None,
+            })
+            .collect())
+    }
+
+    pub fn follow_contact(
+        &mut self,
+        followed_profile_id: impl Into<String>,
+        nickname: Option<String>,
+    ) -> Result<bool> {
+        self.set_contact_follow_state(followed_profile_id.into(), nickname, true)
+    }
+
+    pub fn unfollow_contact(&mut self, followed_profile_id: impl Into<String>) -> Result<bool> {
+        self.set_contact_follow_state(followed_profile_id.into(), None, false)
     }
 
     pub fn ensure_share_ownership_record(&mut self, share: &ShareRecord) -> Result<bool> {
@@ -342,6 +386,36 @@ impl ProfileStore {
         }))
     }
 
+    fn set_contact_follow_state(
+        &mut self,
+        followed_profile_id: String,
+        nickname: Option<String>,
+        active: bool,
+    ) -> Result<bool> {
+        let followed_profile_id = normalize_profile_id(followed_profile_id)?;
+        let nickname = normalize_optional_text(nickname);
+        let follow_records = self.contact_follow_records()?;
+        let latest = latest_contact_follow_record(
+            &self.profile.profile_id,
+            &followed_profile_id,
+            &follow_records,
+        );
+        if let Some(latest) = latest {
+            if latest.active == active && (!active || latest.nickname == nickname) {
+                return Ok(false);
+            }
+        }
+
+        self.append_record(ProfileRecordBody::ContactFollow {
+            profile_id: self.profile.profile_id.clone(),
+            followed_profile_id,
+            nickname,
+            recorded_at: now_unix_secs(),
+            active,
+        })?;
+        Ok(true)
+    }
+
     fn append_record(&mut self, body: ProfileRecordBody) -> Result<()> {
         let body_bytes = encode_cbor(&body).context("failed to encode profile record body")?;
         let body = Body::from(body_bytes.clone());
@@ -398,6 +472,34 @@ pub fn load_profile_records_from_path(path: impl AsRef<Path>) -> Result<Vec<Prof
         .collect()
 }
 
+pub fn active_follow_records_for_profile(
+    profile_id: &str,
+    records: &[ProfileRecord],
+) -> Vec<ContactFollowRecord> {
+    let mut latest_records = HashMap::<String, ContactFollowRecord>::new();
+    for record in records {
+        let ProfileRecord::ContactFollow(record) = record else {
+            continue;
+        };
+        if record.profile_id != profile_id {
+            continue;
+        }
+        latest_records.insert(record.followed_profile_id.clone(), record.clone());
+    }
+
+    let mut active_records = latest_records
+        .into_values()
+        .filter(|record| record.active)
+        .collect::<Vec<_>>();
+    active_records.sort_by(|left, right| {
+        right
+            .recorded_at
+            .cmp(&left.recorded_at)
+            .then_with(|| left.followed_profile_id.cmp(&right.followed_profile_id))
+    });
+    active_records
+}
+
 fn decode_stored_operation(operation: &StoredOperation) -> Result<ProfileRecord> {
     let body = Body::from(operation.body.clone());
     let validated = Operation {
@@ -440,6 +542,20 @@ fn decode_stored_operation(operation: &StoredOperation) -> Result<ProfileRecord>
             recorded_at,
             source_contact_profile_id,
             source_contact_display_name,
+        }),
+        ProfileRecordBody::ContactFollow {
+            profile_id,
+            followed_profile_id,
+            nickname,
+            recorded_at,
+            active,
+        } => ProfileRecord::ContactFollow(ContactFollowRecord {
+            author,
+            profile_id,
+            followed_profile_id,
+            nickname,
+            recorded_at,
+            active,
         }),
     })
 }
@@ -537,6 +653,33 @@ fn write_json_atomic<T: Serialize>(path: &Path, value: &T, label: &str) -> Resul
         )
     })?;
     Ok(())
+}
+
+fn latest_contact_follow_record<'a>(
+    profile_id: &str,
+    followed_profile_id: &str,
+    records: &'a [ContactFollowRecord],
+) -> Option<&'a ContactFollowRecord> {
+    records.iter().rev().find(|record| {
+        record.profile_id == profile_id && record.followed_profile_id == followed_profile_id
+    })
+}
+
+fn normalize_profile_id(profile_id: String) -> Result<String> {
+    let profile_id = profile_id.trim().to_owned();
+    if profile_id.is_empty() {
+        anyhow::bail!("profile ID cannot be empty");
+    }
+    let _: PublicKey = profile_id
+        .parse()
+        .with_context(|| format!("invalid profile ID {profile_id}"))?;
+    Ok(profile_id)
+}
+
+fn normalize_optional_text(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
 }
 
 fn move_corrupt_file_aside(path: &Path) -> Result<PathBuf> {
@@ -730,6 +873,30 @@ mod tests {
                 && record.source_contact_profile_id.as_deref() == Some("contact-profile")
                 && record.source_contact_display_name.as_deref() == Some("Alice")
         }));
+
+        Ok(())
+    }
+
+    #[test]
+    fn follow_records_roundtrip_and_track_latest_active_state() -> Result<()> {
+        let dir = tempdir()?;
+        let private_key = PrivateKey::new();
+        let followed_key = PrivateKey::new();
+        write_node_key(dir.path(), &private_key)?;
+
+        let mut store = ProfileStore::load_or_create(dir.path())?;
+        assert!(store.follow_contact(followed_key.public_key().to_string(), Some("Alice".into()))?);
+        assert!(store.unfollow_contact(followed_key.public_key().to_string())?);
+
+        let records = store.contact_follow_records()?;
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].nickname.as_deref(), Some("Alice"));
+        assert!(records[0].active);
+        assert!(!records[1].active);
+
+        let active =
+            active_follow_records_for_profile(&store.profile().profile_id, &store.records()?);
+        assert!(active.is_empty());
 
         Ok(())
     }

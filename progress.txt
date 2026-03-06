@@ -540,6 +540,26 @@ What doesn't work:
 What doesn't work:
 - no additional blocker for Task 38 in this run
 
+# 2026-03-06 12:02 UTC
+
+- picked Task 39 (`Second-degree contact discovery (contacts of contacts)`) as the highest-priority unfinished feature because it is the last remaining product-path task that can be fully implemented and verified locally, while Task 40 is a broader cross-platform updater and Task 41 remains externally blocked by fork validation
+- extended the signed profile ledger in `file-sharing/src/profile.rs` with contact-follow records so follow edges are queryable from cached p2panda operations instead of only local `contacts.json` state
+- implemented second-degree graph aggregation in `file-sharing/src/contacts.rs`, including de-duplication across multiple source contacts, source-context annotations, already-followed filtering, basic search/filter/sort controls, and graceful handling for malformed or missing cached graph data
+- updated `file-sharing/src/ui.rs` with a Contacts `Discovery` subview that lets the user inspect second-degree profiles, browse their cached shares, download them through the existing transfer pipeline, and follow a discovered profile directly
+- added focused verification coverage:
+  - `contacts` unit tests for de-duplicated second-degree discovery and malformed-cache resilience
+  - `profile` unit tests for follow-record roundtrip and active/inactive state resolution
+  - `ui` unit test for the discovery follow action wiring local contacts plus profile-graph persistence
+  - `file-sharing/tests/discovery.rs` integration coverage for discovering a second-degree profile, browsing its shares, and downloading one end-to-end
+- ran feedback loops:
+  - `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-file-sharing-gui --lib --locked`
+  - `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui --lib --locked -- --nocapture`
+  - `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui --test discovery --locked -- --nocapture`
+- confirmed Task 39 acceptance in this run and updated Task 39 `passes` to `true` in `PRD.jsonl`
+
+What doesn't work:
+- no additional blocker for Task 39 in this run
+
 # 2026-03-05 20:08
 
 - picked Task 34 (`Relay server configuration settings`) as the highest-priority unfinished feature because Task 33 is now complete and relay-mode configurability is the next startup-configuration gate

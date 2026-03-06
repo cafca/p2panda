@@ -6,7 +6,7 @@ use bevy::window::FileDragAndDrop;
 use bevy_egui::{egui, EguiContexts};
 
 use crate::bridge::{AsyncBridge, ContactDownloadSource, NetworkCommand};
-use crate::contacts::ContactsStore;
+use crate::contacts::{ContactsStore, DiscoveredProfile, DiscoverySort};
 use crate::diagnostics::{
     now_unix_ms, DiagnosticsSnapshot, PeerConnectionState, PeerDiscoveryMethod,
 };
@@ -30,6 +30,12 @@ enum TransferAction {
     Remove { transfer_id: u64 },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ContactsView {
+    Followed,
+    Discovery,
+}
+
 #[derive(Debug, Resource)]
 pub struct UiState {
     pub global_paused: bool,
@@ -41,7 +47,13 @@ pub struct UiState {
     pub contact_profile_id_input: String,
     pub contact_nickname_input: String,
     pub selected_contact_profile_id: Option<String>,
+    pub selected_discovered_profile_id: Option<String>,
     pub contact_error: Option<String>,
+    contacts_view: ContactsView,
+    pub discovery_search_input: String,
+    pub discovery_show_followed: bool,
+    pub discovery_has_shares_only: bool,
+    pub discovery_sort: DiscoverySort,
     pub pending_share_path: Option<PathBuf>,
     pub selected_download_directory: PathBuf,
     pub relay_mode: RelayMode,
@@ -81,7 +93,13 @@ impl UiState {
             contact_profile_id_input: String::new(),
             contact_nickname_input: String::new(),
             selected_contact_profile_id: None,
+            selected_discovered_profile_id: None,
             contact_error: None,
+            contacts_view: ContactsView::Followed,
+            discovery_search_input: String::new(),
+            discovery_show_followed: false,
+            discovery_has_shares_only: false,
+            discovery_sort: DiscoverySort::MutualCount,
             pending_share_path: None,
             selected_download_directory: default_download_directory,
             relay_mode: RelayMode::TestingRelay,
@@ -399,6 +417,7 @@ pub fn ui_system(
                     ui,
                     &mut ui_state,
                     &mut contacts_store,
+                    &mut profile_store,
                     &mut transfers,
                     &bridge,
                 );
@@ -578,11 +597,14 @@ fn render_contacts_view(
     ui: &mut egui::Ui,
     ui_state: &mut UiState,
     contacts_store: &mut ContactsStore,
+    profile_store: &mut ProfileStore,
     transfers: &mut TransferRegistry,
     bridge: &AsyncBridge,
 ) {
     ui.heading("Contacts");
-    ui.label("Follow profile IDs, inspect published shares, and start downloads directly.");
+    ui.label(
+        "Follow profile IDs, inspect published shares, and discover contacts through your network.",
+    );
     ui.add_space(8.0);
 
     let mut should_follow = false;
@@ -606,19 +628,18 @@ fn render_contacts_view(
 
     if should_follow {
         let profile_id = ui_state.contact_profile_id_input.trim().to_owned();
-        match contacts_store.follow_contact(
+        match follow_contact_from_ui(
+            contacts_store,
+            profile_store,
             profile_id.clone(),
             Some(ui_state.contact_nickname_input.clone()),
         ) {
             Ok(()) => {
-                if let Err(err) = contacts_store.refresh_contact(&profile_id) {
-                    ui_state.contact_error = Some(err.to_string());
-                } else {
-                    ui_state.contact_error = None;
-                }
                 ui_state.selected_contact_profile_id = Some(profile_id);
+                ui_state.contacts_view = ContactsView::Followed;
                 ui_state.contact_profile_id_input.clear();
                 ui_state.contact_nickname_input.clear();
+                ui_state.contact_error = None;
             }
             Err(err) => {
                 ui_state.contact_error = Some(err.to_string());
@@ -631,6 +652,48 @@ fn render_contacts_view(
         ui.add_space(6.0);
     }
 
+    ui.horizontal(|ui| {
+        ui.selectable_value(
+            &mut ui_state.contacts_view,
+            ContactsView::Followed,
+            "Followed",
+        );
+        ui.selectable_value(
+            &mut ui_state.contacts_view,
+            ContactsView::Discovery,
+            "Discovery",
+        );
+    });
+    ui.add_space(8.0);
+
+    match ui_state.contacts_view {
+        ContactsView::Followed => render_followed_contacts_view(
+            ui,
+            ui_state,
+            contacts_store,
+            profile_store,
+            transfers,
+            bridge,
+        ),
+        ContactsView::Discovery => render_discovery_view(
+            ui,
+            ui_state,
+            contacts_store,
+            profile_store,
+            transfers,
+            bridge,
+        ),
+    }
+}
+
+fn render_followed_contacts_view(
+    ui: &mut egui::Ui,
+    ui_state: &mut UiState,
+    contacts_store: &mut ContactsStore,
+    profile_store: &mut ProfileStore,
+    transfers: &mut TransferRegistry,
+    bridge: &AsyncBridge,
+) {
     if ui_state.selected_contact_profile_id.is_none() {
         ui_state.selected_contact_profile_id = contacts_store
             .contacts()
@@ -743,16 +806,19 @@ fn render_contacts_view(
     }
 
     if let Some(profile_id) = remove_profile_id {
-        if let Err(err) = contacts_store.remove_contact(&profile_id) {
-            ui_state.contact_error = Some(err.to_string());
-        } else {
-            if ui_state.selected_contact_profile_id.as_deref() == Some(profile_id.as_str()) {
-                ui_state.selected_contact_profile_id = contacts_store
-                    .contacts()
-                    .first()
-                    .map(|contact| contact.profile_id.clone());
+        match remove_contact_from_ui(contacts_store, profile_store, &profile_id) {
+            Ok(()) => {
+                if ui_state.selected_contact_profile_id.as_deref() == Some(profile_id.as_str()) {
+                    ui_state.selected_contact_profile_id = contacts_store
+                        .contacts()
+                        .first()
+                        .map(|contact| contact.profile_id.clone());
+                }
+                ui_state.contact_error = None;
             }
-            ui_state.contact_error = None;
+            Err(err) => {
+                ui_state.contact_error = Some(err.to_string());
+            }
         }
     }
 
@@ -767,6 +833,229 @@ fn render_contacts_view(
     }
 }
 
+fn render_discovery_view(
+    ui: &mut egui::Ui,
+    ui_state: &mut UiState,
+    contacts_store: &mut ContactsStore,
+    profile_store: &mut ProfileStore,
+    transfers: &mut TransferRegistry,
+    bridge: &AsyncBridge,
+) {
+    ui.horizontal_wrapped(|ui| {
+        ui.label("Search");
+        ui.add(
+            egui::TextEdit::singleline(&mut ui_state.discovery_search_input).desired_width(220.0),
+        );
+        ui.checkbox(&mut ui_state.discovery_has_shares_only, "Has shares only");
+        ui.checkbox(&mut ui_state.discovery_show_followed, "Show followed");
+    });
+
+    ui.horizontal_wrapped(|ui| {
+        ui.label("Sort");
+        ui.selectable_value(
+            &mut ui_state.discovery_sort,
+            DiscoverySort::MutualCount,
+            "Mutuals",
+        );
+        ui.selectable_value(
+            &mut ui_state.discovery_sort,
+            DiscoverySort::RecentlySeen,
+            "Recent",
+        );
+        ui.selectable_value(
+            &mut ui_state.discovery_sort,
+            DiscoverySort::HasShares,
+            "Has shares",
+        );
+    });
+    ui.add_space(8.0);
+
+    let discovered = contacts_store.discover_second_degree_profiles(
+        ui_state.discovery_show_followed,
+        ui_state.discovery_has_shares_only,
+        &ui_state.discovery_search_input,
+        ui_state.discovery_sort,
+    );
+    sync_selected_discovered_profile(ui_state, &discovered);
+
+    if discovered.is_empty() {
+        render_empty_discovery_state(ui);
+        return;
+    }
+
+    let mut follow_request = None;
+    let mut download_request = None;
+
+    ui.columns(2, |columns| {
+        columns[0].heading("Discovered");
+        columns[0].add_space(4.0);
+        for profile in &discovered {
+            columns[0].group(|ui| {
+                let selected = ui_state.selected_discovered_profile_id.as_deref()
+                    == Some(profile.profile_id.as_str());
+                if ui.selectable_label(selected, profile.label()).clicked() {
+                    ui_state.selected_discovered_profile_id = Some(profile.profile_id.clone());
+                }
+                ui.small(truncate_hash(&profile.profile_id));
+                ui.small(format!("Seen via {} contact(s)", profile.mutual_count));
+                if profile.already_followed {
+                    ui.small("Already followed");
+                }
+                ui.horizontal_wrapped(|ui| {
+                    for source in &profile.source_contacts {
+                        ui.small(format!("followed by {}", source.label));
+                    }
+                });
+            });
+            columns[0].add_space(6.0);
+        }
+
+        columns[1].heading("Profile");
+        columns[1].add_space(4.0);
+        if let Some(profile_id) = ui_state.selected_discovered_profile_id.as_deref() {
+            if let Some(profile) = discovered
+                .iter()
+                .find(|profile| profile.profile_id == profile_id)
+            {
+                columns[1].horizontal(|ui| {
+                    ui.heading(profile.label());
+                    if ui.button("Copy ID").clicked() {
+                        copy_text(ui.ctx(), &profile.profile_id);
+                    }
+                    if !profile.already_followed && ui.button("Follow").clicked() {
+                        follow_request = Some(profile.profile_id.clone());
+                    }
+                });
+                columns[1].monospace(&profile.profile_id);
+                if let Some(display_name) = profile.display_name() {
+                    columns[1].label(format!("Display name: {display_name}"));
+                }
+                if let Some(last_seen_at) = profile.last_seen_at {
+                    columns[1].label(format!("Recently seen: {}", format_unix_date(last_seen_at)));
+                }
+                columns[1].horizontal_wrapped(|ui| {
+                    ui.label("Context:");
+                    for source in &profile.source_contacts {
+                        ui.small(format!("followed by {}", source.label));
+                    }
+                });
+                if let Some(last_error) = &profile.last_error {
+                    columns[1].colored_label(egui::Color32::from_rgb(240, 119, 119), last_error);
+                }
+
+                columns[1].separator();
+                columns[1].label("Published shares");
+                render_discovered_profile_shares(&mut columns[1], profile, &mut download_request);
+            }
+        }
+    });
+
+    if let Some(profile_id) = follow_request {
+        match follow_contact_from_ui(contacts_store, profile_store, profile_id.clone(), None) {
+            Ok(()) => {
+                ui_state.selected_contact_profile_id = Some(profile_id);
+                ui_state.contacts_view = ContactsView::Followed;
+                ui_state.contact_error = None;
+            }
+            Err(err) => {
+                ui_state.contact_error = Some(err.to_string());
+            }
+        }
+    }
+
+    if let Some((share_code, source_contact)) = download_request {
+        start_download_transfer_with_source(
+            transfers,
+            bridge,
+            share_code,
+            ui_state.selected_download_directory.clone(),
+            Some(source_contact),
+        );
+    }
+}
+
+fn render_discovered_profile_shares(
+    ui: &mut egui::Ui,
+    profile: &DiscoveredProfile,
+    download_request: &mut Option<(String, ContactDownloadSource)>,
+) {
+    if profile.cached_shares.is_empty() {
+        ui.small("No cached share records available yet.");
+        return;
+    }
+
+    for share in &profile.cached_shares {
+        ui.group(|ui| {
+            ui.horizontal(|ui| {
+                ui.label(&share.share_name);
+                ui.small(truncate_hash(&share.collection_hash));
+            });
+            ui.horizontal_wrapped(|ui| {
+                ui.monospace(&share.share_code);
+                if ui.button("Copy").clicked() {
+                    copy_text(ui.ctx(), &share.share_code);
+                }
+                if ui.button("Download").clicked() {
+                    *download_request = Some((
+                        share.share_code.clone(),
+                        ContactDownloadSource {
+                            profile_id: profile.profile_id.clone(),
+                            display_name: profile
+                                .display_name()
+                                .unwrap_or(profile.label())
+                                .to_owned(),
+                        },
+                    ));
+                }
+            });
+        });
+        ui.add_space(6.0);
+    }
+}
+
+fn follow_contact_from_ui(
+    contacts_store: &mut ContactsStore,
+    profile_store: &mut ProfileStore,
+    profile_id: String,
+    nickname: Option<String>,
+) -> anyhow::Result<()> {
+    contacts_store.follow_contact(profile_id.clone(), nickname.clone())?;
+    if let Err(err) = profile_store.follow_contact(profile_id.clone(), nickname) {
+        let _ = contacts_store.remove_contact(&profile_id);
+        return Err(err);
+    }
+    contacts_store.refresh_contact(&profile_id)?;
+    Ok(())
+}
+
+fn remove_contact_from_ui(
+    contacts_store: &mut ContactsStore,
+    profile_store: &mut ProfileStore,
+    profile_id: &str,
+) -> anyhow::Result<()> {
+    if !contacts_store.remove_contact(profile_id)? {
+        anyhow::bail!("unknown contact {profile_id}");
+    }
+    profile_store.unfollow_contact(profile_id.to_owned())?;
+    Ok(())
+}
+
+fn sync_selected_discovered_profile(ui_state: &mut UiState, discovered: &[DiscoveredProfile]) {
+    let selected_is_still_visible = ui_state
+        .selected_discovered_profile_id
+        .as_deref()
+        .and_then(|selected| {
+            discovered
+                .iter()
+                .find(|profile| profile.profile_id == selected)
+        })
+        .is_some();
+    if !selected_is_still_visible {
+        ui_state.selected_discovered_profile_id =
+            discovered.first().map(|profile| profile.profile_id.clone());
+    }
+}
+
 fn render_empty_contacts_state(ui: &mut egui::Ui) {
     egui::Frame::new()
         .fill(egui::Color32::from_rgb(24, 29, 36))
@@ -776,6 +1065,20 @@ fn render_empty_contacts_state(ui: &mut egui::Ui) {
         .show(ui, |ui| {
             ui.heading("No contacts yet");
             ui.label("Paste a profile ID to follow someone and browse their published shares.");
+        });
+}
+
+fn render_empty_discovery_state(ui: &mut egui::Ui) {
+    egui::Frame::new()
+        .fill(egui::Color32::from_rgb(24, 29, 36))
+        .corner_radius(egui::CornerRadius::same(10))
+        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(49, 59, 73)))
+        .inner_margin(egui::Margin::same(14))
+        .show(ui, |ui| {
+            ui.heading("No second-degree profiles yet");
+            ui.label(
+                "Refresh followed contacts or follow more people to expand the discovery graph.",
+            );
         });
 }
 
@@ -1678,15 +1981,20 @@ fn paste_into_text(target: &mut String) {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::time::Duration;
 
     use anyhow::Result;
     use flume::Sender;
+    use p2panda_core::PrivateKey;
+    use tempfile::tempdir;
 
     use super::*;
     use crate::bridge::{NetworkCommand, NetworkEvent};
+    use crate::contacts::ContactsStore;
+    use crate::profile::ProfileStore;
     use crate::state::FileProgress;
 
     type BoxFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'static>>;
@@ -1714,6 +2022,12 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    fn write_node_key(data_dir: &std::path::Path, private_key: &PrivateKey) -> Result<()> {
+        fs::create_dir_all(data_dir)?;
+        fs::write(data_dir.join("node.key"), private_key.as_bytes())?;
+        Ok(())
     }
 
     #[test]
@@ -1885,6 +2199,37 @@ mod tests {
             wait_for_event(&bridge),
             NetworkEvent::TransferCompleted { transfer_id }
         );
+    }
+
+    #[test]
+    fn discovery_follow_action_updates_local_contacts_and_profile_graph() -> Result<()> {
+        let data_dir = tempdir()?;
+        let local_key = PrivateKey::new();
+        let discovered_key = PrivateKey::new();
+        write_node_key(data_dir.path(), &local_key)?;
+
+        let mut contacts = ContactsStore::load(data_dir.path())?;
+        let mut profile_store = ProfileStore::load_or_create(data_dir.path())?;
+
+        follow_contact_from_ui(
+            &mut contacts,
+            &mut profile_store,
+            discovered_key.public_key().to_string(),
+            None,
+        )?;
+
+        assert!(contacts
+            .get(&discovered_key.public_key().to_string())
+            .is_some());
+        assert!(profile_store
+            .contact_follow_records()?
+            .iter()
+            .any(|record| {
+                record.followed_profile_id == discovered_key.public_key().to_string()
+                    && record.active
+            }));
+
+        Ok(())
     }
 
     #[test]

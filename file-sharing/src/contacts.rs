@@ -7,7 +7,8 @@ use p2panda_core::PublicKey;
 use serde::{Deserialize, Serialize};
 
 use crate::profile::{
-    load_profile_records_from_path, ProfileMetadataRecord, ProfileRecord, ShareOwnershipRecord,
+    active_follow_records_for_profile, load_profile_records_from_path, ProfileMetadataRecord,
+    ProfileRecord, ShareOwnershipRecord,
 };
 
 const CONTACTS_FILE_NAME: &str = "contacts.json";
@@ -58,6 +59,50 @@ impl Contact {
             .map(|last| now_unix_secs.saturating_sub(last) >= CONTACT_REFRESH_INTERVAL_SECS)
             .unwrap_or(true)
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscoverySource {
+    pub profile_id: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscoveredProfile {
+    pub profile_id: String,
+    pub cached_display_name: Option<String>,
+    pub cached_shares: Vec<ContactShare>,
+    pub source_contacts: Vec<DiscoverySource>,
+    pub mutual_count: usize,
+    pub last_seen_at: Option<u64>,
+    pub already_followed: bool,
+    pub last_error: Option<String>,
+}
+
+impl DiscoveredProfile {
+    pub fn label(&self) -> &str {
+        self.cached_display_name
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or(&self.profile_id)
+    }
+
+    pub fn display_name(&self) -> Option<&str> {
+        self.cached_display_name
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+    }
+
+    pub fn has_shares(&self) -> bool {
+        !self.cached_shares.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiscoverySort {
+    MutualCount,
+    RecentlySeen,
+    HasShares,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -190,6 +235,148 @@ impl ContactsStore {
         self.cache_dir.join(format!("{profile_id}.json"))
     }
 
+    pub fn discover_second_degree_profiles(
+        &self,
+        include_followed: bool,
+        require_shares: bool,
+        search_term: &str,
+        sort: DiscoverySort,
+    ) -> Vec<DiscoveredProfile> {
+        let followed_ids = self
+            .state
+            .followed_contacts
+            .iter()
+            .map(|contact| contact.profile_id.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        let mut discovered = std::collections::HashMap::<String, DiscoveredProfile>::new();
+
+        for source_contact in &self.state.followed_contacts {
+            let source_records =
+                match load_profile_records_from_path(self.cache_path(&source_contact.profile_id)) {
+                    Ok(records) => records,
+                    Err(err) => {
+                        tracing::warn!(
+                            "failed to load cached profile records for {}: {err}",
+                            source_contact.profile_id
+                        );
+                        continue;
+                    }
+                };
+
+            let source_label = source_contact.label().to_owned();
+            for follow_record in
+                active_follow_records_for_profile(&source_contact.profile_id, &source_records)
+            {
+                if follow_record.followed_profile_id == source_contact.profile_id {
+                    continue;
+                }
+
+                let entry = discovered
+                    .entry(follow_record.followed_profile_id.clone())
+                    .or_insert_with(|| DiscoveredProfile {
+                        profile_id: follow_record.followed_profile_id.clone(),
+                        cached_display_name: None,
+                        cached_shares: Vec::new(),
+                        source_contacts: Vec::new(),
+                        mutual_count: 0,
+                        last_seen_at: None,
+                        already_followed: false,
+                        last_error: None,
+                    });
+
+                if !entry
+                    .source_contacts
+                    .iter()
+                    .any(|source| source.profile_id == source_contact.profile_id)
+                {
+                    entry.source_contacts.push(DiscoverySource {
+                        profile_id: source_contact.profile_id.clone(),
+                        label: source_label.clone(),
+                    });
+                    entry.mutual_count = entry.source_contacts.len();
+                }
+                entry.last_seen_at = Some(
+                    entry
+                        .last_seen_at
+                        .map(|timestamp| timestamp.max(follow_record.recorded_at))
+                        .unwrap_or(follow_record.recorded_at),
+                );
+            }
+        }
+
+        for entry in discovered.values_mut() {
+            entry.already_followed = followed_ids.contains(entry.profile_id.as_str());
+            entry
+                .source_contacts
+                .sort_by(|left, right| left.label.cmp(&right.label));
+            match load_profile_records_from_path(self.cache_path(&entry.profile_id)) {
+                Ok(records) => match ContactSnapshot::from_records(&entry.profile_id, &records) {
+                    Ok(snapshot) => {
+                        entry.cached_display_name = snapshot.display_name;
+                        entry.cached_shares = snapshot.shares;
+                        entry.last_error = None;
+                    }
+                    Err(err) => {
+                        entry.last_error = Some(err.to_string());
+                    }
+                },
+                Err(err) => {
+                    entry.last_error = Some(format!(
+                        "Cached profile data is unavailable for {}: {err}",
+                        entry.profile_id
+                    ));
+                }
+            }
+        }
+
+        let search_term = search_term.trim().to_lowercase();
+        let mut discovered = discovered
+            .into_values()
+            .filter(|profile| include_followed || !profile.already_followed)
+            .filter(|profile| !require_shares || profile.has_shares())
+            .filter(|profile| {
+                if search_term.is_empty() {
+                    return true;
+                }
+                let mut haystacks = vec![profile.profile_id.to_lowercase()];
+                if let Some(display_name) = profile.display_name() {
+                    haystacks.push(display_name.to_lowercase());
+                }
+                haystacks.extend(
+                    profile
+                        .source_contacts
+                        .iter()
+                        .map(|source| source.label.to_lowercase()),
+                );
+                haystacks
+                    .into_iter()
+                    .any(|value| value.contains(&search_term))
+            })
+            .collect::<Vec<_>>();
+
+        discovered.sort_by(|left, right| match sort {
+            DiscoverySort::MutualCount => right
+                .mutual_count
+                .cmp(&left.mutual_count)
+                .then_with(|| right.has_shares().cmp(&left.has_shares()))
+                .then_with(|| right.last_seen_at.cmp(&left.last_seen_at))
+                .then_with(|| left.label().cmp(right.label())),
+            DiscoverySort::RecentlySeen => right
+                .last_seen_at
+                .cmp(&left.last_seen_at)
+                .then_with(|| right.mutual_count.cmp(&left.mutual_count))
+                .then_with(|| right.has_shares().cmp(&left.has_shares()))
+                .then_with(|| left.label().cmp(right.label())),
+            DiscoverySort::HasShares => right
+                .has_shares()
+                .cmp(&left.has_shares())
+                .then_with(|| right.mutual_count.cmp(&left.mutual_count))
+                .then_with(|| right.last_seen_at.cmp(&left.last_seen_at))
+                .then_with(|| left.label().cmp(right.label())),
+        });
+        discovered
+    }
+
     fn save(&self) -> Result<()> {
         write_atomic(&self.path, &self.state)
     }
@@ -249,7 +436,9 @@ fn latest_profile_metadata(
             ProfileRecord::Metadata(record) if record.profile_id == profile_id => {
                 Some(record.clone())
             }
-            _ => None,
+            ProfileRecord::Metadata(_)
+            | ProfileRecord::ShareOwnership(_)
+            | ProfileRecord::ContactFollow(_) => None,
         })
         .max_by(|left, right| {
             left.updated_at
@@ -268,7 +457,9 @@ fn share_records_for_profile(
             ProfileRecord::ShareOwnership(record) if record.profile_id == profile_id => {
                 Some(record.clone())
             }
-            _ => None,
+            ProfileRecord::Metadata(_)
+            | ProfileRecord::ShareOwnership(_)
+            | ProfileRecord::ContactFollow(_) => None,
         })
         .collect()
 }
@@ -469,6 +660,127 @@ mod tests {
         assert!(store.remove_contact(&profile_id)?);
         assert!(store.get(&profile_id).is_none());
         assert_eq!(fs::read(&downloaded_file)?, b"keep me");
+
+        Ok(())
+    }
+
+    #[test]
+    fn second_degree_discovery_deduplicates_context_and_filters_followed_profiles() -> Result<()> {
+        let viewer_dir = tempdir()?;
+        let alice_dir = tempdir()?;
+        let dana_dir = tempdir()?;
+        let bob_dir = tempdir()?;
+        let erin_dir = tempdir()?;
+
+        let viewer_key = PrivateKey::new();
+        let alice_key = PrivateKey::new();
+        let dana_key = PrivateKey::new();
+        let bob_key = PrivateKey::new();
+        let erin_key = PrivateKey::new();
+
+        write_node_key(viewer_dir.path(), &viewer_key)?;
+        write_node_key(alice_dir.path(), &alice_key)?;
+        write_node_key(dana_dir.path(), &dana_key)?;
+        write_node_key(bob_dir.path(), &bob_key)?;
+        write_node_key(erin_dir.path(), &erin_key)?;
+
+        let mut alice_profile = ProfileStore::load_or_create(alice_dir.path())?;
+        let mut dana_profile = ProfileStore::load_or_create(dana_dir.path())?;
+        let mut bob_profile = ProfileStore::load_or_create(bob_dir.path())?;
+        let erin_profile = ProfileStore::load_or_create(erin_dir.path())?;
+
+        alice_profile.follow_contact(bob_profile.profile().profile_id.clone(), None)?;
+        dana_profile.follow_contact(bob_profile.profile().profile_id.clone(), None)?;
+        dana_profile.follow_contact(erin_profile.profile().profile_id.clone(), None)?;
+
+        let bob_share = sample_share_record(&bob_profile.profile().profile_id);
+        bob_profile.ensure_share_ownership_record(&bob_share)?;
+
+        let mut contacts = ContactsStore::load(viewer_dir.path())?;
+        contacts.follow_contact(
+            alice_profile.profile().profile_id.clone(),
+            Some("Alice".into()),
+        )?;
+        contacts.follow_contact(
+            dana_profile.profile().profile_id.clone(),
+            Some("Dana".into()),
+        )?;
+
+        for profile_id in [
+            alice_profile.profile().profile_id.clone(),
+            dana_profile.profile().profile_id.clone(),
+            bob_profile.profile().profile_id.clone(),
+            erin_profile.profile().profile_id.clone(),
+        ] {
+            let source_path = if profile_id == alice_profile.profile().profile_id {
+                crate::profile::profile_records_path(alice_dir.path())
+            } else if profile_id == dana_profile.profile().profile_id {
+                crate::profile::profile_records_path(dana_dir.path())
+            } else if profile_id == bob_profile.profile().profile_id {
+                crate::profile::profile_records_path(bob_dir.path())
+            } else {
+                crate::profile::profile_records_path(erin_dir.path())
+            };
+            let cache_path = contact_records_cache_path(viewer_dir.path(), &profile_id);
+            fs::create_dir_all(cache_path.parent().unwrap())?;
+            fs::copy(source_path, cache_path)?;
+        }
+
+        let discovered =
+            contacts.discover_second_degree_profiles(false, false, "", DiscoverySort::MutualCount);
+        assert_eq!(discovered.len(), 2);
+        assert_eq!(discovered[0].profile_id, bob_profile.profile().profile_id);
+        assert_eq!(discovered[0].mutual_count, 2);
+        assert_eq!(
+            discovered[0]
+                .source_contacts
+                .iter()
+                .map(|source| source.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Alice", "Dana"]
+        );
+        assert_eq!(discovered[0].cached_shares.len(), 1);
+        assert_eq!(discovered[1].profile_id, erin_profile.profile().profile_id);
+
+        contacts.follow_contact(bob_profile.profile().profile_id.clone(), None)?;
+        let filtered =
+            contacts.discover_second_degree_profiles(false, false, "", DiscoverySort::MutualCount);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].profile_id, erin_profile.profile().profile_id);
+
+        let included =
+            contacts.discover_second_degree_profiles(true, true, "", DiscoverySort::HasShares);
+        assert_eq!(included.len(), 1);
+        assert!(included[0].already_followed);
+        assert_eq!(included[0].profile_id, bob_profile.profile().profile_id);
+
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_second_degree_graph_data_is_ignored_without_crashing() -> Result<()> {
+        let viewer_dir = tempdir()?;
+        let source_dir = tempdir()?;
+        let viewer_key = PrivateKey::new();
+        let source_key = PrivateKey::new();
+        write_node_key(viewer_dir.path(), &viewer_key)?;
+        write_node_key(source_dir.path(), &source_key)?;
+
+        let source_profile = ProfileStore::load_or_create(source_dir.path())?;
+        let mut contacts = ContactsStore::load(viewer_dir.path())?;
+        contacts.follow_contact(
+            source_profile.profile().profile_id.clone(),
+            Some("Alice".into()),
+        )?;
+
+        let cache_path =
+            contact_records_cache_path(viewer_dir.path(), &source_profile.profile().profile_id);
+        fs::create_dir_all(cache_path.parent().unwrap())?;
+        fs::write(&cache_path, b"{not valid json")?;
+
+        let discovered =
+            contacts.discover_second_degree_profiles(false, false, "", DiscoverySort::MutualCount);
+        assert!(discovered.is_empty());
 
         Ok(())
     }

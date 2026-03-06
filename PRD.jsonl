@@ -944,7 +944,7 @@
     "Already-followed profiles are clearly marked or filtered",
     "Malformed or unavailable graph data does not crash the app"
   ],
-  "passes": false
+  "passes": true
 }
 {
   "id": 40,
