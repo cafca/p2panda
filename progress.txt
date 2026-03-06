@@ -1457,3 +1457,25 @@ What doesn't work:
 - Task 42 still remains `passes: false`; the full end-to-end acceptance test `syncs_contact_profile_and_tracks_display_name_updates` still times out on the initial cache sync when both owner and follower are driven through `ProfileSyncService`, even though the underlying relay delivery, request/reply, owner publish, and follower cache-write paths now each pass in isolation
 - I restored that end-to-end test to `#[ignore]` so the crate does not regress to a red test suite; this is a concrete manual-PRD-note item if you want to split the remaining gap into a narrower infrastructure/debugging task later
 - Because Task 42 was already `passes: false` in `PRD.jsonl`, no content change to that file was needed in this run; it should remain false until the ignored sync test (or equivalent end-to-end verification) is made deterministic and passing.
+
+# Fri, 06 Mar 2026 18:34:14 GMT
+
+- picked Task 42 (`Remove nickname from follow flow — display name owned by profile`) again because it is still the highest-priority actionable unfinished product task; Task 41 remains external fork validation and Tasks 43/44 are lower-priority follow-up UI work
+- kept the nickname-removal/model/UI work intact and focused this run on the remaining relay-backed profile-sync startup race in `file-sharing/src/profile_sync.rs`
+- changed the profile-sync runtime wiring so it now:
+  - registers the local profile-sync topic in the address book on startup so discovery can advertise it for already-running owners
+  - waits for the remote profile-topic bootstrap mapping to become observable before joining it, rather than assuming the async `set_topics(...)` cast has already landed
+  - seeds requester relay bootstrap info on the owner side before replying to a profile-sync request, so a relay-configured owner can learn a return path for targeted snapshots
+- kept the decisive owner+follower end-to-end sync test ignored after reproducing that it still times out on the first cache sync in this environment; the remaining gap is still a startup-race/debugging issue rather than a truthfully completed acceptance path
+- ran feedback loops:
+  - `cargo fmt --package p2panda-file-sharing-gui`
+  - `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-file-sharing-gui --lib`
+  - `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui profile_sync::tests::local_service_replies_to_profile_sync_requests --lib -- --nocapture`
+  - `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui contacts --lib -- --nocapture`
+  - attempted `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui profile_sync::tests::follower_service_writes_profile_cache_from_snapshot --lib -- --nocapture`
+  - attempted `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui profile_sync::tests::syncs_contact_profile_and_tracks_display_name_updates --lib -- --ignored --nocapture`
+
+What doesn't work:
+- Task 42 remains `passes: false`; the decisive end-to-end sync path still times out on the initial remote cache sync, so I could not truthfully mark the task as passing in this run
+- the narrower follower cache-write test is currently nondeterministic in this sandbox: I reproduced failing runs through `verify-in-sandbox.sh`, but also observed a passing direct sandbox execution for the same test (`docker exec ... cargo test ... follower_service_writes_profile_cache_from_snapshot`), so the remaining issue still looks like a flaky relay/profile-sync startup race
+- because Task 42 was already `passes: false` in `PRD.jsonl`, I left that field unchanged and made no other PRD edits
