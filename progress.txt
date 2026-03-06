@@ -1108,3 +1108,20 @@ What doesn't work:
 
 What doesn't work:
 - no additional blocker for Task 38 in this run
+
+# 2026-03-06 12:31 UTC
+
+- picked Task 40 (`In-app auto-update mechanism`) as the highest-priority unfinished feature because Task 41 is still blocked on fork-only GitHub Actions validation, while Task 40 was the remaining locally-verifiable product feature
+- tightened updater verification in `file-sharing/src/updater.rs` without changing runtime behavior:
+  - added a test-only configurable GitHub API base URL for `GitHubReleaseBackend`
+  - added an end-to-end local HTTP test proving the concrete GitHub-release backend detects a newer version from the release feed and resolves the platform checksum asset
+  - added an end-to-end local HTTP test proving update downloads are rejected on SHA-256 mismatch before install
+- ran `cargo fmt --package p2panda-file-sharing-gui`
+- ran `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-file-sharing-gui --locked`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui updater --lib --locked -- --nocapture`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui ui --lib --locked -- --nocapture`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui settings --lib --locked -- --nocapture`
+- confirmed Task 40 acceptance criteria in this run and updated Task 40 `passes` to `true` in `PRD.jsonl`
+
+What doesn't work:
+- no additional blocker for Task 40 in this run

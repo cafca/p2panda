@@ -373,6 +373,7 @@ impl UpdateController {
 struct GitHubReleaseBackend {
     client: Client,
     staging_root: PathBuf,
+    api_base_url: String,
 }
 
 impl GitHubReleaseBackend {
@@ -383,13 +384,15 @@ impl GitHubReleaseBackend {
                 .build()
                 .context("failed to construct updater http client")?,
             staging_root: data_dir.join("updates"),
+            api_base_url: "https://api.github.com".to_owned(),
         })
     }
 
     fn latest_release_url(&self, channel: UpdateChannel) -> String {
+        let api_base_url = self.api_base_url.trim_end_matches('/');
         match channel {
             UpdateChannel::Stable => format!(
-                "https://api.github.com/repos/{UPDATE_REPO_OWNER}/{UPDATE_REPO_NAME}/releases/latest"
+                "{api_base_url}/repos/{UPDATE_REPO_OWNER}/{UPDATE_REPO_NAME}/releases/latest"
             ),
         }
     }
@@ -740,10 +743,14 @@ pub fn release_notes_preview(notes: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
     use anyhow::Result;
+    use serde_json::json;
 
     use super::*;
 
@@ -866,6 +873,79 @@ mod tests {
             asset_name: "p2panda-file-sharing-0.2.0-linux-x86_64.tar.gz".into(),
             asset_url: "https://example.com/download".into(),
             sha256: "abc123".into(),
+        }
+    }
+
+    struct TestHttpServer {
+        base_url: String,
+        handle: Option<std::thread::JoinHandle<Result<()>>>,
+    }
+
+    impl TestHttpServer {
+        fn spawn(
+            build_routes: impl FnOnce(&str) -> HashMap<String, Vec<u8>> + Send + 'static,
+        ) -> Result<Self> {
+            let listener = TcpListener::bind("127.0.0.1:0")?;
+            let base_url = format!("http://{}", listener.local_addr()?);
+            let routes = build_routes(&base_url);
+            let expected_requests = routes.len();
+            let handle = std::thread::spawn(move || -> Result<()> {
+                for _ in 0..expected_requests {
+                    let (mut stream, _) = listener.accept()?;
+                    let mut request = Vec::new();
+                    let mut buffer = [0u8; 1024];
+                    loop {
+                        let read = stream.read(&mut buffer)?;
+                        if read == 0 {
+                            break;
+                        }
+                        request.extend_from_slice(&buffer[..read]);
+                        if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+
+                    let request_line = String::from_utf8_lossy(&request)
+                        .lines()
+                        .next()
+                        .unwrap_or_default()
+                        .to_owned();
+                    let path = request_line
+                        .split_whitespace()
+                        .nth(1)
+                        .unwrap_or("/")
+                        .to_owned();
+
+                    if let Some(body) = routes.get(&path) {
+                        write!(
+                            stream,
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        )?;
+                        stream.write_all(body)?;
+                    } else {
+                        stream.write_all(
+                            b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        )?;
+                    }
+                }
+
+                Ok(())
+            });
+
+            Ok(Self {
+                base_url,
+                handle: Some(handle),
+            })
+        }
+
+        fn finish(mut self) -> Result<()> {
+            if let Some(handle) = self.handle.take() {
+                handle
+                    .join()
+                    .map_err(|_| anyhow::anyhow!("test http server panicked"))??;
+            }
+            Ok(())
         }
     }
 
@@ -996,6 +1076,107 @@ mod tests {
         });
 
         assert_eq!(backend.state.lock().unwrap().check_calls, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn github_release_backend_detects_newer_release_from_release_feed() -> Result<()> {
+        let asset_name = format!("p2panda-file-sharing-0.2.0{}", platform_archive_extension());
+        let checksum_name = format!(
+            "p2panda-file-sharing-0.2.0{}",
+            platform_checksum_extension()
+        );
+        let release_path = format!("/repos/{UPDATE_REPO_OWNER}/{UPDATE_REPO_NAME}/releases/latest");
+        let asset_path = format!("/downloads/{asset_name}");
+        let checksum_path = format!("/downloads/{checksum_name}");
+        let checksum_body = format!("cafebabe  {asset_name}\nfeedface  unrelated-file.tar.gz\n");
+
+        let server = TestHttpServer::spawn(move |base_url| {
+            HashMap::from([
+                (
+                    release_path.clone(),
+                    serde_json::to_vec(&json!({
+                        "tag_name": "v0.2.0",
+                        "html_url": "https://example.com/releases/v0.2.0",
+                        "body": "Bug fixes",
+                        "assets": [
+                            {
+                                "name": asset_name,
+                                "browser_download_url": format!("{base_url}{asset_path}")
+                            },
+                            {
+                                "name": checksum_name,
+                                "browser_download_url": format!("{base_url}{checksum_path}")
+                            }
+                        ]
+                    }))
+                    .expect("release payload should serialize"),
+                ),
+                (checksum_path.clone(), checksum_body.into_bytes()),
+            ])
+        })?;
+
+        let backend = GitHubReleaseBackend {
+            client: Client::builder().user_agent(USER_AGENT).build()?,
+            staging_root: tempfile::tempdir()?.path().join("updates"),
+            api_base_url: server.base_url.clone(),
+        };
+
+        let update = backend.check_for_update(&Version::parse("0.1.0")?, UpdateChannel::Stable)?;
+        let available = match update {
+            CheckOutcome::UpdateAvailable(update) => update,
+            other => panic!("expected available update, got {other:?}"),
+        };
+
+        assert_eq!(available.version, Version::parse("0.2.0")?);
+        assert_eq!(available.sha256, "cafebabe");
+        assert_eq!(
+            available.release_notes_url,
+            "https://example.com/releases/v0.2.0"
+        );
+
+        server.finish()?;
+        Ok(())
+    }
+
+    #[test]
+    fn github_release_backend_rejects_downloads_with_sha256_mismatch() -> Result<()> {
+        let asset_name = format!("p2panda-file-sharing-0.2.0{}", platform_archive_extension());
+        let asset_path = format!("/downloads/{asset_name}");
+        let served_asset_path = asset_path.clone();
+        let server = TestHttpServer::spawn(move |_| {
+            HashMap::from([(
+                served_asset_path.clone(),
+                b"definitely-not-a-real-release-archive".to_vec(),
+            )])
+        })?;
+        let staging_root = tempfile::tempdir()?;
+        let backend = GitHubReleaseBackend {
+            client: Client::builder().user_agent(USER_AGENT).build()?,
+            staging_root: staging_root.path().join("updates"),
+            api_base_url: server.base_url.clone(),
+        };
+        let (sender, _receiver) = flume::unbounded();
+
+        let error = backend
+            .download_update(
+                &AvailableUpdate {
+                    version: Version::parse("0.2.0")?,
+                    release_notes_url: String::new(),
+                    release_notes: String::new(),
+                    asset_name: asset_name.clone(),
+                    asset_url: format!("{}{asset_path}", server.base_url),
+                    sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+                        .to_owned(),
+                },
+                sender,
+            )
+            .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("update integrity verification failed"));
+        server.finish()?;
         Ok(())
     }
 
