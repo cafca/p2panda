@@ -977,7 +977,7 @@
     "ci_workflow": "Create .github/workflows/ci.yml triggered on pull_request and push to main. Jobs: (1) cargo fmt --check, (2) cargo clippy --workspace, (3) cargo test -p p2panda-file-sharing-gui, (4) cargo audit. Run on ubuntu-latest with Bevy system deps (libasound2-dev, libudev-dev). Keep it under 15 minutes.",
     "pr": "Ensure there is a PR that runs CI that you can check. Create a draft PR if needed.",
     "iterate": "Wait for the PR check suite. If a job fails, read the log, fix the code, commit, and push again. If you encounter a blokcer that requires user intervention, mark this task failed and report in detail in progress.txt",
-    "validate": "Once PR CI is green, push an experimental tag. Watch the release workflow. Iterate if needed until every platform is green.",
+    "validate": "Once PR CI is green, push an experimental tag. Watch the release workflow. Iterate if needed until every platform is green."
   },
   "acceptance": [
     "GH CI workflow exists and runs fmt, clippy, test, and audit checks on PRs",
