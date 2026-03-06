@@ -540,6 +540,45 @@ What doesn't work:
 What doesn't work:
 - no additional blocker for Task 38 in this run
 
+# 2026-03-06 12:16 UTC
+
+- picked Task 40 (`In-app auto-update mechanism`) as the highest-priority unfinished feature because Task 41 still requires fork-side CI/release validation outside this environment, while Task 40 is the remaining locally actionable product/runtime feature
+- implemented a new updater subsystem in `file-sharing/src/updater.rs` with:
+  - GitHub Releases metadata checks against the current app semver
+  - platform-aware asset selection for packaged update archives
+  - SHA-256 verification before install (GitHub asset digest first, checksum-asset fallback)
+  - staged archive download/extract flow with progress events
+  - apply-and-relaunch control flow built around `self-replace`
+- extended persisted settings in `file-sharing/src/settings.rs` with Task 40 preferences/state:
+  - `auto_update_checks` defaulting to `true`
+  - `update_channel` scaffolded as `Stable`
+  - `update_last_checked_unix_secs`
+- wired the updater into the app runtime in `file-sharing/src/plugin.rs` and `file-sharing/src/ui.rs`:
+  - background periodic checks via a Bevy resource/system
+  - manual `Check for updates`
+  - release-notes link/preview
+  - download progress display
+  - `Apply & Restart`
+  - `Remind me later`
+  - persisted auto-check toggle / last-checked timestamp
+- aligned release artifacts for updater consumption on macOS by adding a zipped `.app` bundle output in `scripts/release/package-macos.sh` and uploading its checksum in `.github/workflows/release.yml`
+- ran feedback loops:
+  - `cargo fmt --package p2panda-file-sharing-gui`
+  - `cargo check -p p2panda-file-sharing-gui --lib`
+  - `cargo check -p p2panda-file-sharing-gui`
+  - `cargo test -p p2panda-file-sharing-gui --lib -- --nocapture`
+- results:
+  - crate/library builds pass with the updater integrated
+  - all 92 `p2panda-file-sharing-gui` lib tests pass, including new updater/settings coverage
+- left Task 40 `passes` as `false`
+
+What doesn't work:
+- Task 40 acceptance is still not fully proven in this run because the end-to-end updater path was only verified with deterministic unit tests/fakes, not against a real hosted release feed plus real packaged artifacts
+- specifically, I did not prove in this environment that:
+  - the live configured update source serves the expected metadata/assets for all three platforms
+  - a real downloaded package can replace the running app and relaunch into the new version on macOS/Linux/Windows
+- Task 41 remains separately blocked by missing fork-side validation access; no work was started on it in this run
+
 # 2026-03-06 12:02 UTC
 
 - picked Task 39 (`Second-degree contact discovery (contacts of contacts)`) as the highest-priority unfinished feature because it is the last remaining product-path task that can be fully implemented and verified locally, while Task 40 is a broader cross-platform updater and Task 41 remains externally blocked by fork validation

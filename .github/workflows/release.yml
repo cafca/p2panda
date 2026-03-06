@@ -35,7 +35,9 @@ jobs:
         run: bash scripts/release/package-macos.sh "${{ steps.version.outputs.version }}"
 
       - name: Generate checksums
-        run: shasum -a 256 dist/p2panda-file-sharing-*.dmg > dist/p2panda-file-sharing-${{ steps.version.outputs.version }}-macos.sha256
+        run: |
+          shasum -a 256 dist/p2panda-file-sharing-*.dmg > dist/p2panda-file-sharing-${{ steps.version.outputs.version }}-macos.sha256
+          shasum -a 256 dist/p2panda-file-sharing-*.zip > dist/p2panda-file-sharing-${{ steps.version.outputs.version }}-macos-zip.sha256
 
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
@@ -43,7 +45,8 @@ jobs:
           name: release-macos
           path: |
             dist/p2panda-file-sharing-*.dmg
-            dist/p2panda-file-sharing-*-macos.sha256
+            dist/p2panda-file-sharing-*.zip
+            dist/p2panda-file-sharing-*-macos*.sha256
 
   linux:
     runs-on: ubuntu-latest

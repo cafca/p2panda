@@ -13,6 +13,7 @@ use crate::diagnostics::{
 use crate::profile::ProfileStore;
 use crate::settings::{RelayMode, SettingsStore};
 use crate::state::{Direction, FileVerification, Transfer, TransferRegistry, TransferStatus};
+use crate::updater::{format_last_checked, release_notes_preview, UpdateController, UpdateStatus};
 
 /// Which file dialog is currently open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -243,6 +244,7 @@ pub fn ui_system(
     mut contacts_store: ResMut<ContactsStore>,
     mut profile_store: ResMut<ProfileStore>,
     mut settings_store: ResMut<SettingsStore>,
+    mut updater: ResMut<UpdateController>,
     mut drag_and_drop_events: EventReader<FileDragAndDrop>,
 ) {
     let drag_drop_events = drag_and_drop_events
@@ -427,6 +429,7 @@ pub fn ui_system(
                     &mut ui_state,
                     &mut profile_store,
                     &mut settings_store,
+                    &mut updater,
                     dialog_busy,
                 );
             } else if ui_state.show_diagnostics_view {
@@ -476,6 +479,7 @@ pub fn render_transfer_ui(
     contacts_store: ResMut<ContactsStore>,
     profile_store: ResMut<ProfileStore>,
     settings_store: ResMut<SettingsStore>,
+    updater: ResMut<UpdateController>,
     drag_and_drop_events: EventReader<FileDragAndDrop>,
 ) {
     ui_system(
@@ -486,6 +490,7 @@ pub fn render_transfer_ui(
         contacts_store,
         profile_store,
         settings_store,
+        updater,
         drag_and_drop_events,
     );
 }
@@ -1110,6 +1115,7 @@ fn render_settings_view(
     ui_state: &mut UiState,
     profile_store: &mut ProfileStore,
     settings_store: &mut SettingsStore,
+    updater: &mut UpdateController,
     dialog_busy: bool,
 ) {
     ui.heading("Settings");
@@ -1236,6 +1242,123 @@ fn render_settings_view(
             egui::Color32::YELLOW,
             "Restart required to apply relay changes",
         );
+    }
+
+    ui.separator();
+    ui.heading("Updates");
+    ui.horizontal(|ui| {
+        ui.label(format!("Current version: v{}", updater.current_version()));
+        ui.label(format!(
+            "Channel: {}",
+            match updater.channel() {
+                crate::settings::UpdateChannel::Stable => "Stable",
+            }
+        ));
+    });
+
+    let mut auto_update_checks = updater.auto_check_enabled();
+    if ui
+        .checkbox(&mut auto_update_checks, "Automatically check for updates")
+        .changed()
+    {
+        if let Err(err) = settings_store.set_auto_update_checks(auto_update_checks) {
+            ui_state.settings_error = Some(err.to_string());
+        } else {
+            updater.set_auto_check_enabled(auto_update_checks);
+            ui_state.settings_error = None;
+        }
+    }
+
+    ui.label(format!(
+        "Last checked: {}",
+        format_last_checked(updater.last_checked_unix_secs())
+    ));
+
+    let check_busy = matches!(updater.status(), UpdateStatus::Checking { .. });
+    if ui
+        .add_enabled(!check_busy, egui::Button::new("Check for updates"))
+        .clicked()
+    {
+        updater.request_manual_check();
+    }
+
+    match updater.status().clone() {
+        UpdateStatus::Idle => {
+            ui.small("Updates are idle. Automatic checks run in the background when enabled.");
+        }
+        UpdateStatus::Checking { automatic } => {
+            if automatic {
+                ui.label("Checking for updates in the background...");
+            } else {
+                ui.label("Checking for updates...");
+            }
+        }
+        UpdateStatus::UpToDate => {
+            ui.colored_label(egui::Color32::from_rgb(107, 206, 168), "You're up to date.");
+        }
+        UpdateStatus::Available { update } => {
+            ui.horizontal_wrapped(|ui| {
+                ui.colored_label(
+                    egui::Color32::from_rgb(120, 220, 180),
+                    format!("Update available: v{}", update.version),
+                );
+                if ui.button("Download update").clicked() {
+                    updater.request_download();
+                }
+                if ui.button("Remind me later").clicked() {
+                    updater.defer_available_update();
+                }
+            });
+            if !update.release_notes_url.is_empty() {
+                ui.hyperlink_to("Release notes", &update.release_notes_url);
+            }
+            if !update.release_notes.trim().is_empty() {
+                ui.code(release_notes_preview(&update.release_notes));
+            }
+        }
+        UpdateStatus::Downloading {
+            update,
+            downloaded_bytes,
+            total_bytes,
+        } => {
+            ui.label(format!("Downloading v{}...", update.version));
+            let fraction = total_bytes
+                .map(|total| {
+                    if total == 0 {
+                        0.0
+                    } else {
+                        (downloaded_bytes as f32 / total as f32).clamp(0.0, 1.0)
+                    }
+                })
+                .unwrap_or(0.0);
+            let text = total_bytes
+                .map(|total| {
+                    format!(
+                        "{} / {}",
+                        format_bytes(downloaded_bytes),
+                        format_bytes(total)
+                    )
+                })
+                .unwrap_or_else(|| format_bytes(downloaded_bytes));
+            ui.add(egui::ProgressBar::new(fraction).text(text));
+        }
+        UpdateStatus::ReadyToInstall { update, .. } => {
+            ui.horizontal_wrapped(|ui| {
+                ui.colored_label(
+                    egui::Color32::from_rgb(120, 220, 180),
+                    format!("v{} downloaded and verified.", update.version),
+                );
+                if ui.button("Apply & Restart").clicked() {
+                    updater.request_apply();
+                }
+            });
+        }
+        UpdateStatus::Installing { update } => {
+            ui.label(format!("Installing v{} and restarting...", update.version));
+        }
+        UpdateStatus::Error(error) => {
+            ui.colored_label(egui::Color32::RED, format!("Update failed: {error}"));
+        }
     }
 }
 

@@ -14,3 +14,4 @@ pub mod share;
 pub mod share_code;
 pub mod state;
 pub mod ui;
+pub mod updater;

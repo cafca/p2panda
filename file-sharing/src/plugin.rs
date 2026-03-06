@@ -1,8 +1,8 @@
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use bevy::app::Plugin;
-use bevy::prelude::{App, IntoScheduleConfigs, Query, Res, ResMut, Update, With};
+use bevy::app::{AppExit, Plugin};
+use bevy::prelude::{App, EventWriter, IntoScheduleConfigs, Query, Res, ResMut, Update, With};
 use bevy::window::{PrimaryWindow, Window};
 use bevy_egui::{egui, EguiContexts};
 use directories::ProjectDirs;
@@ -16,6 +16,7 @@ use crate::profile::ProfileStore;
 use crate::settings::{AppSettings, SettingsStore};
 use crate::state::{Direction, FileProgress, Transfer, TransferRegistry, TransferStatus};
 use crate::ui::{default_download_directory, ui_system, UiState};
+use crate::updater::UpdateController;
 
 pub struct FileSharingPlugin;
 const INSECURE_SKIP_RELAY_CERT_VERIFY_ENV: &str =
@@ -38,6 +39,7 @@ struct PluginResources {
     profile_store: ProfileStore,
     settings_store: SettingsStore,
     ui_state: UiState,
+    updater: UpdateController,
 }
 
 impl Default for DiagnosticsPollState {
@@ -58,9 +60,13 @@ impl Plugin for FileSharingPlugin {
                 app.insert_resource(resources.profile_store);
                 app.insert_resource(resources.settings_store);
                 app.insert_resource(resources.ui_state);
+                app.insert_resource(resources.updater);
                 app.insert_resource(NotificationState::default());
                 app.insert_resource(DiagnosticsPollState::default());
-                app.add_systems(Update, (poll_network_events, ui_system).chain());
+                app.add_systems(
+                    Update,
+                    (poll_update_state, poll_network_events, ui_system).chain(),
+                );
             }
             Err(err) => {
                 tracing::error!("failed to initialize file-sharing plugin: {err:#}");
@@ -96,6 +102,8 @@ fn initialize_plugin_resources() -> Result<PluginResources> {
         settings.custom_relay_url.clone(),
         profile_store.profile().display_name.clone(),
     );
+    let updater = UpdateController::new(data_dir.clone(), &settings)
+        .context("failed to initialize updater")?;
 
     Ok(PluginResources {
         bridge,
@@ -103,6 +111,7 @@ fn initialize_plugin_resources() -> Result<PluginResources> {
         profile_store,
         settings_store,
         ui_state,
+        updater,
     })
 }
 
@@ -152,6 +161,17 @@ fn render_startup_error_ui(
         ui.add_space(8.0);
         ui.monospace(&startup_error.message);
     });
+}
+
+fn poll_update_state(
+    mut updater: ResMut<UpdateController>,
+    mut settings_store: ResMut<SettingsStore>,
+    mut exit_events: EventWriter<AppExit>,
+) {
+    updater.poll(&mut settings_store);
+    if updater.take_pending_exit() {
+        exit_events.write(AppExit::Success);
+    }
 }
 
 pub(crate) fn poll_network_events(

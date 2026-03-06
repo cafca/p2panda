@@ -10,6 +10,13 @@ const TESTING_RELAY_URL: &str = "https://use1-1.relay.iroh.network.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+pub enum UpdateChannel {
+    #[default]
+    Stable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
 pub enum RelayMode {
     #[default]
     TestingRelay,
@@ -17,7 +24,7 @@ pub enum RelayMode {
     Disabled,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppSettings {
     #[serde(default)]
     pub default_download_dir: Option<PathBuf>,
@@ -25,6 +32,25 @@ pub struct AppSettings {
     pub relay_mode: RelayMode,
     #[serde(default)]
     pub custom_relay_url: Option<String>,
+    #[serde(default = "default_auto_update_checks")]
+    pub auto_update_checks: bool,
+    #[serde(default)]
+    pub update_channel: UpdateChannel,
+    #[serde(default)]
+    pub update_last_checked_unix_secs: Option<u64>,
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self {
+            default_download_dir: None,
+            relay_mode: RelayMode::TestingRelay,
+            custom_relay_url: None,
+            auto_update_checks: default_auto_update_checks(),
+            update_channel: UpdateChannel::Stable,
+            update_last_checked_unix_secs: None,
+        }
+    }
 }
 
 impl AppSettings {
@@ -97,6 +123,22 @@ impl SettingsStore {
         Ok(changed)
     }
 
+    pub fn set_auto_update_checks(&mut self, enabled: bool) -> Result<()> {
+        if self.settings.auto_update_checks != enabled {
+            self.settings.auto_update_checks = enabled;
+            self.save()?;
+        }
+        Ok(())
+    }
+
+    pub fn set_update_last_checked(&mut self, timestamp: Option<u64>) -> Result<()> {
+        if self.settings.update_last_checked_unix_secs != timestamp {
+            self.settings.update_last_checked_unix_secs = timestamp;
+            self.save()?;
+        }
+        Ok(())
+    }
+
     fn save(&self) -> Result<()> {
         write_atomic(&self.path, &self.settings)
     }
@@ -151,6 +193,10 @@ fn normalize_custom_relay_url(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|value| !value.is_empty())
 }
 
+const fn default_auto_update_checks() -> bool {
+    true
+}
+
 fn parse_https_relay_url(value: &str) -> Result<RelayUrl> {
     if !value.to_ascii_lowercase().starts_with("https://") {
         anyhow::bail!("Relay URL must use https://");
@@ -171,6 +217,7 @@ mod tests {
         let settings = load_settings(dir.path())?;
         assert_eq!(settings, AppSettings::default());
         assert_eq!(settings.relay_mode, RelayMode::TestingRelay);
+        assert!(settings.auto_update_checks);
         Ok(())
     }
 
@@ -239,6 +286,22 @@ mod tests {
 
         settings.custom_relay_url = Some("http://relay.example.com".into());
         assert!(settings.relay_url_for_node().is_err());
+
+        Ok(())
+    }
+
+    #[test]
+    fn update_preferences_persist_to_settings_file() -> Result<()> {
+        let dir = tempdir()?;
+        let mut store = SettingsStore::load(dir.path())?;
+
+        store.set_auto_update_checks(false)?;
+        store.set_update_last_checked(Some(1234))?;
+
+        let loaded = load_settings(dir.path())?;
+        assert!(!loaded.auto_update_checks);
+        assert_eq!(loaded.update_channel, UpdateChannel::Stable);
+        assert_eq!(loaded.update_last_checked_unix_secs, Some(1234));
 
         Ok(())
     }

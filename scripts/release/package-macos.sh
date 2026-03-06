@@ -51,6 +51,7 @@ EOF
 codesign --force --deep --sign - "$APP_DIR"
 
 DMG_NAME="p2panda-file-sharing-${VERSION}-macos.dmg"
+ZIP_NAME="p2panda-file-sharing-${VERSION}-macos.zip"
 hdiutil create \
   -volname "$APP_NAME" \
   -srcfolder "$APP_DIR" \
@@ -58,4 +59,7 @@ hdiutil create \
   -format UDZO \
   "$DIST_DIR/$DMG_NAME"
 
+ditto -c -k --sequesterRsrc --keepParent "$APP_DIR" "$DIST_DIR/$ZIP_NAME"
+
 echo "$DIST_DIR/$DMG_NAME"
+echo "$DIST_DIR/$ZIP_NAME"

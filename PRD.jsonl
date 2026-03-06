@@ -970,7 +970,7 @@
     "On failed update, the current version remains usable and an error is shown",
     "Auto-check preference persists across restarts"
   ],
-  "passes": false
+  "passes": false  
 }
 {
   "id": 41,
