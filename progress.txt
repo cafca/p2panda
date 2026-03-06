@@ -1125,3 +1125,33 @@ What doesn't work:
 
 What doesn't work:
 - no additional blocker for Task 40 in this run
+
+# 2026-03-06 12:45 UTC
+
+- picked Task 41 (`Ensure basic CI/CD works: Validate GitHub CI on fork (cafca/p2panda)`) as the highest-priority unfinished feature because it is now the only remaining PRD task with `passes: false`
+- fixed three concrete repo-side Task 41 issues that showed up during local CI/release validation:
+  - updated `.github/workflows/release.yml` so the Linux release job installs the full Bevy/X11 toolchain plus `build-essential`, matching the CI/test job requirements more closely
+  - updated `scripts/bootstrap-sandbox-toolchain.sh` to install `build-essential` and verify `c++` exists, which unblocked the full `cargo clippy --workspace --locked -- -D warnings` feedback loop in the local verification sandbox
+  - updated `scripts/release/check-version.sh` to accept both `v<crate-version>` and the PRD-required experimental tag format `v<crate-version>-experimental.<n>` while still returning the base crate version for platform packaging metadata
+- refactored `file-sharing/src/ui.rs` to bundle the egui/UI Bevy resources into a `UiSystemParams` `SystemParam`, fixing the strict-clippy `too_many_arguments` failure that was preventing Task 41's PR CI command from passing cleanly with `-D warnings`
+- ran feedback loops:
+  - `cargo fmt --all --check`
+  - `./scripts/bootstrap-sandbox-toolchain.sh --skip-fetch`
+  - `./scripts/verify-in-sandbox.sh -- cargo clippy --workspace --locked -- -D warnings`
+  - `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui --lib --locked -- --nocapture`
+  - `./scripts/verify-in-sandbox.sh -- cargo audit`
+  - `./scripts/verify-in-sandbox.sh -- bash -lc 'bash scripts/release/check-version.sh v0.1.0 && bash scripts/release/check-version.sh v0.1.0-experimental.1'`
+  - `./scripts/verify-in-sandbox.sh -- bash -lc 'command -v cargo-appimage >/dev/null || cargo install cargo-appimage --locked; bash scripts/release/package-linux.sh 0.1.0'`
+- results:
+  - formatting passes
+  - full workspace clippy now passes with `-D warnings`
+  - all 94 `p2panda-file-sharing-gui` lib tests pass after the UI-system refactor
+  - `cargo audit` completes with only the previously allowed unmaintained warnings (`atomic-polyfill`, `paste`, `proc-macro-error`)
+  - release tag validation now accepts the experimental tag format required by the PRD
+- left Task 41 `passes` as `false`
+
+What doesn't work:
+- full Task 41 acceptance is still blocked because fork validation could not be performed from this environment:
+  - `gh auth status` reports no GitHub login, so I could not push a branch to `cafca/p2panda`, open/inspect a PR there, or push/delete experimental tags on the fork
+  - the configured `fork` remote uses SSH (`git@github.com:cafca/p2panda.git`) but this container has no host SSH/client access for authenticated pushes outside the sandbox, so the fork-only PR/tag workflow steps remain unavailable here
+- the local Linux release smoke test did not complete end-to-end: after `cargo-appimage` installed successfully and the release build progressed deeply into Bevy dependencies, the sandbox killed `rustc` with `signal: 9 (SIGKILL)` while compiling `bevy_ecs`, so I could not verify artifact generation locally in this run

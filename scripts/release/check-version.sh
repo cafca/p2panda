@@ -29,8 +29,9 @@ if [[ -z "$TAG" ]]; then
 fi
 
 EXPECTED_TAG="v$VERSION"
-if [[ "$TAG" != "$EXPECTED_TAG" ]]; then
-  echo "tag/version mismatch: expected '$EXPECTED_TAG' but got '$TAG'" >&2
+EXPERIMENTAL_TAG_PATTERN="^${EXPECTED_TAG}-experimental\\.[0-9]+$"
+if [[ "$TAG" != "$EXPECTED_TAG" && ! "$TAG" =~ $EXPERIMENTAL_TAG_PATTERN ]]; then
+  echo "tag/version mismatch: expected '$EXPECTED_TAG' or '${EXPECTED_TAG}-experimental.<n>' but got '$TAG'" >&2
   exit 1
 fi
 

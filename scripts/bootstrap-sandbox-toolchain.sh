@@ -89,7 +89,7 @@ docker exec --user root "$SANDBOX" bash -lc '
   export DEBIAN_FRONTEND=noninteractive
   apt-get update
   apt-get install -y \
-    gcc \
+    build-essential \
     mold \
     libc6-dev \
     pkg-config \
@@ -107,6 +107,7 @@ fi
 docker exec "$SANDBOX" bash -lc '
   set -euo pipefail
   command -v gcc >/dev/null
+  command -v c++ >/dev/null
   command -v mold >/dev/null
   dpkg -s libc6-dev >/dev/null
 '

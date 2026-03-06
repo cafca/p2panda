@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
+use bevy::ecs::system::SystemParam;
 use bevy::prelude::{EventReader, Res, ResMut, Resource};
 use bevy::window::FileDragAndDrop;
 use bevy_egui::{egui, EguiContexts};
@@ -192,6 +193,18 @@ enum DragDropUiEvent {
     HoveredCanceled,
 }
 
+#[derive(SystemParam)]
+pub struct UiSystemParams<'w, 's> {
+    egui_contexts: EguiContexts<'w, 's>,
+    ui_state: ResMut<'w, UiState>,
+    transfers: ResMut<'w, TransferRegistry>,
+    bridge: Res<'w, AsyncBridge>,
+    contacts_store: ResMut<'w, ContactsStore>,
+    profile_store: ResMut<'w, ProfileStore>,
+    settings_store: ResMut<'w, SettingsStore>,
+    updater: ResMut<'w, UpdateController>,
+}
+
 fn handle_drag_drop_events(
     ui_state: &mut UiState,
     transfers: &mut TransferRegistry,
@@ -236,17 +249,18 @@ fn handle_drag_drop_events(
     }
 }
 
-pub fn ui_system(
-    mut egui_contexts: EguiContexts,
-    mut ui_state: ResMut<UiState>,
-    mut transfers: ResMut<TransferRegistry>,
-    bridge: Res<AsyncBridge>,
-    mut contacts_store: ResMut<ContactsStore>,
-    mut profile_store: ResMut<ProfileStore>,
-    mut settings_store: ResMut<SettingsStore>,
-    mut updater: ResMut<UpdateController>,
-    mut drag_and_drop_events: EventReader<FileDragAndDrop>,
-) {
+pub fn ui_system(params: UiSystemParams, mut drag_and_drop_events: EventReader<FileDragAndDrop>) {
+    let UiSystemParams {
+        mut egui_contexts,
+        mut ui_state,
+        mut transfers,
+        bridge,
+        mut contacts_store,
+        mut profile_store,
+        mut settings_store,
+        mut updater,
+    } = params;
+
     let drag_drop_events = drag_and_drop_events
         .read()
         .map(|event| match event {
@@ -472,27 +486,10 @@ pub fn ui_system(
 }
 
 pub fn render_transfer_ui(
-    egui_contexts: EguiContexts,
-    ui_state: ResMut<UiState>,
-    transfers: ResMut<TransferRegistry>,
-    bridge: Res<AsyncBridge>,
-    contacts_store: ResMut<ContactsStore>,
-    profile_store: ResMut<ProfileStore>,
-    settings_store: ResMut<SettingsStore>,
-    updater: ResMut<UpdateController>,
+    params: UiSystemParams,
     drag_and_drop_events: EventReader<FileDragAndDrop>,
 ) {
-    ui_system(
-        egui_contexts,
-        ui_state,
-        transfers,
-        bridge,
-        contacts_store,
-        profile_store,
-        settings_store,
-        updater,
-        drag_and_drop_events,
-    );
+    ui_system(params, drag_and_drop_events);
 }
 
 fn apply_app_theme(ctx: &egui::Context) {
