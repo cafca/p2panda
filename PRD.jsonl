@@ -1044,3 +1044,219 @@
   ],
   "passes": false
 }
+{
+  "id": 45,
+  "title": "Operation-first domain model with TopicMap wiring",
+  "description": "Define the file-sharing app domain as p2panda operations instead of ad-hoc JSON messages. Introduce append-only logs for profiles, shares, and contacts, and a TopicMap mapping that makes topic membership deterministically map to the relevant logs for sync.",
+  "depends_on": [
+    37
+  ],
+  "spec": {
+    "operation_schema": "Define operation types for profile updates, share lifecycle events, and contact graph changes, including sequencing/backlink behavior needed for causal history.",
+    "log_layout": "Establish a stable log identity strategy (for example per profile + domain) and document how logs are partitioned so multiple devices can contribute safely.",
+    "topic_mapping": "Implement TopicMap wiring so each joined topic resolves to the correct set of logs for replication, rather than using implicit topic-to-data conventions.",
+    "migration": "Provide a migration path from existing local profile/share/contact state into the new operation logs without losing user-visible data."
+  },
+  "acceptance": [
+    "Profile, share, and contact state can be represented and persisted as p2panda operations with verifiable ordering",
+    "TopicMap resolution is implemented and used when joining sync topics",
+    "At least one existing user state snapshot can be migrated into the new log-backed representation",
+    "Core read paths can reconstruct current state from operation history"
+  ],
+  "passes": false
+}
+{
+  "id": 46,
+  "title": "Replace profile polling with LogSync-based replication",
+  "description": "Refactor profile synchronization to use p2panda-net LogSync for initial catch-up and live updates, replacing the custom request/snapshot gossip polling flow.",
+  "depends_on": [
+    45
+  ],
+  "spec": {
+    "sync_protocol": "Register profile logs with LogSync and remove periodic snapshot polling from profile synchronization.",
+    "catch_up": "Ensure peers that reconnect after downtime can fetch missed profile operations without waiting for periodic rebroadcasts.",
+    "live_updates": "Keep profile updates flowing in live mode after catch-up, with deduplication handled by the sync layer.",
+    "bridge_integration": "Update bridge/event plumbing so UI/profile store code consumes LogSync-driven updates."
+  },
+  "acceptance": [
+    "Custom profile request/snapshot polling code is no longer the primary sync path",
+    "A peer coming online after missing updates receives the latest profile state via catch-up sync",
+    "Concurrent profile updates from multiple sessions do not create duplicate applied updates",
+    "Profile UI state stays correct under reconnect and packet-loss scenarios"
+  ],
+  "passes": false
+}
+{
+  "id": 47,
+  "title": "Replace periodic share announcements with LogSync share records",
+  "description": "Model share advertisement as log operations and synchronize them through LogSync, removing timer-driven gossip rebroadcast loops as the source of truth.",
+  "depends_on": [
+    45,
+    46
+  ],
+  "spec": {
+    "share_operations": "Represent share create/update/remove and availability changes as operations in the owner's share log.",
+    "sync_behavior": "Joiners should obtain active share state via LogSync catch-up and continue receiving live changes without periodic full rebroadcast.",
+    "compatibility": "Maintain interoperability with existing share code and download flows during rollout.",
+    "cleanup": "Retire or downgrade legacy 30-second re-announcement logic once LogSync parity is validated."
+  },
+  "acceptance": [
+    "A peer that was offline can discover current active shares immediately after joining relevant topics",
+    "Share state changes propagate as incremental log updates rather than full periodic rebroadcasts",
+    "Removing a share propagates and is reflected remotely without manual refresh loops",
+    "Legacy announcement timers are removed or non-authoritative"
+  ],
+  "passes": false
+}
+{
+  "id": 48,
+  "title": "Model contact graph as operations with cross-device sync",
+  "description": "Refactor contact follow/unfollow persistence from flat local records to append-only operations so contact state syncs across the same user's devices with causal history.",
+  "depends_on": [
+    45,
+    46
+  ],
+  "spec": {
+    "contact_ops": "Introduce follow/unfollow (and optional metadata updates) as operation records in a dedicated contact log.",
+    "state_reduction": "Define deterministic reduction rules from contact operation history to current contact list state.",
+    "device_sync": "Synchronize contact logs via LogSync so new follows/removals made on one device appear on another.",
+    "migration": "Migrate existing locally stored contacts into the operation log representation."
+  },
+  "acceptance": [
+    "Follow/unfollow actions are recorded as operations rather than only local JSON rows",
+    "Two devices for the same user converge to the same contact list after synchronization",
+    "Contact list state can be rebuilt from operation history",
+    "Existing local contacts survive migration to the new model"
+  ],
+  "passes": false
+}
+{
+  "id": 49,
+  "title": "Migrate transfer persistence to p2panda-store SqliteStore",
+  "description": "Replace hand-rolled `state.json` persistence with p2panda-store backed persistence so transfer and related records use transactional storage and queryable structure.",
+  "depends_on": [
+    45,
+    11
+  ],
+  "spec": {
+    "store_integration": "Integrate SqliteStore (or equivalent p2panda-store backend) for transfer/session persistence used by the app runtime.",
+    "data_access": "Replace ad-hoc file serialization with structured read/write operations suitable for range and keyed queries.",
+    "crash_safety": "Preserve crash recovery guarantees currently provided by atomic rename logic.",
+    "migration": "Add one-time migration from existing `state.json` data to the new store format with rollback-safe behavior."
+  },
+  "acceptance": [
+    "Primary transfer persistence no longer depends on `state.json` as source of truth",
+    "Transfer state survives restart and crash scenarios with parity to current behavior",
+    "At least one query path benefits from indexed/ranged retrieval rather than full-file load",
+    "Migration from legacy JSON data is validated on sample persisted state"
+  ],
+  "passes": false
+}
+{
+  "id": 50,
+  "title": "Add manifest header extensions and hybrid timestamps",
+  "description": "Enhance manifest signing metadata by moving lightweight manifest metadata into typed header extensions and replacing raw wall-clock timestamps with HybridTimestamp for skew-resilient ordering.",
+  "depends_on": [
+    3
+  ],
+  "spec": {
+    "header_extension": "Define and adopt a manifest header extension containing metadata needed for fast inspection (for example versioning and file summary info).",
+    "timestamp_source": "Use HybridTimestamp where manifest/event ordering metadata is produced instead of plain `SystemTime::now()`.",
+    "validation": "Ensure operation validation and decoding paths enforce extension schema expectations.",
+    "compatibility": "Provide compatibility handling for previously stored manifests that do not yet contain the extension."
+  },
+  "acceptance": [
+    "Manifest metadata can be inspected from typed header extension data",
+    "New manifests use HybridTimestamp-based ordering metadata",
+    "Validation rejects malformed extension payloads",
+    "Older manifests remain readable during migration window"
+  ],
+  "passes": false
+}
+{
+  "id": 51,
+  "title": "Add Supervisor-managed lifecycle for network actors",
+  "description": "Introduce supervision for discovery and gossip actors so failures are detected and restarted automatically instead of silently degrading network features.",
+  "depends_on": [
+    6
+  ],
+  "spec": {
+    "supervision": "Run discovery/gossip-related actors under a Supervisor with restart behavior appropriate for transient failures.",
+    "fault_visibility": "Expose restart/failure events through diagnostics so users can understand degraded periods.",
+    "shutdown_behavior": "Keep clean shutdown semantics intact so supervised actors stop predictably on app exit.",
+    "resilience_tests": "Add coverage for at least one injected actor failure to verify restart behavior."
+  },
+  "acceptance": [
+    "A crash in a supervised network actor triggers automatic restart",
+    "Diagnostics indicate restart/failure events for supervised components",
+    "Normal shutdown does not leak background tasks",
+    "Failure-recovery behavior is verified by automated or deterministic integration tests"
+  ],
+  "passes": false
+}
+{
+  "id": 52,
+  "title": "Use prefix-based blob pin cleanup for share deletion",
+  "description": "Simplify share cleanup by replacing per-pin iteration with prefix-based pin deletion to reduce code complexity and improve cleanup performance.",
+  "depends_on": [
+    35
+  ],
+  "spec": {
+    "cleanup_api": "Use `Pins::delete_prefix` (or equivalent batch API) for share-scoped pin removal.",
+    "scope_safety": "Define pin namespace prefixes so cleanup only affects data belonging to the removed share.",
+    "behavior_parity": "Retain current semantics for removing shares and purging associated local blob data."
+  },
+  "acceptance": [
+    "Share removal uses prefix-based pin deletion instead of manual item-by-item loops",
+    "Deleting one share does not remove pins belonging to unrelated shares",
+    "Cleanup flow remains successful for large pin sets"
+  ],
+  "passes": false
+}
+{
+  "id": 53,
+  "title": "Expose provider-level download progress and fallback diagnostics",
+  "description": "Handle provider-level `DownloadProgressItem` events to improve runtime diagnostics and user feedback about which peers were tried, selected, and failed during downloads.",
+  "depends_on": [
+    10,
+    25
+  ],
+  "spec": {
+    "event_handling": "Capture and process provider-level progress events such as provider attempts and provider failures.",
+    "ui_diagnostics": "Surface provider progression and fallback behavior in diagnostics (and user-facing status where appropriate) without overwhelming the main transfer UI.",
+    "telemetry": "Record enough context to troubleshoot slow or failing downloads across multiple providers.",
+    "robustness": "Ensure unknown/new progress variants are handled gracefully."
+  },
+  "acceptance": [
+    "Downloads report when provider selection changes or fallback occurs",
+    "Provider failures are visible in diagnostics with actionable peer context",
+    "Existing byte-level progress reporting remains intact",
+    "Unrecognized progress variants do not crash download handling"
+  ],
+  "passes": false
+}
+{
+  "id": 54,
+  "title": "Reconcile direct Cargo dependencies after sync-model refactor",
+  "description": "Audit and align direct dependencies with actual usage after the LogSync/operation-store migration, keeping explicit dependencies only where the app imports crates directly.",
+  "depends_on": [
+    46,
+    47,
+    48,
+    49,
+    50
+  ],
+  "spec": {
+    "usage_audit": "Identify direct imports of `p2panda-store`, `p2panda-sync`, and related crates in app code after refactor tasks land.",
+    "manifest_cleanup": "Remove explicit dependencies that remain transitively used only, and retain/add explicit ones that are now directly referenced.",
+    "verification": "Run workspace checks to ensure dependency graph and builds remain healthy after cleanup.",
+    "documentation": "Document rationale for kept explicit p2panda dependencies to avoid drift."
+  },
+  "acceptance": [
+    "Cargo.toml direct dependencies match actual direct code imports",
+    "Unnecessary explicit dependencies are removed without breaking builds",
+    "Refactor-introduced direct dependencies are explicitly declared",
+    "Build/test verification passes after dependency reconciliation"
+  ],
+  "passes": false
+}
