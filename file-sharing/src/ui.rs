@@ -322,10 +322,8 @@ pub fn ui_system(
                             .add_enabled(has_completed, egui::Button::new("Clear completed"))
                             .clicked()
                         {
-                            let has_completed_upload = transfers
-                                .transfers()
-                                .iter()
-                                .any(|transfer| is_serving_share(transfer));
+                            let has_completed_upload =
+                                transfers.transfers().iter().any(is_serving_share);
                             if has_completed_upload {
                                 ui_state.confirm_clear_completed = true;
                             } else {

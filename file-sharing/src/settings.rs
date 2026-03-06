@@ -34,7 +34,7 @@ impl AppSettings {
             RelayMode::Relay => {
                 let relay_url = normalize_custom_relay_url(self.custom_relay_url.as_deref())
                     .ok_or_else(|| anyhow::anyhow!("Relay mode requires a custom relay URL"))?;
-                Ok(Some(parse_https_relay_url(&relay_url)?))
+                Ok(Some(parse_https_relay_url(relay_url)?))
             }
             RelayMode::Disabled => Ok(None),
         }
@@ -155,7 +155,7 @@ fn parse_https_relay_url(value: &str) -> Result<RelayUrl> {
     if !value.to_ascii_lowercase().starts_with("https://") {
         anyhow::bail!("Relay URL must use https://");
     }
-    Ok(value.parse().context("Invalid relay URL")?)
+    value.parse().context("Invalid relay URL")
 }
 
 #[cfg(test)]

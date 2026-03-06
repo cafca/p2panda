@@ -164,10 +164,9 @@ pub(crate) fn poll_network_events(
     let now = Instant::now();
     if let Some(mut diagnostics_poll_state) = diagnostics_poll_state {
         if now.duration_since(diagnostics_poll_state.last_requested_at) >= DIAGNOSTIC_POLL_INTERVAL
+            && bridge.send(NetworkCommand::RequestDiagnostics).is_ok()
         {
-            if bridge.send(NetworkCommand::RequestDiagnostics).is_ok() {
-                diagnostics_poll_state.last_requested_at = now;
-            }
+            diagnostics_poll_state.last_requested_at = now;
         }
     }
     let mut saw_progress = false;

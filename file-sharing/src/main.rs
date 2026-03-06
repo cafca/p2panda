@@ -9,7 +9,7 @@ fn main() {
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
-                title: title.into(),
+                title,
                 resolution: WindowResolution::new(900.0, 600.0),
                 ..default()
             }),
