@@ -67,6 +67,7 @@ Use it before any branch push or experimental tag push. It refuses unsafe remote
 For read-only verification after a push, the same helper can inspect the public fork state without `gh` auth:
 
 ```bash
+./scripts/release/validate-fork.sh branch-status port-blobs-to-net-v0.5
 ./scripts/release/validate-fork.sh pr-status port-blobs-to-net-v0.5
 ./scripts/release/validate-fork.sh release-status v0.1.0-experimental.1
 ./scripts/release/validate-fork.sh origin-status HEAD

@@ -15,6 +15,14 @@ Check that baseline with:
 ./scripts/release/validate-fork.sh preflight
 ```
 
+Before opening or re-checking a PR, confirm that the fork branch actually contains the local commit you intend to validate:
+
+```bash
+./scripts/release/validate-fork.sh branch-status port-blobs-to-net-v0.5
+```
+
+The command exits non-zero when the branch on `cafca/p2panda` is stale relative to local `HEAD`.
+
 ## PR Validation
 
 Push the current branch to the fork:

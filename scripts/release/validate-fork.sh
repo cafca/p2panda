@@ -7,6 +7,7 @@ Usage:
   ./scripts/release/validate-fork.sh preflight
   ./scripts/release/validate-fork.sh push-branch [branch]
   ./scripts/release/validate-fork.sh open-pr [branch]
+  ./scripts/release/validate-fork.sh branch-status <branch> [commit-ish]
   ./scripts/release/validate-fork.sh pr-status <pr-number|branch>
   ./scripts/release/validate-fork.sh push-tag <vX.Y.Z-experimental.N>
   ./scripts/release/validate-fork.sh release-status <vX.Y.Z-experimental.N>
@@ -144,6 +145,11 @@ resolve_pr_json() {
     jq '.[0]'
 }
 
+resolve_branch_json() {
+  local branch="$1"
+  api_get "/repos/${FORK_REPO}/branches/${branch}"
+}
+
 print_check_runs() {
   local repo="$1"
   local sha="$2"
@@ -266,14 +272,16 @@ release_jobs_complete() {
 cmd_preflight() {
   assert_safe_remotes
 
-  local branch fork_url origin_url
+  local branch fork_url origin_url head_sha
   branch="$(current_branch)"
   fork_url="$(remote_url fork)"
   origin_url="$(remote_url origin)"
+  head_sha="$(git rev-parse HEAD)"
 
   echo "fork remote:   $fork_url"
   echo "origin remote: $origin_url"
   echo "branch:        $branch"
+  echo "local head:    $head_sha"
 
   if command -v gh >/dev/null 2>&1; then
     if gh auth status >/dev/null 2>&1; then
@@ -288,12 +296,64 @@ cmd_preflight() {
   if [[ "$fork_url" == git@* || "$fork_url" == ssh://* ]]; then
     if command -v ssh >/dev/null 2>&1; then
       echo "ssh client:    ok"
+      echo "push path:     available via SSH"
     else
       echo "ssh client:    missing"
+      echo "push path:     blocked (fork remote requires SSH)"
     fi
   else
     echo "ssh client:    not required"
+    echo "push path:     available without SSH client"
   fi
+}
+
+cmd_branch_status() {
+  local branch="${1:-}"
+  local expected_commitish="${2:-HEAD}"
+  local branch_json remote_sha expected_sha branch_url
+
+  if [[ -z "$branch" ]]; then
+    echo "missing branch argument" >&2
+    usage
+    exit 1
+  fi
+
+  assert_safe_remotes
+  require_api_tools
+
+  if ! expected_sha="$(git rev-parse "${expected_commitish}^{commit}" 2>/dev/null)"; then
+    echo "unknown commit-ish: $expected_commitish" >&2
+    exit 1
+  fi
+
+  if ! branch_json="$(resolve_branch_json "$branch" 2>/dev/null)"; then
+    echo "failed to query branch '$branch' on ${FORK_REPO}" >&2
+    exit 1
+  fi
+
+  remote_sha="$(jq -r '.commit.sha // empty' <<<"$branch_json")"
+  branch_url="$(jq -r '.commit.html_url // empty' <<<"$branch_json")"
+
+  if [[ -z "$remote_sha" ]]; then
+    echo "branch '$branch' does not exist on ${FORK_REPO}" >&2
+    exit 1
+  fi
+
+  echo "repo:          ${FORK_REPO}"
+  echo "branch:        ${branch}"
+  echo "fork head:     ${remote_sha}"
+  echo "expected sha:  ${expected_sha}"
+  if [[ -n "$branch_url" ]]; then
+    echo "fork commit:   ${branch_url}"
+  fi
+
+  if [[ "$remote_sha" == "$expected_sha" ]]; then
+    echo "status:        up to date"
+    return 0
+  fi
+
+  echo "status:        stale (fork branch does not match ${expected_commitish})" >&2
+  return 1
 }
 
 cmd_pr_status() {
@@ -503,6 +563,10 @@ case "$COMMAND" in
   preflight)
     shift
     cmd_preflight "$@"
+    ;;
+  branch-status)
+    shift
+    cmd_branch_status "$@"
     ;;
   push-branch)
     shift
