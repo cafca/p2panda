@@ -10,7 +10,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  RUST_TOOLCHAIN: 1.89.0
+  RUST_TOOLCHAIN: stable
 
 jobs:
   macos:
@@ -57,10 +57,10 @@ jobs:
         with:
           channel: ${{ env.RUST_TOOLCHAIN }}
 
-      - name: Install AppImage dependencies
+      - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libfuse2
+          sudo apt-get install -y libfuse2 libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
           cargo install cargo-appimage --locked
 
       - name: Validate tag and read version
@@ -74,8 +74,8 @@ jobs:
 
       - name: Generate checksums
         run: |
-          shasum -a 256 dist/p2panda-file-sharing-*.AppImage > dist/p2panda-file-sharing-${{ steps.version.outputs.version }}-linux-appimage.sha256
-          shasum -a 256 dist/p2panda-file-sharing-*.tar.gz > dist/p2panda-file-sharing-${{ steps.version.outputs.version }}-linux-tar.sha256
+          sha256sum dist/p2panda-file-sharing-*.AppImage > dist/p2panda-file-sharing-${{ steps.version.outputs.version }}-linux-appimage.sha256
+          sha256sum dist/p2panda-file-sharing-*.tar.gz > dist/p2panda-file-sharing-${{ steps.version.outputs.version }}-linux-tar.sha256
 
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4

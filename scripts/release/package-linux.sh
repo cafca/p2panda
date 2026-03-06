@@ -14,9 +14,12 @@ mkdir -p "$DIST_DIR/linux"
 
 cargo build --release -p "$BIN_NAME"
 
+TARGET_DIR="$(cargo metadata --format-version 1 --no-deps 2>/dev/null | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')"
+TARGET_DIR="${TARGET_DIR:-$ROOT_DIR/target}"
+
 TAR_STAGING="$DIST_DIR/linux-tar/p2panda-file-sharing-${VERSION}-linux-${ARCH}"
 mkdir -p "$TAR_STAGING"
-cp "$ROOT_DIR/target/release/$BIN_NAME" "$TAR_STAGING/"
+cp "$TARGET_DIR/release/$BIN_NAME" "$TAR_STAGING/"
 chmod +x "$TAR_STAGING/$BIN_NAME"
 cp "$ASSETS_DIR/p2panda-file-sharing.desktop" "$TAR_STAGING/"
 cp "$ASSETS_DIR/icon.svg" "$TAR_STAGING/p2panda-file-sharing.svg"
@@ -34,7 +37,7 @@ tar -czf \
   "p2panda-file-sharing-${VERSION}-linux-${ARCH}"
 
 cargo appimage -p "$BIN_NAME"
-APPIMAGE_SOURCE="$(find "$ROOT_DIR/target" -type f -name '*.AppImage' | sort | tail -n 1)"
+APPIMAGE_SOURCE="$(find "$TARGET_DIR" -type f -name '*.AppImage' | sort | tail -n 1)"
 
 if [[ -z "$APPIMAGE_SOURCE" ]]; then
   echo "failed to locate AppImage output" >&2

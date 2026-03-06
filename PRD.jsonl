@@ -729,7 +729,7 @@
     "The app version is visible within the application",
     "Artifacts are automatically uploaded to a GitHub Release"
   ],
-  "passes": false
+  "passes": true
 }
 {
   "id": 32,
@@ -763,7 +763,7 @@
     "The app starts and renders the transfer UI correctly (manual smoke test)",
     "No other dependency has a known-available patch or minor upgrade left unapplied"
   ],
-  "passes": false
+  "passes": true
 }
 {
   "id": 33,

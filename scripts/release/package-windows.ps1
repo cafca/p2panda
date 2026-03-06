@@ -19,7 +19,10 @@ New-Item -ItemType Directory -Force -Path (Join-Path $DistDir "windows") | Out-N
 
 cargo build --release -p $BinName
 
-$ExePath = Join-Path $RootDir "target/release/$BinName.exe"
+$MetaJson = cargo metadata --format-version 1 --no-deps 2>$null | ConvertFrom-Json
+$TargetDir = if ($MetaJson -and $MetaJson.target_directory) { $MetaJson.target_directory } else { Join-Path $RootDir "target" }
+
+$ExePath = Join-Path $TargetDir "release/$BinName.exe"
 $ZipDir = Join-Path $DistDir "windows/p2panda-file-sharing-$Version-windows-$Arch"
 New-Item -ItemType Directory -Force -Path $ZipDir | Out-Null
 Copy-Item $ExePath (Join-Path $ZipDir "$BinName.exe")
@@ -39,7 +42,7 @@ if (Test-Path $ZipPath) {
 Compress-Archive -Path (Join-Path $ZipDir "*") -DestinationPath $ZipPath
 
 cargo wix --package $BinName
-$MsiSource = Get-ChildItem -Path (Join-Path $RootDir "target/wix") -Filter "*.msi" | Sort-Object LastWriteTime | Select-Object -Last 1
+$MsiSource = Get-ChildItem -Path (Join-Path $TargetDir "wix") -Filter "*.msi" | Sort-Object LastWriteTime | Select-Object -Last 1
 if (-not $MsiSource) {
   throw "failed to locate MSI output in target/wix"
 }

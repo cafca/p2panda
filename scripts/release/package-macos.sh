@@ -14,9 +14,12 @@ mkdir -p "$DIST_DIR/macos"
 
 cargo build --release -p "$BIN_NAME"
 
+TARGET_DIR="$(cargo metadata --format-version 1 --no-deps 2>/dev/null | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')"
+TARGET_DIR="${TARGET_DIR:-$ROOT_DIR/target}"
+
 APP_DIR="$DIST_DIR/macos/$APP_NAME.app"
 mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
-cp "$ROOT_DIR/target/release/$BIN_NAME" "$APP_DIR/Contents/MacOS/$BIN_NAME"
+cp "$TARGET_DIR/release/$BIN_NAME" "$APP_DIR/Contents/MacOS/$BIN_NAME"
 chmod +x "$APP_DIR/Contents/MacOS/$BIN_NAME"
 cp "$ASSETS_DIR/icon.svg" "$APP_DIR/Contents/Resources/AppIcon.svg"
 
