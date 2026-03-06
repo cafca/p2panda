@@ -5,11 +5,12 @@
 set -euo pipefail
 
 PROMPT='@PRD.jsonl @progress.txt
+PRD.jsonl is JSON Lines (one JSON object per line). Fields: id, title, description, depends_on (array of ids), spec (object), acceptance (array of strings), passes (bool). Use jq -s to query it (e.g. jq -s ".[] | select(.passes==false)" PRD.jsonl).
 1. Decide which task to work on next.
 This should be the one YOU decide has the highest priority,
 - not necessarily the first in the list.
 2. Check any feedback loops, such as types and tests.
-3. Append your progress to the progress.txt file.
+3. Append your progress to the progress.txt file. To get the current time, run: curl -sI https://www.google.com | grep -i "^date:" | cut -d" " -f2- (do NOT trust the container system clock).
 4. Update the PRD.jsonl file and make sure to ONLY change the `passes` field of a SINGLE task. Do not make any other edits.
 Set `passes` to `true` only if that tasks acceptance criteria actually passed in this run.
 If verification is blocked or incomplete, leave `passes` as `false` and record the blocker in progress.txt.
