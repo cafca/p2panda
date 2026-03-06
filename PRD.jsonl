@@ -1055,7 +1055,6 @@
     "operation_schema": "Define operation types for profile updates, share lifecycle events, and contact graph changes, including sequencing/backlink behavior needed for causal history.",
     "log_layout": "Establish a stable log identity strategy (for example per profile + domain) and document how logs are partitioned so multiple devices can contribute safely.",
     "topic_mapping": "Implement TopicMap wiring so each joined topic resolves to the correct set of logs for replication, rather than using implicit topic-to-data conventions.",
-    "migration": "Provide a migration path from existing local profile/share/contact state into the new operation logs without losing user-visible data."
   },
   "acceptance": [
     "Profile, share, and contact state can be represented and persisted as p2panda operations with verifiable ordering",
