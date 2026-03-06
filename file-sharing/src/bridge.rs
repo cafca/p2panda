@@ -31,6 +31,7 @@ use crate::persist::{
     resume_active_transfers, resume_share_record, DownloadRecord, RecoveredShare, ShareRecord,
     StateStore,
 };
+use crate::profile::ProfileStore;
 use crate::settings::load_settings;
 use crate::share::{share_directory, share_pin_name, ShareSession};
 use crate::share_code::{decode_share_code, derive_topic};
@@ -329,6 +330,7 @@ async fn run_network_loop<State, Worker>(
 struct RuntimeState {
     node: AppNode,
     inner: tokio::sync::Mutex<RuntimeInner>,
+    profile_store: tokio::sync::Mutex<ProfileStore>,
     _settings: crate::settings::AppSettings,
     next_recovery_transfer_id: AtomicU64,
 }
@@ -366,7 +368,11 @@ impl RuntimeState {
         let node = AppNode::with_data_dir(data_dir, node_options).await?;
         let discovery_events = node.discovery.events().await?;
         let gossip_events = node.gossip.events().await?;
-        let store = StateStore::load(&node.data_dir)?;
+        let mut store = StateStore::load(&node.data_dir)?;
+        let mut profile_store = ProfileStore::load_or_create(&node.data_dir)?;
+        let profile_id = profile_store.profile().profile_id.clone();
+        store.attach_profile_to_existing_shares(&profile_id)?;
+        profile_store.ensure_share_ownership_records(store.state().active_shares.iter())?;
         Ok(Self {
             node,
             inner: tokio::sync::Mutex::new(RuntimeInner {
@@ -388,6 +394,7 @@ impl RuntimeState {
                     error_log: VecDeque::with_capacity(ERROR_LOG_LIMIT),
                 },
             }),
+            profile_store: tokio::sync::Mutex::new(profile_store),
             _settings: settings,
             next_recovery_transfer_id: AtomicU64::new(1_000_000),
         })
@@ -422,7 +429,12 @@ async fn default_handle_command(
             transfer_id,
             directory_path,
         } => {
-            let session = share_directory(&state.node, directory_path).await?;
+            let profile_id = {
+                let profile_store = state.profile_store.lock().await;
+                profile_store.profile().profile_id.clone()
+            };
+            let mut session = share_directory(&state.node, directory_path).await?;
+            session.owner_profile_id = Some(profile_id);
             event_tx
                 .send(NetworkEvent::ShareReady {
                     transfer_id,
@@ -440,8 +452,13 @@ async fn default_handle_command(
                 })
                 .context("failed to send ShareReady event")?;
 
+            let share_record = ShareRecord::from(&session);
+            {
+                let mut profile_store = state.profile_store.lock().await;
+                profile_store.ensure_share_ownership_record(&share_record)?;
+            }
             let mut runtime = state.inner.lock().await;
-            runtime.store.add_share(ShareRecord::from(&session))?;
+            runtime.store.add_share(share_record)?;
             runtime.live_shares.insert(transfer_id, session);
             Ok(())
         }
@@ -1750,11 +1767,17 @@ async fn delete_tags_for_hashes_in_order(
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::time::Duration;
 
-    use anyhow::Result;
+    use anyhow::{Context, Result};
+    use tempfile::tempdir;
+    use tokio::time::{sleep, timeout};
 
     use super::*;
+    use crate::persist::StateStore;
+    use crate::profile::ProfileStore;
+    use crate::share::share_directory;
 
     fn spawn_test_bridge<Worker>(worker: Worker) -> AsyncBridge
     where
@@ -2001,5 +2024,113 @@ mod tests {
         let second = wait_for_event(&bridge);
         assert_eq!(first, NetworkEvent::TransferCancelled { transfer_id: 10 });
         assert_eq!(second, NetworkEvent::TransferCompleted { transfer_id: 11 });
+    }
+
+    async fn wait_for_share_ready(bridge: &AsyncBridge, transfer_id: u64) -> Result<NetworkEvent> {
+        timeout(Duration::from_secs(20), async {
+            loop {
+                if let Some(event) = bridge.try_recv()? {
+                    if matches!(
+                        &event,
+                        NetworkEvent::ShareReady {
+                            transfer_id: event_transfer_id,
+                            ..
+                        } if *event_transfer_id == transfer_id
+                    ) {
+                        return Ok(event);
+                    }
+                }
+
+                sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .context("timed out waiting for ShareReady event")?
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn share_command_persists_profile_ownership_in_state_and_records() -> Result<()> {
+        let data_dir = tempdir()?;
+        let source_dir = tempdir()?;
+        let source_root = source_dir.path().join("share-me");
+        fs::create_dir_all(&source_root)?;
+        fs::write(source_root.join("hello.txt"), b"hello profile")?;
+
+        let bridge = AsyncBridge::spawn_with_data_dir(
+            NodeOptions::default(),
+            data_dir.path().to_path_buf(),
+        )?;
+        let transfer_id = 77;
+        bridge.send(NetworkCommand::ShareDirectory {
+            transfer_id,
+            directory_path: source_root.clone(),
+        })?;
+
+        let event = wait_for_share_ready(&bridge, transfer_id).await?;
+        let share_code = match event {
+            NetworkEvent::ShareReady { share_code, .. } => share_code,
+            other => panic!("unexpected event: {other:?}"),
+        };
+
+        let state_store = StateStore::load(data_dir.path())?;
+        assert_eq!(state_store.state().active_shares.len(), 1);
+
+        let profile_store = ProfileStore::load_or_create(data_dir.path())?;
+        let share_record = &state_store.state().active_shares[0];
+        assert_eq!(
+            share_record.owner_profile_id.as_deref(),
+            Some(profile_store.profile().profile_id.as_str())
+        );
+        assert_eq!(share_record.share_code, share_code);
+
+        let ownerships = profile_store.share_ownership_records()?;
+        assert!(ownerships.iter().any(|record| {
+            record.profile_id == profile_store.profile().profile_id
+                && record.share_code == share_record.share_code
+                && record.collection_hash == share_record.collection_hash
+        }));
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn startup_recovery_backfills_owner_profile_for_existing_shares() -> Result<()> {
+        let data_dir = tempdir()?;
+        let source_dir = tempdir()?;
+        let source_root = source_dir.path().join("shared");
+        fs::create_dir_all(&source_root)?;
+        fs::write(source_root.join("hello.txt"), b"hello backfill")?;
+
+        let node = AppNode::with_data_dir(data_dir.path(), NodeOptions::default()).await?;
+        let share = share_directory(&node, &source_root).await?;
+        let mut state_store = StateStore::load(data_dir.path())?;
+        state_store.add_share(ShareRecord::from(&share))?;
+        drop(share);
+        drop(node);
+        sleep(Duration::from_millis(250)).await;
+
+        let bridge = AsyncBridge::spawn_with_data_dir(
+            NodeOptions::default(),
+            data_dir.path().to_path_buf(),
+        )?;
+        let _ = wait_for_share_ready(&bridge, 1_000_000).await?;
+
+        let reloaded_state = StateStore::load(data_dir.path())?;
+        let profile_store = ProfileStore::load_or_create(data_dir.path())?;
+        assert_eq!(reloaded_state.state().active_shares.len(), 1);
+        assert_eq!(
+            reloaded_state.state().active_shares[0]
+                .owner_profile_id
+                .as_deref(),
+            Some(profile_store.profile().profile_id.as_str())
+        );
+        assert!(profile_store
+            .share_ownership_records()?
+            .iter()
+            .any(|record| {
+                record.share_code == reloaded_state.state().active_shares[0].share_code
+            }));
+
+        Ok(())
     }
 }

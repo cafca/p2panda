@@ -954,3 +954,28 @@ What doesn't work:
 - Reviewed workflow structure: correct needs chain, permissions, artifact paths, Windows shell directives
 - Linux AppImage and Windows MSI require CI validation (cannot be verified locally on macOS)
 - Marked Task 31 passes: true in PRD.jsonl
+
+# 2026-03-06 11:21
+
+- picked Task 37 (`User profile model with p2panda-backed share ownership`) as the highest-priority unfinished feature because it is the foundation for the remaining contact/discovery work (Tasks 38 and 39) and now sits on top of already-passing share/persistence flows
+- added `file-sharing/src/profile.rs` with:
+  - automatic first-launch profile creation tied to the persisted node identity
+  - deterministic adjective+fruit default names
+  - versioned `profile.json` persistence with corrupt-file recovery
+  - a signed local p2panda-operation ledger for profile metadata and share-ownership records
+  - query helpers for profile metadata and share ownership records
+- wired profile ownership through the runtime:
+  - added `owner_profile_id` to `ShareRecord`
+  - attached the active profile to new shares in `bridge.rs`
+  - backfilled previously persisted shares on startup and wrote missing ownership records into the p2panda ledger
+- exposed profile controls in the existing settings UI so the user can view/copy the profile ID and edit/save the display name
+- ran `cargo fmt --package p2panda-file-sharing-gui`
+- ran `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-file-sharing-gui --lib --locked`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui profile --lib --locked -- --nocapture`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui bridge --lib --locked -- --nocapture`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui ui --lib --locked -- --nocapture`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui --lib --locked -- --nocapture`
+- confirmed Task 37 acceptance criteria in this run and updated Task 37 `passes` to `true` in `PRD.jsonl`
+
+What doesn't work:
+- no additional blocker for Task 37 in this run

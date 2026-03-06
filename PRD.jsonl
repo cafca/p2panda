@@ -894,7 +894,7 @@
     "Previously persisted shares are linked to the profile after migration/backfill",
     "Profile metadata and share associations are queryable from p2panda records"
   ],
-  "passes": false
+  "passes": true
 }
 {
   "id": 38,

@@ -11,6 +11,7 @@ use flume::TryRecvError;
 use crate::bridge::{AsyncBridge, NetworkCommand, NetworkEvent};
 use crate::node::NodeOptions;
 use crate::notifications::NotificationState;
+use crate::profile::ProfileStore;
 use crate::settings::{AppSettings, SettingsStore};
 use crate::state::{Direction, FileProgress, Transfer, TransferRegistry, TransferStatus};
 use crate::ui::{default_download_directory, ui_system, UiState};
@@ -32,6 +33,7 @@ struct PluginStartupError {
 
 struct PluginResources {
     bridge: AsyncBridge,
+    profile_store: ProfileStore,
     settings_store: SettingsStore,
     ui_state: UiState,
 }
@@ -50,6 +52,7 @@ impl Plugin for FileSharingPlugin {
             Ok(resources) => {
                 app.insert_resource(resources.bridge);
                 app.insert_resource(TransferRegistry::default());
+                app.insert_resource(resources.profile_store);
                 app.insert_resource(resources.settings_store);
                 app.insert_resource(resources.ui_state);
                 app.insert_resource(NotificationState::default());
@@ -72,6 +75,12 @@ fn initialize_plugin_resources() -> Result<PluginResources> {
     let settings_store =
         SettingsStore::load(&data_dir).context("failed to load app settings from disk")?;
     let settings = settings_store.settings().clone();
+    let node_options =
+        resolve_node_options(&settings).context("failed to resolve node options from settings")?;
+    let bridge = AsyncBridge::spawn_with_data_dir(node_options, data_dir.clone())
+        .context("failed to initialize async bridge")?;
+    let profile_store =
+        ProfileStore::load_or_create(&data_dir).context("failed to load profile")?;
     let ui_state = UiState::with_settings(
         settings_store
             .settings()
@@ -80,14 +89,12 @@ fn initialize_plugin_resources() -> Result<PluginResources> {
             .unwrap_or_else(default_download_directory),
         settings.relay_mode,
         settings.custom_relay_url.clone(),
+        profile_store.profile().display_name.clone(),
     );
-    let node_options =
-        resolve_node_options(&settings).context("failed to resolve node options from settings")?;
-    let bridge = AsyncBridge::spawn_with_data_dir(node_options, data_dir)
-        .context("failed to initialize async bridge")?;
 
     Ok(PluginResources {
         bridge,
+        profile_store,
         settings_store,
         ui_state,
     })

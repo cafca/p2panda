@@ -9,6 +9,7 @@ use crate::bridge::{AsyncBridge, NetworkCommand};
 use crate::diagnostics::{
     now_unix_ms, DiagnosticsSnapshot, PeerConnectionState, PeerDiscoveryMethod,
 };
+use crate::profile::ProfileStore;
 use crate::settings::{RelayMode, SettingsStore};
 use crate::state::{Direction, FileVerification, Transfer, TransferRegistry, TransferStatus};
 
@@ -40,6 +41,8 @@ pub struct UiState {
     pub relay_mode: RelayMode,
     pub custom_relay_url_input: String,
     pub relay_restart_required: bool,
+    pub profile_display_name_input: String,
+    pub profile_error: Option<String>,
     pub settings_error: Option<String>,
     pub drag_drop_active: bool,
     pub drag_drop_error: Option<String>,
@@ -72,6 +75,8 @@ impl UiState {
             relay_mode: RelayMode::TestingRelay,
             custom_relay_url_input: String::new(),
             relay_restart_required: false,
+            profile_display_name_input: String::new(),
+            profile_error: None,
             settings_error: None,
             drag_drop_active: false,
             drag_drop_error: None,
@@ -90,10 +95,12 @@ impl UiState {
         default_download_directory: PathBuf,
         relay_mode: RelayMode,
         custom_relay_url: Option<String>,
+        profile_display_name: String,
     ) -> Self {
         let mut state = Self::with_default_download_directory(default_download_directory);
         state.relay_mode = relay_mode;
         state.custom_relay_url_input = custom_relay_url.unwrap_or_default();
+        state.profile_display_name_input = profile_display_name;
         state
     }
 
@@ -202,6 +209,7 @@ pub fn ui_system(
     mut ui_state: ResMut<UiState>,
     mut transfers: ResMut<TransferRegistry>,
     bridge: Res<AsyncBridge>,
+    mut profile_store: ResMut<ProfileStore>,
     mut settings_store: ResMut<SettingsStore>,
     mut drag_and_drop_events: EventReader<FileDragAndDrop>,
 ) {
@@ -355,7 +363,13 @@ pub fn ui_system(
             }
 
             if ui_state.show_settings_view {
-                render_settings_view(ui, &mut ui_state, &mut settings_store, dialog_busy);
+                render_settings_view(
+                    ui,
+                    &mut ui_state,
+                    &mut profile_store,
+                    &mut settings_store,
+                    dialog_busy,
+                );
             } else if ui_state.show_diagnostics_view {
                 render_diagnostics_view(ui, &ui_state, &transfers);
             } else {
@@ -400,6 +414,7 @@ pub fn render_transfer_ui(
     ui_state: ResMut<UiState>,
     transfers: ResMut<TransferRegistry>,
     bridge: Res<AsyncBridge>,
+    profile_store: ResMut<ProfileStore>,
     settings_store: ResMut<SettingsStore>,
     drag_and_drop_events: EventReader<FileDragAndDrop>,
 ) {
@@ -408,6 +423,7 @@ pub fn render_transfer_ui(
         ui_state,
         transfers,
         bridge,
+        profile_store,
         settings_store,
         drag_and_drop_events,
     );
@@ -542,10 +558,54 @@ fn render_drag_drop_overlay(ctx: &egui::Context) {
 fn render_settings_view(
     ui: &mut egui::Ui,
     ui_state: &mut UiState,
+    profile_store: &mut ProfileStore,
     settings_store: &mut SettingsStore,
     dialog_busy: bool,
 ) {
     ui.heading("Settings");
+    ui.label("Profile");
+    ui.horizontal(|ui| {
+        ui.label("Profile ID");
+        ui.monospace(&profile_store.profile().profile_id);
+        if ui.button("Copy ID").clicked() {
+            copy_text(ui.ctx(), &profile_store.profile().profile_id);
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.label("Display name");
+        ui.add(
+            egui::TextEdit::singleline(&mut ui_state.profile_display_name_input)
+                .desired_width(260.0),
+        );
+        let can_save_name = !ui_state.profile_display_name_input.trim().is_empty()
+            && ui_state.profile_display_name_input.trim() != profile_store.profile().display_name;
+        if ui
+            .add_enabled(can_save_name, egui::Button::new("Save"))
+            .clicked()
+        {
+            match profile_store.update_display_name(ui_state.profile_display_name_input.clone()) {
+                Ok(_) => {
+                    ui_state.profile_display_name_input =
+                        profile_store.profile().display_name.clone();
+                    ui_state.profile_error = None;
+                }
+                Err(err) => {
+                    ui_state.profile_error = Some(err.to_string());
+                }
+            }
+        }
+    });
+    if let Some(warning) = profile_store.load_warning() {
+        ui.colored_label(egui::Color32::YELLOW, warning);
+    }
+    if let Some(error) = &ui_state.profile_error {
+        ui.colored_label(
+            egui::Color32::RED,
+            format!("Failed to save profile: {error}"),
+        );
+    }
+
+    ui.separator();
     ui.label("Default download directory");
     ui.horizontal(|ui| {
         ui.label(ui_state.selected_download_directory.display().to_string());

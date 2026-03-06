@@ -61,6 +61,8 @@ pub struct ShareRecord {
     pub share_code: String,
     pub collection_hash: String,
     #[serde(default)]
+    pub owner_profile_id: Option<String>,
+    #[serde(default)]
     pub directory_name: String,
     #[serde(default)]
     pub file_count: usize,
@@ -83,6 +85,7 @@ impl ShareRecord {
             source_dir: source_dir.into(),
             share_code: share_code.into(),
             collection_hash: collection_hash.to_hex(),
+            owner_profile_id: None,
             directory_name: directory_name.into(),
             file_count,
             total_bytes,
@@ -94,6 +97,11 @@ impl ShareRecord {
         self.collection_hash
             .parse()
             .with_context(|| format!("invalid collection hash {}", self.collection_hash))
+    }
+
+    pub fn with_owner_profile_id(mut self, owner_profile_id: impl Into<Option<String>>) -> Self {
+        self.owner_profile_id = owner_profile_id.into();
+        self
     }
 }
 
@@ -113,6 +121,7 @@ impl From<&ShareSession> for ShareRecord {
             value.file_count(),
             value.total_bytes,
         )
+        .with_owner_profile_id(value.owner_profile_id.clone())
     }
 }
 
@@ -176,6 +185,22 @@ impl StateStore {
         self.state.active_shares.push(record);
         self.save()?;
         Ok(())
+    }
+
+    pub fn attach_profile_to_existing_shares(&mut self, profile_id: &str) -> Result<usize> {
+        let mut updated = 0usize;
+        for record in &mut self.state.active_shares {
+            if record.owner_profile_id.as_deref() != Some(profile_id) {
+                record.owner_profile_id = Some(profile_id.to_owned());
+                updated += 1;
+            }
+        }
+
+        if updated > 0 {
+            self.save()?;
+        }
+
+        Ok(updated)
     }
 
     pub fn add_download(&mut self, record: DownloadRecord) -> Result<()> {
