@@ -1244,3 +1244,31 @@ What doesn't work:
 - Task 41 is still externally blocked from a truthful pass in this environment:
   - I still do not have a real authenticated GitHub token or `gh` session for `cafca/p2panda`, so I could not actually push this branch/tag to the fork or create/update the PR from here
   - without a real fork push, I still cannot prove a green PR check suite, a successful `release.yml` run on the fork, uploaded experimental release artifacts, or cleanup of experimental fork tags
+
+# 2026-03-06 14:06 UTC
+
+- picked Task 41 (`Ensure basic CI/CD works: Validate GitHub CI on fork (cafca/p2panda)`) again because it is still the only remaining task with `passes: false`
+- reduced the remaining fork-validation friction in `scripts/release/validate-fork.sh` by adding polling helpers:
+  - `wait-pr <pr-number|branch> [timeout] [poll]` now repeatedly checks the fork PR until it is open, not draft, and all check runs are green
+  - `wait-release <tag> [timeout] [poll]` now repeatedly checks the experimental release workflow until the run is green and the expected release artifacts are present
+  - both commands keep the existing fork-only safety checks and expose timeout/poll controls for non-interactive validation runs
+- updated `docs/fork-validation.md` and `docs/dev-environment.md` so the documented Task 41 workflow can block on GitHub Actions completion instead of requiring manual repeated status checks
+- ran feedback loops:
+  - `bash -n scripts/release/validate-fork.sh`
+  - `./scripts/release/validate-fork.sh preflight`
+  - `./scripts/release/validate-fork.sh wait-pr port-blobs-to-net-v0.5 1 1`
+  - `./scripts/release/validate-fork.sh wait-release v0.1.0-experimental.1 1 1`
+  - `./scripts/release/validate-fork.sh branch-status port-blobs-to-net-v0.5`
+  - `./scripts/release/validate-fork.sh origin-status HEAD`
+  - `cargo fmt --all --check`
+  - `./scripts/verify-in-sandbox.sh -- cargo clippy --workspace --locked -- -D warnings`
+  - `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui --lib --locked -- --nocapture`
+  - `cargo audit -q`
+- confirmed the local CI-equivalent checks still pass after the helper changes: formatting is clean, workspace clippy passes with `-D warnings`, all 94 `p2panda-file-sharing-gui` lib tests pass, and `cargo audit` still reports only the previously accepted warning-level advisories
+- confirmed Task 41 still cannot be marked passing from this environment: `branch-status` shows the public fork branch `port-blobs-to-net-v0.5` is still stale at `0746e60cda013423f93730c6543c7ec1d1f85ab8` instead of local `HEAD` `91d56cf069f075f0391fed154b6be14e803759c2`, `wait-pr` reports fork PR `#1` is still draft with failing `clippy`, `test`, and `check` runs on that stale SHA, `wait-release` reports `v0.1.0-experimental.1` does not exist on the fork yet, and `origin-status HEAD` still shows no matching workflow runs on upstream `p2panda/p2panda`
+- left Task 41 `passes` as `false`; `PRD.jsonl` was not changed because the fork-side acceptance criteria were not actually completed in this run
+
+What doesn't work:
+- Task 41 remains externally blocked from a truthful pass in this environment:
+  - `./scripts/release/validate-fork.sh preflight` still reports no `gh` auth, no GitHub token, and no local `ssh` client, so I cannot push the current branch or an experimental tag to `cafca/p2panda` from here
+  - without a real fork push/update, I still cannot prove a green PR check suite, a successful fork `release.yml` run across macOS/Linux/Windows, uploaded experimental release artifacts, or experimental tag cleanup on the fork

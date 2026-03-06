@@ -71,9 +71,13 @@ For read-only verification after a push, the same helper can inspect the public 
 ```bash
 ./scripts/release/validate-fork.sh branch-status port-blobs-to-net-v0.5
 ./scripts/release/validate-fork.sh pr-status port-blobs-to-net-v0.5
+./scripts/release/validate-fork.sh wait-pr port-blobs-to-net-v0.5
 ./scripts/release/validate-fork.sh release-status v0.1.0-experimental.1
+./scripts/release/validate-fork.sh wait-release v0.1.0-experimental.1
 ./scripts/release/validate-fork.sh origin-status HEAD
 ```
+
+The `wait-pr` and `wait-release` variants poll until GitHub finishes the relevant checks or the timeout expires, which is safer than manually re-running status commands during fork validation.
 
 ## Ralph Workflow
 

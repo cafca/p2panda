@@ -9,8 +9,10 @@ Usage:
   ./scripts/release/validate-fork.sh open-pr [branch]
   ./scripts/release/validate-fork.sh branch-status <branch> [commit-ish]
   ./scripts/release/validate-fork.sh pr-status <pr-number|branch>
+  ./scripts/release/validate-fork.sh wait-pr <pr-number|branch> [timeout-seconds] [poll-seconds]
   ./scripts/release/validate-fork.sh push-tag <vX.Y.Z-experimental.N>
   ./scripts/release/validate-fork.sh release-status <vX.Y.Z-experimental.N>
+  ./scripts/release/validate-fork.sh wait-release <vX.Y.Z-experimental.N> [timeout-seconds] [poll-seconds]
   ./scripts/release/validate-fork.sh cleanup-tag <vX.Y.Z-experimental.N>
   ./scripts/release/validate-fork.sh origin-status <commit-ish>
 
@@ -28,6 +30,8 @@ CHECK_VERSION_SCRIPT="$ROOT_DIR/scripts/release/check-version.sh"
 FORK_REPO="cafca/p2panda"
 ORIGIN_REPO="p2panda/p2panda"
 FORK_HTTPS_PUSH_URL="https://github.com/cafca/p2panda.git"
+DEFAULT_WAIT_TIMEOUT_SECONDS=900
+DEFAULT_WAIT_POLL_SECONDS=15
 
 EXPECTED_FORK_URLS=(
   "git@github.com:cafca/p2panda.git"
@@ -433,6 +437,55 @@ release_jobs_complete() {
     ' >/dev/null
 }
 
+now_epoch() {
+  date +%s
+}
+
+wait_with_polling() {
+  local description="$1"
+  local timeout_seconds="$2"
+  local poll_seconds="$3"
+  shift 3
+
+  local started_at deadline attempt output status
+
+  if ! [[ "$timeout_seconds" =~ ^[0-9]+$ ]] || [[ "$timeout_seconds" -le 0 ]]; then
+    echo "timeout must be a positive integer number of seconds" >&2
+    exit 1
+  fi
+
+  if ! [[ "$poll_seconds" =~ ^[0-9]+$ ]] || [[ "$poll_seconds" -le 0 ]]; then
+    echo "poll interval must be a positive integer number of seconds" >&2
+    exit 1
+  fi
+
+  started_at="$(now_epoch)"
+  deadline=$((started_at + timeout_seconds))
+  attempt=1
+
+  echo "waiting for ${description} (timeout=${timeout_seconds}s poll=${poll_seconds}s)"
+
+  while true; do
+    if output="$("$@" 2>&1)"; then
+      printf '[attempt %d] ready\n' "$attempt"
+      printf '%s\n' "$output"
+      return 0
+    fi
+
+    status=$?
+    printf '[attempt %d] not ready yet\n' "$attempt" >&2
+    printf '%s\n' "$output" >&2
+
+    if [[ "$(now_epoch)" -ge "$deadline" ]]; then
+      echo "timed out waiting for ${description}" >&2
+      return "$status"
+    fi
+
+    attempt=$((attempt + 1))
+    sleep "$poll_seconds"
+  done
+}
+
 cmd_preflight() {
   assert_safe_remotes
 
@@ -596,6 +649,20 @@ cmd_pr_status() {
   check_runs_all_green "$FORK_REPO" "$head_sha"
 }
 
+cmd_wait_pr() {
+  local selector="${1:-}"
+  local timeout_seconds="${2:-$DEFAULT_WAIT_TIMEOUT_SECONDS}"
+  local poll_seconds="${3:-$DEFAULT_WAIT_POLL_SECONDS}"
+
+  if [[ -z "$selector" ]]; then
+    echo "missing PR selector (number or branch)" >&2
+    usage
+    exit 1
+  fi
+
+  wait_with_polling "PR ${selector} on ${FORK_REPO}" "$timeout_seconds" "$poll_seconds" cmd_pr_status "$selector"
+}
+
 cmd_push_branch() {
   local branch="${1:-$(current_branch)}"
 
@@ -732,6 +799,20 @@ cmd_release_status() {
     release_assets_complete "$release_json"
 }
 
+cmd_wait_release() {
+  local tag="${1:-}"
+  local timeout_seconds="${2:-$DEFAULT_WAIT_TIMEOUT_SECONDS}"
+  local poll_seconds="${3:-$DEFAULT_WAIT_POLL_SECONDS}"
+
+  if [[ -z "$tag" ]]; then
+    echo "missing tag argument" >&2
+    usage
+    exit 1
+  fi
+
+  wait_with_polling "release validation for ${tag} on ${FORK_REPO}" "$timeout_seconds" "$poll_seconds" cmd_release_status "$tag"
+}
+
 cmd_cleanup_tag() {
   local tag="${1:-}"
 
@@ -807,6 +888,10 @@ case "$COMMAND" in
     shift
     cmd_pr_status "$@"
     ;;
+  wait-pr)
+    shift
+    cmd_wait_pr "$@"
+    ;;
   push-tag)
     shift
     cmd_push_tag "$@"
@@ -814,6 +899,10 @@ case "$COMMAND" in
   release-status)
     shift
     cmd_release_status "$@"
+    ;;
+  wait-release)
+    shift
+    cmd_wait_release "$@"
     ;;
   cleanup-tag)
     shift

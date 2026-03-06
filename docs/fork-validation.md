@@ -51,6 +51,14 @@ Inspect the PR and its check suite from the public GitHub API:
 
 You can also pass a PR number instead of a branch name. The command exits non-zero unless the PR is open, not draft, and all check runs are green.
 
+To block until the PR is actually green instead of manually re-running `pr-status`, use:
+
+```bash
+./scripts/release/validate-fork.sh wait-pr port-blobs-to-net-v0.5
+```
+
+Optional second and third arguments override the default `900` second timeout and `15` second poll interval.
+
 ## Release Validation
 
 Create and push an experimental release tag from the current `HEAD`:
@@ -70,6 +78,14 @@ The status command checks all of that in one place:
 ```bash
 ./scripts/release/validate-fork.sh release-status v0.1.0-experimental.1
 ```
+
+To wait for the release workflow and artifacts to finish, use:
+
+```bash
+./scripts/release/validate-fork.sh wait-release v0.1.0-experimental.1
+```
+
+As with `wait-pr`, you can pass `[timeout-seconds] [poll-seconds]` to override the defaults.
 
 Delete the experimental tag after validation:
 
