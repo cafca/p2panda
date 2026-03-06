@@ -7,7 +7,7 @@ use futures_util::StreamExt;
 use p2panda_core::Hash;
 use p2panda_core::PublicKey;
 use p2panda_net::addrs::NodeInfo;
-use p2panda_net::gossip::GossipHandle;
+use p2panda_net::gossip::{GossipEvent, GossipHandle};
 use p2panda_net::iroh_endpoint::{from_public_key, EndpointAddr};
 use p2panda_net::{Gossip, TopicId};
 use serde::{Deserialize, Serialize};
@@ -40,6 +40,7 @@ struct ContactProfileSync {
 
 pub(crate) struct ProfileSyncService {
     gossip: Gossip,
+    gossip_events: tokio::sync::broadcast::Receiver<GossipEvent>,
     local_handle: GossipHandle,
     _local_task: tokio::task::JoinHandle<()>,
     address_book: p2panda_net::AddressBook,
@@ -53,6 +54,7 @@ impl ProfileSyncService {
     pub(crate) async fn new(node: &AppNode, local_profile_id: impl Into<String>) -> Result<Self> {
         let local_profile_id = local_profile_id.into();
         let topic = profile_sync_topic(&local_profile_id);
+        let gossip_events = node.gossip.events().await?;
         let local_handle = node
             .gossip
             .stream(topic)
@@ -67,6 +69,7 @@ impl ProfileSyncService {
 
         Ok(Self {
             gossip: node.gossip.clone(),
+            gossip_events,
             local_handle,
             _local_task: local_task,
             address_book: node.address_book.clone(),
@@ -116,13 +119,11 @@ impl ProfileSyncService {
 
         let mut started = false;
         if !self.contact_streams.contains_key(profile_id) {
-            if self.relay_url.is_some() {
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            }
             let remote_handle = self
                 .join_contact_topic(profile_id)
                 .await
                 .with_context(|| format!("failed to join profile sync topic for {profile_id}"))?;
+            self.wait_for_topic_join(topic, profile_id).await?;
             let task = spawn_contact_profile_task(
                 remote_handle.clone(),
                 self.local_profile_id.clone(),
@@ -158,6 +159,30 @@ impl ProfileSyncService {
             .stream(topic)
             .await
             .with_context(|| format!("failed to join gossip topic {}", profile_id))
+    }
+
+    async fn wait_for_topic_join(&mut self, topic: TopicId, profile_id: &str) -> Result<()> {
+        let timeout = tokio::time::sleep(std::time::Duration::from_secs(5));
+        tokio::pin!(timeout);
+
+        loop {
+            tokio::select! {
+                _ = &mut timeout => {
+                    anyhow::bail!("timed out waiting to join profile sync topic for {profile_id}");
+                }
+                event = self.gossip_events.recv() => {
+                    match event {
+                        Ok(GossipEvent::Joined { topic: joined_topic, .. }) if joined_topic == topic => {
+                            return Ok(());
+                        }
+                        Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            anyhow::bail!("gossip event stream closed while joining profile sync topic for {profile_id}");
+                        }
+                    }
+                }
+            }
+        }
     }
 
     async fn seed_contact_bootstrap(&self, public_key: PublicKey) -> Result<()> {
@@ -292,7 +317,6 @@ fn spawn_contact_profile_task(
                             continue;
                         }
                     }
-
                     if let Err(err) = write_contact_cache(&cache_path, &records) {
                         tracing::warn!(
                             "failed to persist synced profile cache for {}: {err:#}",

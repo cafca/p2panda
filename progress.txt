@@ -219,6 +219,20 @@ What doesn't work:
 - implemented the missing relay-based integration test in `file-sharing/tests/transfer.rs` (`relay_based_transfer`) using `iroh::test_utils::run_relay_server`, relay-configured `AppNode` instances, and relay-only bootstrap addressing (`node_id + relay_url`)
 - verified end-to-end relay transfer by sharing a nested test directory from node A and downloading via share code on node B, then byte-comparing source/output trees
 
+# Fri, 06 Mar 2026 18:17:53 GMT
+
+- picked Task 42 (`Remove nickname from follow flow — display name owned by profile`) as the highest-priority remaining local feature because Task 41 depends on external GitHub validation and Tasks 43-44 are lower-priority UI refinements
+- verified the existing follow-flow model already satisfies the non-network parts of the task: there is no nickname field in `Contact` or `ContactFollowRecord`, the UI only asks for a profile ID, and unsynced contacts fall back to the first 8 chars of the profile ID
+- hardened `file-sharing/src/profile_sync.rs` so new contact syncs wait for an explicit `GossipEvent::Joined` instead of relying on the previous fixed one-second relay sleep before issuing the first profile-sync request
+- ran `cargo check -p p2panda-file-sharing-gui --lib`
+- ran `cargo test -p p2panda-file-sharing-gui contacts --lib -- --nocapture`
+- ran `cargo test -p p2panda-file-sharing-gui profile_sync::tests::local_service_replies_to_profile_sync_requests --lib -- --nocapture`
+- ran `cargo test -p p2panda-file-sharing-gui profile_sync::tests::syncs_contact_profile_and_tracks_display_name_updates --lib -- --ignored --nocapture`
+
+What doesn't work:
+- Task 42 remains `passes: false`; the decisive end-to-end sync test still times out waiting for the first remote cache write, so I could not truthfully mark the task as passing in this run
+- `PRD.jsonl` already contains unrelated uncommitted edits outside Task 42, and there was no truthful `passes` transition to apply; I left Task 42 at `false` and did not make any non-`passes` PRD edits
+
 # Fri, 06 Mar 2026 17:43:59 GMT
 
 - picked Task 42 (`Remove nickname from follow flow — display name owned by profile`) as the highest-priority remaining product task because Task 41 is external fork validation and Tasks 43/44 build on the cleaned-up contact/profile surfaces
