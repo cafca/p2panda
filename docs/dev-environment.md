@@ -64,6 +64,14 @@ Task 41 has one part that cannot be proven purely with local cargo runs: actual 
 
 Use it before any branch push or experimental tag push. It refuses unsafe remote setups and is documented in [docs/fork-validation.md](/Users/pv/code/p2panda/docs/fork-validation.md).
 
+For read-only verification after a push, the same helper can inspect the public fork state without `gh` auth:
+
+```bash
+./scripts/release/validate-fork.sh pr-status port-blobs-to-net-v0.5
+./scripts/release/validate-fork.sh release-status v0.1.0-experimental.1
+./scripts/release/validate-fork.sh origin-status HEAD
+```
+
 ## Ralph Workflow
 
 `./ralph.sh` and `./watch-ralph.sh` now use the same named Docker container model:

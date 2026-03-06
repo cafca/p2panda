@@ -29,7 +29,13 @@ Open the PR against `cafca/p2panda:main`:
 ./scripts/release/validate-fork.sh open-pr
 ```
 
-Then confirm the PR shows a green `CI` workflow in the fork repository.
+Inspect the PR and its check suite from the public GitHub API:
+
+```bash
+./scripts/release/validate-fork.sh pr-status port-blobs-to-net-v0.5
+```
+
+You can also pass a PR number instead of a branch name. The command exits non-zero unless the PR is open, not draft, and all check runs are green.
 
 ## Release Validation
 
@@ -45,6 +51,12 @@ The helper refuses non-experimental tags and re-checks that only the `fork` remo
 - macOS, Linux, and Windows jobs all passed
 - the GitHub Release contains `.dmg`, `.AppImage`, `.tar.gz`, `.msi`, `.zip`, and checksum files
 
+The status command checks all of that in one place:
+
+```bash
+./scripts/release/validate-fork.sh release-status v0.1.0-experimental.1
+```
+
 Delete the experimental tag after validation:
 
 ```bash
@@ -52,3 +64,13 @@ Delete the experimental tag after validation:
 ```
 
 If the first run fails, fix the repo issue, then retry with the next tag (`v0.1.0-experimental.2`, etc.).
+
+## Upstream Safety Check
+
+After a branch push or tag validation, confirm the same commit did not trigger any workflow runs on upstream `p2panda/p2panda`:
+
+```bash
+./scripts/release/validate-fork.sh origin-status HEAD
+```
+
+The command exits non-zero if it finds a matching GitHub Actions run on `origin`.

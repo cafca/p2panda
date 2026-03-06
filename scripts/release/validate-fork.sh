@@ -7,8 +7,11 @@ Usage:
   ./scripts/release/validate-fork.sh preflight
   ./scripts/release/validate-fork.sh push-branch [branch]
   ./scripts/release/validate-fork.sh open-pr [branch]
+  ./scripts/release/validate-fork.sh pr-status <pr-number|branch>
   ./scripts/release/validate-fork.sh push-tag <vX.Y.Z-experimental.N>
+  ./scripts/release/validate-fork.sh release-status <vX.Y.Z-experimental.N>
   ./scripts/release/validate-fork.sh cleanup-tag <vX.Y.Z-experimental.N>
+  ./scripts/release/validate-fork.sh origin-status <commit-ish>
 
 Safety rules:
   - only the `fork` remote may be used for pushes and tag operations
@@ -21,6 +24,8 @@ EOF
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 CHECK_VERSION_SCRIPT="$ROOT_DIR/scripts/release/check-version.sh"
+FORK_REPO="cafca/p2panda"
+ORIGIN_REPO="p2panda/p2panda"
 
 EXPECTED_FORK_URLS=(
   "git@github.com:cafca/p2panda.git"
@@ -108,6 +113,66 @@ require_push_transport() {
   fi
 }
 
+require_api_tools() {
+  if ! command -v curl >/dev/null 2>&1; then
+    echo "missing required tool: curl" >&2
+    exit 1
+  fi
+
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "missing required tool: jq" >&2
+    exit 1
+  fi
+}
+
+api_get() {
+  local path="$1"
+  curl -fsSL \
+    -H "Accept: application/vnd.github+json" \
+    "https://api.github.com${path}"
+}
+
+resolve_pr_json() {
+  local selector="$1"
+
+  if [[ "$selector" =~ ^[0-9]+$ ]]; then
+    api_get "/repos/${FORK_REPO}/pulls/${selector}"
+    return 0
+  fi
+
+  api_get "/repos/${FORK_REPO}/pulls?state=all&head=cafca:${selector}&per_page=100" |
+    jq '.[0]'
+}
+
+print_check_runs() {
+  local repo="$1"
+  local sha="$2"
+
+  api_get "/repos/${repo}/commits/${sha}/check-runs" |
+    jq -r '
+      if (.check_runs | length) == 0 then
+        "  (no check runs found)"
+      else
+        .check_runs[]
+        | "  - \(.name): status=\(.status) conclusion=\(.conclusion // "pending")"
+      end
+    '
+}
+
+check_runs_all_green() {
+  local repo="$1"
+  local sha="$2"
+
+  api_get "/repos/${repo}/commits/${sha}/check-runs" |
+    jq -e '
+      (.total_count > 0) and
+      all(
+        .check_runs[];
+        .status == "completed" and ((.conclusion // "") | IN("success", "neutral", "skipped"))
+      )
+    ' >/dev/null
+}
+
 assert_experimental_tag() {
   local tag="$1"
 
@@ -134,6 +199,68 @@ ensure_local_tag_points_to_head() {
   fi
 
   git tag -a "$tag" -m "Experimental release validation $tag" HEAD
+}
+
+release_run_json_for_tag() {
+  local tag="$1"
+  local head_sha
+
+  if ! head_sha="$(api_get "/repos/${FORK_REPO}/commits/${tag}" 2>/dev/null | jq -r '.sha')" || [[ -z "$head_sha" || "$head_sha" == "null" ]]; then
+    echo "tag '$tag' does not exist on ${FORK_REPO}" >&2
+    return 1
+  fi
+
+  api_get "/repos/${FORK_REPO}/actions/workflows/release.yml/runs?event=push&per_page=100" |
+    jq --arg sha "$head_sha" '
+      .workflow_runs
+      | map(select(.head_sha == $sha))
+      | sort_by(.created_at)
+      | last
+    '
+}
+
+print_release_assets() {
+  local release_json="$1"
+
+  jq -r '
+    if (.assets | length) == 0 then
+      "  (no assets found)"
+    else
+      .assets[]
+      | "  - \(.name)"
+    end
+  ' <<<"$release_json"
+}
+
+release_assets_complete() {
+  local release_json="$1"
+
+  jq -e '
+    [
+      any(.assets[]?; .name | endswith(".dmg")),
+      any(.assets[]?; .name | endswith(".AppImage")),
+      any(.assets[]?; .name | endswith(".tar.gz")),
+      any(.assets[]?; .name | endswith(".msi")),
+      (([.assets[]? | select(.name | endswith(".zip"))] | length) >= 2),
+      (([.assets[]? | select(.name | endswith(".sha256"))] | length) >= 5)
+    ]
+    | all(.[])
+  ' <<<"$release_json" >/dev/null
+}
+
+release_jobs_complete() {
+  local run_id="$1"
+
+  api_get "/repos/${FORK_REPO}/actions/runs/${run_id}/jobs" |
+    jq -e '
+      [
+        any(.jobs[]?; .name == "macos" and .status == "completed" and .conclusion == "success"),
+        any(.jobs[]?; .name == "linux" and .status == "completed" and .conclusion == "success"),
+        any(.jobs[]?; .name == "windows" and .status == "completed" and .conclusion == "success"),
+        any(.jobs[]?; .name == "release" and .status == "completed" and .conclusion == "success")
+      ]
+      | all(.[])
+    ' >/dev/null
 }
 
 cmd_preflight() {
@@ -167,6 +294,56 @@ cmd_preflight() {
   else
     echo "ssh client:    not required"
   fi
+}
+
+cmd_pr_status() {
+  local selector="${1:-}"
+  local pr_json pr_number title state draft head_ref head_sha pr_url
+
+  if [[ -z "$selector" ]]; then
+    echo "missing PR selector (number or branch)" >&2
+    usage
+    exit 1
+  fi
+
+  assert_safe_remotes
+  require_api_tools
+
+  if ! pr_json="$(resolve_pr_json "$selector" 2>/dev/null)"; then
+    echo "failed to query PR data from ${FORK_REPO}" >&2
+    exit 1
+  fi
+
+  if [[ "$(jq -r 'type' <<<"$pr_json")" == "null" ]]; then
+    echo "no PR found for selector '$selector' on ${FORK_REPO}" >&2
+    exit 1
+  fi
+
+  pr_number="$(jq -r '.number' <<<"$pr_json")"
+  title="$(jq -r '.title' <<<"$pr_json")"
+  state="$(jq -r '.state' <<<"$pr_json")"
+  draft="$(jq -r '.draft' <<<"$pr_json")"
+  head_ref="$(jq -r '.head.ref' <<<"$pr_json")"
+  head_sha="$(jq -r '.head.sha' <<<"$pr_json")"
+  pr_url="$(jq -r '.html_url' <<<"$pr_json")"
+
+  echo "repo:        ${FORK_REPO}"
+  echo "pr:          #${pr_number}"
+  echo "title:       ${title}"
+  echo "url:         ${pr_url}"
+  echo "state:       ${state}"
+  echo "draft:       ${draft}"
+  echo "head ref:    ${head_ref}"
+  echo "head sha:    ${head_sha}"
+  echo "check runs:"
+  print_check_runs "$FORK_REPO" "$head_sha"
+
+  if [[ "$state" != "open" || "$draft" != "false" ]]; then
+    echo "PR is not ready for validation yet" >&2
+    exit 1
+  fi
+
+  check_runs_all_green "$FORK_REPO" "$head_sha"
 }
 
 cmd_push_branch() {
@@ -208,6 +385,66 @@ cmd_push_tag() {
   git push fork "refs/tags/$tag"
 }
 
+cmd_release_status() {
+  local tag="${1:-}"
+  local run_json run_id run_url run_status run_conclusion release_json release_url
+
+  if [[ -z "$tag" ]]; then
+    echo "missing tag argument" >&2
+    usage
+    exit 1
+  fi
+
+  assert_safe_remotes
+  assert_experimental_tag "$tag"
+  require_api_tools
+
+  if ! run_json="$(release_run_json_for_tag "$tag")"; then
+    exit 1
+  fi
+
+  if [[ "$(jq -r 'type' <<<"$run_json")" == "null" ]]; then
+    echo "no release workflow run found for tag '$tag' on ${FORK_REPO}" >&2
+    exit 1
+  fi
+
+  run_id="$(jq -r '.id' <<<"$run_json")"
+  run_url="$(jq -r '.html_url' <<<"$run_json")"
+  run_status="$(jq -r '.status' <<<"$run_json")"
+  run_conclusion="$(jq -r '.conclusion // "pending"' <<<"$run_json")"
+
+  echo "repo:        ${FORK_REPO}"
+  echo "tag:         ${tag}"
+  echo "run id:      ${run_id}"
+  echo "run status:  ${run_status}"
+  echo "conclusion:  ${run_conclusion}"
+  echo "run url:     ${run_url}"
+  echo "jobs:"
+  api_get "/repos/${FORK_REPO}/actions/runs/${run_id}/jobs" |
+    jq -r '
+      if (.jobs | length) == 0 then
+        "  (no jobs found)"
+      else
+        .jobs[]
+        | "  - \(.name): status=\(.status) conclusion=\(.conclusion // "pending")"
+      end
+    '
+
+  if ! release_json="$(api_get "/repos/${FORK_REPO}/releases/tags/${tag}" 2>/dev/null)"; then
+    echo "no GitHub release found for tag '$tag' on ${FORK_REPO}" >&2
+    exit 1
+  fi
+
+  release_url="$(jq -r '.html_url' <<<"$release_json")"
+  echo "release url: ${release_url}"
+  echo "assets:"
+  print_release_assets "$release_json"
+
+  [[ "$run_status" == "completed" && "$run_conclusion" == "success" ]] &&
+    release_jobs_complete "$run_id" &&
+    release_assets_complete "$release_json"
+}
+
 cmd_cleanup_tag() {
   local tag="${1:-}"
 
@@ -227,6 +464,40 @@ cmd_cleanup_tag() {
   fi
 }
 
+cmd_origin_status() {
+  local commitish="${1:-HEAD}"
+  local sha
+
+  assert_safe_remotes
+  require_api_tools
+
+  if ! sha="$(git rev-parse "$commitish^{commit}" 2>/dev/null)"; then
+    echo "unknown commit-ish: $commitish" >&2
+    exit 1
+  fi
+
+  echo "repo:     ${ORIGIN_REPO}"
+  echo "commit:   ${sha}"
+  echo "runs:"
+
+  api_get "/repos/${ORIGIN_REPO}/actions/runs?per_page=100" |
+    jq -r --arg sha "$sha" '
+      [
+        .workflow_runs[]
+        | select(.head_sha == $sha)
+        | "  - \(.name): event=\(.event) status=\(.status) conclusion=\(.conclusion // "pending")"
+      ] as $runs
+      | if ($runs | length) == 0 then
+          "  (no runs found)"
+        else
+          $runs[]
+        end
+    '
+
+  ! api_get "/repos/${ORIGIN_REPO}/actions/runs?per_page=100" |
+    jq -e --arg sha "$sha" 'any(.workflow_runs[]?; .head_sha == $sha)' >/dev/null
+}
+
 COMMAND="${1:-}"
 case "$COMMAND" in
   preflight)
@@ -241,13 +512,25 @@ case "$COMMAND" in
     shift
     cmd_open_pr "$@"
     ;;
+  pr-status)
+    shift
+    cmd_pr_status "$@"
+    ;;
   push-tag)
     shift
     cmd_push_tag "$@"
     ;;
+  release-status)
+    shift
+    cmd_release_status "$@"
+    ;;
   cleanup-tag)
     shift
     cmd_cleanup_tag "$@"
+    ;;
+  origin-status)
+    shift
+    cmd_origin_status "$@"
     ;;
   -h|--help|help)
     usage

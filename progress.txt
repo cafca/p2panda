@@ -1183,3 +1183,26 @@ What doesn't work:
   - `gh` is installed but unauthenticated (`gh auth status` fails), so I cannot create or inspect a PR on `cafca/p2panda`
   - the `fork` remote uses SSH and this environment does not have an `ssh` client, so authenticated `git push fork ...` and experimental tag push/cleanup cannot run here
 - because those fork operations are blocked, I still cannot prove the acceptance criteria requiring a green PR check suite, a successful `release.yml` run on the fork, uploaded experimental release artifacts, and confirmation that no workflows were triggered on `origin`
+
+# 2026-03-06 13:26
+
+- picked Task 41 (`Ensure basic CI/CD works: Validate GitHub CI on fork (cafca/p2panda)`) as the highest-priority remaining feature because it is the only unfinished task left in `PRD.jsonl`
+- extended `scripts/release/validate-fork.sh` with read-only GitHub API inspection commands: `pr-status`, `release-status`, and `origin-status`; these keep the fork-only safety checks while adding repo-local verification for PR check suites, release workflow/job state, release assets, and accidental upstream-origin workflow runs
+- updated `docs/fork-validation.md` and `docs/dev-environment.md` to document the new verification path after branch/tag pushes
+- ran `bash -n scripts/release/validate-fork.sh`
+- ran `./scripts/release/validate-fork.sh preflight`
+- ran `./scripts/release/validate-fork.sh pr-status 1`
+- ran `./scripts/release/validate-fork.sh origin-status HEAD`
+- ran `./scripts/release/validate-fork.sh release-status v0.1.0-experimental.1`
+- ran `cargo fmt --all --check`
+- ran `./scripts/verify-in-sandbox.sh -- cargo clippy --workspace --locked -- -D warnings`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui --lib --locked -- --nocapture`
+- ran `cargo audit`
+- confirmed local CI-equivalent checks on current `HEAD` (`125c256440e40ebce2a748b3d83b1e34f783ca76`) are green except for the existing allowed `cargo audit` warning set
+- confirmed `origin-status HEAD` found no matching workflow runs on upstream `p2panda/p2panda`
+- left Task 41 `passes` as `false`; fork-side acceptance is still incomplete
+
+What doesn't work:
+- `./scripts/release/validate-fork.sh preflight` shows this environment still lacks both `gh` auth and an `ssh` client, so it cannot push the current branch/tag to `cafca/p2panda` from here
+- the live fork PR `cafca/p2panda#1` is still `draft: true` on older head SHA `0746e60cda013423f93730c6543c7ec1d1f85ab8`, and `pr-status 1` shows failing `clippy`, `test`, and `check` runs there
+- `release-status v0.1.0-experimental.1` confirms no experimental tag/release validation exists yet on `cafca/p2panda`, so the release workflow jobs and artifacts required by Task 41 still cannot be marked passed
