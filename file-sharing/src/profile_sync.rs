@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+use std::path::PathBuf;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use futures_util::StreamExt;
@@ -36,6 +38,7 @@ enum ProfileSyncMessage {
 
 struct ContactProfileSync {
     handle: GossipHandle,
+    cache_path: PathBuf,
     _task: tokio::task::JoinHandle<()>,
 }
 
@@ -139,6 +142,7 @@ impl ProfileSyncService {
                 profile_id.to_owned(),
                 ContactProfileSync {
                     handle: remote_handle,
+                    cache_path: contact_records_cache_path(&self.data_dir, profile_id),
                     _task: task,
                 },
             );
@@ -146,12 +150,10 @@ impl ProfileSyncService {
         }
 
         if let Some(sync) = self.contact_streams.get(profile_id) {
-            publish_request(&sync.handle, &self.local_profile_id).await?;
-            if started {
-                for _ in 0..2 {
-                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                    publish_request(&sync.handle, &self.local_profile_id).await?;
-                }
+            if let Some(records) =
+                request_profile_snapshot(&sync.handle, &self.local_profile_id, profile_id).await?
+            {
+                write_contact_cache(&sync.cache_path, &records)?;
             }
         }
 
@@ -271,6 +273,16 @@ fn spawn_local_profile_task(
                         tracing::warn!(
                             requester_profile_id = %requester_profile_id,
                             "failed to seed requester bootstrap info for profile sync reply: {err:#}"
+                        );
+                    }
+
+                    if let Err(err) = address_book
+                        .add_topic(requester_public_key, profile_sync_topic(&local_profile_id))
+                        .await
+                    {
+                        tracing::warn!(
+                            requester_profile_id = %requester_profile_id,
+                            "failed to register requester on local profile sync topic: {err:#}"
                         );
                     }
                 }
@@ -410,6 +422,58 @@ async fn publish_snapshot(
         .await
         .context("failed to publish profile sync snapshot")?;
     Ok(())
+}
+
+async fn request_profile_snapshot(
+    handle: &GossipHandle,
+    local_profile_id: &str,
+    remote_profile_id: &str,
+) -> Result<Option<Vec<u8>>> {
+    let mut subscription = handle.subscribe();
+
+    for _ in 0..3 {
+        publish_request(handle, local_profile_id).await?;
+
+        match tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let Some(message) = subscription.next().await else {
+                    return Ok::<Option<Vec<u8>>, anyhow::Error>(None);
+                };
+                let bytes = message?;
+                let ProfileSyncMessage::Snapshot {
+                    owner_profile_id,
+                    target_profile_id,
+                    records,
+                } = decode_message(&bytes)?
+                else {
+                    continue;
+                };
+
+                if owner_profile_id != remote_profile_id {
+                    continue;
+                }
+                if let Some(target_profile_id) = target_profile_id.as_deref() {
+                    if target_profile_id != local_profile_id {
+                        continue;
+                    }
+                }
+
+                return Ok(Some(records));
+            }
+        })
+        .await
+        {
+            Ok(result) => {
+                if let Some(records) = result? {
+                    return Ok(Some(records));
+                }
+                return Ok(None);
+            }
+            Err(_) => continue,
+        }
+    }
+
+    Ok(None)
 }
 
 fn encode_message(message: &ProfileSyncMessage) -> Result<Vec<u8>> {

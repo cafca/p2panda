@@ -1479,3 +1479,21 @@ What doesn't work:
 - Task 42 remains `passes: false`; the decisive end-to-end sync path still times out on the initial remote cache sync, so I could not truthfully mark the task as passing in this run
 - the narrower follower cache-write test is currently nondeterministic in this sandbox: I reproduced failing runs through `verify-in-sandbox.sh`, but also observed a passing direct sandbox execution for the same test (`docker exec ... cargo test ... follower_service_writes_profile_cache_from_snapshot`), so the remaining issue still looks like a flaky relay/profile-sync startup race
 - because Task 42 was already `passes: false` in `PRD.jsonl`, I left that field unchanged and made no other PRD edits
+
+# Fri, 06 Mar 2026 18:48:44 GMT
+
+- picked Task 42 (`Remove nickname from follow flow — display name owned by profile`) again because it remains the highest-priority actionable unfinished user-facing feature; Task 41 is still externally blocked and Tasks 43/44 are lower-priority UI follow-ups
+- kept the scope on the remaining relay-backed profile-sync startup gap in `file-sharing/src/profile_sync.rs`
+- added two more hardening changes aimed at the late-join path:
+  - `sync_contact_profile(...)` now performs an explicit synchronous request/receive attempt for the remote profile snapshot and writes the contact cache immediately when that snapshot arrives, instead of relying only on the background task winning the first-request race
+  - the owner-side request handler now records the requester as interested in the owner's profile-sync topic so the gossip healer has a concrete address-book signal to reconnect an already-running owner session to a late-joining follower
+- ran feedback loops:
+  - `cargo fmt --package p2panda-file-sharing-gui`
+  - `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-file-sharing-gui --lib`
+  - `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui profile_sync --lib -- --nocapture`
+  - attempted `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui profile_sync::tests::syncs_contact_profile_and_tracks_display_name_updates --lib -- --ignored --nocapture`
+
+What doesn't work:
+- Task 42 still remains `passes: false`; even with the synchronous snapshot attempt and requester-topic healing hint, the decisive ignored end-to-end test still times out on the initial cache sync when the owner-side `ProfileSyncService` is already running before the follower joins
+- the current evidence is that isolated pieces all pass (`profile_sync` non-ignored tests are green), but the true late-join service-to-service path is still broken in this environment, so this should stay a manual PRD follow-up/debugging item unless the remaining infrastructure race is split into its own task
+- because Task 42 was already `passes: false` in `PRD.jsonl`, I left that field unchanged and made no other PRD edits
