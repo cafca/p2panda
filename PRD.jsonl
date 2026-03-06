@@ -843,3 +843,156 @@
   ],
   "passes":  true
 }
+{
+  "id": 36,
+  "title": "Rewrite the desktop UI in Slint",
+  "description": "Replace the existing Bevy/egui presentation layer with a Slint-based desktop UI. Preserve core file-sharing capabilities, but do not preserve the current layout by default — redesign the UX for clarity and speed. The new UI should feel purpose-built for desktop file sharing and not constrained by previous visual structure.",
+  "depends_on": [
+    35
+  ],
+  "spec": {
+    "scope": "Migrate the app UI runtime from Bevy/egui to Slint while retaining existing backend/network functionality (sharing, downloading, progress, settings, diagnostics where applicable). Keep the async bridge architecture, but adapt event/state plumbing to Slint models and callbacks.",
+    "ux_redesign": "Design a fresh interaction model and visual hierarchy optimized for common flows: start share, paste share code, monitor progress, manage contacts/profiles/settings. Improve typography, spacing, affordances, status visibility, and error presentation. It is acceptable to remove weak legacy UI patterns if replacements are more usable.",
+    "state_integration": "Expose transfer lists, details, dialogs, and actions through Slint data models. Ensure transfer progress updates are smooth and non-blocking. Maintain thread-safe boundaries between network runtime and UI thread.",
+    "platform_behavior": "Support macOS, Linux, and Windows with appropriate window sizing, scaling, and keyboard navigation behavior. Keep startup and runtime performance at least on par with the current app.",
+    "verification_screenshots": "Capture screenshots from the running Slint app for visual verification. Save them in-repo under file-sharing/artifacts/ui/ with stable filenames including the date and view (e.g. 2026-03-06-main.png). Include at least: main transfer list with active transfers, share/download initiation flow, and settings/profile view. Capture at multiple window sizes to verify layout resilience.",
+    "constraints": "Do not regress backend transfer correctness. If specific legacy views are dropped, document the replacement path clearly in progress notes.",
+    "workaround": "If it is not technically possible to capture screenshots it is okay to leave that spec out",
+  },
+  "acceptance": [
+    "The app starts with a Slint UI (no Bevy/egui window) and all primary actions are available",
+    "Core flows still work end-to-end: create share, consume share code, track progress, and remove transfers/shares",
+    "The new UI demonstrates an intentional redesign rather than a visual clone of the previous interface",
+    "No UI-thread stalls occur during active transfers (progress remains responsive)",
+    "At least 3 screenshots from the running app are committed under file-sharing/artifacts/ui/",
+    "Screenshots include at least two window sizes and show readable, well-laid-out UX on each"
+  ],
+  "passes": false
+}
+{
+  "id": 37,
+  "title": "User profile model with p2panda-backed share ownership",
+  "description": "Introduce a first-class user profile created automatically on first launch. Each profile has a stable shareable identifier, an editable display name, and ownership linkage for every share. Persist profile data locally and record profile + share ownership associations using p2panda operations.",
+  "depends_on": [
+    9,
+    11
+  ],
+  "spec": {
+    "profile_creation": "On first launch, create a profile automatically and persist it. On subsequent launches, load the existing profile without generating a new identifier.",
+    "profile_fields": "Profile includes: profile_id (stable, shareable identifier suitable for copy/paste), display_name (user-editable), created_at, updated_at. The default display name is generated as adjective + fruit (e.g. 'Whimsical Watermelon').",
+    "name_generation": "Implement deterministic-safe random generation from curated adjective and fruit lists. Avoid offensive words and collisions where practical. Regenerate only on first creation, never on restart.",
+    "persistence": "Persist profile state on disk in app data dir, with robust load/save semantics and migration-friendly versioning. Corrupt profile files should surface recoverable errors and fallback flow.",
+    "p2panda_schema": "Define p2panda data model records for profile metadata and share ownership association. Each local share creation writes/updates records linking share identifiers (collection hash/share code) to the local profile_id.",
+    "share_attachment": "All new shares must be attached to the current profile both in local state and in p2panda records. Existing persisted shares should be backfilled to profile ownership on migration.",
+    "ui": "Add profile display and edit controls (view profile ID, copy ID, edit display name, save). Profile edits must sync to local persistence and p2panda."
+  },
+  "acceptance": [
+    "First app launch creates exactly one profile with a generated adjective-fruit display name",
+    "Profile ID is stable across restarts and can be copied from the UI",
+    "Display name can be changed and persists across restarts",
+    "Creating a share records ownership under the current profile in local state and p2panda",
+    "Previously persisted shares are linked to the profile after migration/backfill",
+    "Profile metadata and share associations are queryable from p2panda records"
+  ],
+  "passes": false
+}
+{
+  "id": 38,
+  "title": "Follow contacts by profile ID and browse/download their shares",
+  "description": "Add a contact-follow flow based on profile IDs. Users can add/remove contacts, open a contact detail view, browse that contact's shared content, and download any listed share with one click. Downloaded shares become attached to the current user's profile as owned local shares.",
+  "depends_on": [
+    37
+  ],
+  "spec": {
+    "follow_flow": "Provide an input for contact profile ID plus optional nickname. Validate format, prevent duplicate follows, and persist the contact list locally.",
+    "contacts_list": "Add a contacts list view with search/filter basics, follow date, and quick actions (open, remove). Removing a contact should only remove follow state, not downloaded files.",
+    "contact_detail": "Clicking a contact opens a detail view showing profile metadata and that contact's published shares as discovered from p2panda records.",
+    "one_click_download": "Each share entry has a one-click download action using existing download pipeline. Download target handling should honor user settings/default destination behavior.",
+    "profile_attachment": "Downloads triggered from contacts are associated with the local user's profile/share ledger. Store source contact metadata for provenance (which contact it came from).",
+    "sync_behavior": "Refresh contact shares on demand and periodically. Handle empty states and unreachable contacts gracefully without blocking UI."
+  },
+  "acceptance": [
+    "A user can follow another user by profile ID and see them in a persistent contacts list",
+    "Contacts can be removed from the list without affecting already downloaded data",
+    "Clicking a contact opens a list of their available shares",
+    "Any listed share can be downloaded with one click via the existing transfer flow",
+    "Downloads initiated from contacts are attached to the local profile's share records",
+    "UI handles invalid IDs, duplicates, and offline contacts with clear errors"
+  ],
+  "passes": false
+}
+{
+  "id": 39,
+  "title": "Second-degree contact discovery (contacts of contacts)",
+  "description": "Enable users to discover and browse contacts of their contacts (second-degree graph). From this view, users can inspect discovered profiles, browse their shares, and follow them directly.",
+  "depends_on": [
+    38
+  ],
+  "spec": {
+    "graph_query": "For each followed contact, query p2panda records for that contact's followed profiles. Aggregate and de-duplicate discovered second-degree profiles.",
+    "ui_discovery_view": "Add a discovery section showing second-degree profiles with context badges (e.g. 'followed by Alice'). Prioritize profiles seen through multiple paths.",
+    "actions": "From discovery entries, allow: view profile details, browse published shares, download share, and follow profile.",
+    "ranking_and_filters": "Provide basic sorting/filtering (mutual count, recently seen, has shares). Hide profiles already followed unless explicitly requested.",
+    "privacy_and_safety": "Only use data the user can access through shared p2panda records. Do not leak local-only metadata. Fail closed on malformed records.",
+    "sync_and_resilience": "Support incremental refresh and caching so browsing remains responsive even with large contact graphs."
+  },
+  "acceptance": [
+    "Users can open a view of contacts-of-contacts from their existing contacts",
+    "Discovered profiles are de-duplicated and annotated with source contact context",
+    "Users can browse discovered profiles' shares and download them",
+    "Users can follow a discovered profile directly from the discovery UI",
+    "Already-followed profiles are clearly marked or filtered",
+    "Malformed or unavailable graph data does not crash the app"
+  ],
+  "passes": false
+}
+{
+  "id": 40,
+  "title": "In-app auto-update mechanism",
+  "description": "Add a secure auto-update mechanism so desktop clients can detect, download, and apply new releases with minimal user friction. This should align with existing multi-platform packaging and release artifacts.",
+  "depends_on": [
+    31
+  ],
+  "spec": {
+    "update_source": "Use a trusted release feed/source tied to project releases (e.g. GitHub Releases metadata or signed update manifest). Determine latest version by semantic version comparison against current app version.",
+    "platform_support": "Implement update checks and install flows for macOS, Linux, and Windows packages produced by the release pipeline. Handle platform-specific installer formats cleanly.",
+    "security": "Require integrity verification for update artifacts (SHA-256 minimum, signature verification preferred). Reject unsigned/tampered metadata or binaries.",
+    "user_experience": "Provide background periodic checks plus manual 'Check for updates'. Show update availability, release notes link, download progress, and restart/apply prompt. Allow defer/remind-later.",
+    "channels": "Support at least stable channel now, with structure for future beta/nightly channels.",
+    "failure_handling": "If update download/apply fails, preserve current installation and show actionable error details. Never leave the app in a broken partial-update state.",
+    "configuration": "Add settings toggle for automatic update checks and last-checked timestamp."
+  },
+  "acceptance": [
+    "The app can detect when a newer release is available from the configured update source",
+    "Update artifacts are verified before install and rejected on integrity/signature mismatch",
+    "Users can trigger a manual check and see progress for download/install",
+    "On successful update, the app relaunches into the new version",
+    "On failed update, the current version remains usable and an error is shown",
+    "Auto-check preference persists across restarts"
+  ],
+  "passes": false
+}
+{
+  "id": 41,
+  "title": "Ensure basic CI/CD works: Validate GitHub CI on fork (cafca/p2panda)",
+  "description": "Create a PR CI workflow and verify that both PR checks and release packaging work end-to-end on the cafca/p2panda fork. All CI operations MUST target only cafca/p2panda — never push tags or trigger workflows on the upstream p2panda/p2panda repository.",
+  "depends_on": [
+    31,
+    32
+  ],
+  "spec": {
+    "pr_ci_workflow": "Create .github/workflows/ci.yml triggered on pull_request and push to main. Jobs: (1) cargo fmt --check, (2) cargo clippy --workspace, (3) cargo test for the file-sharing-gui crate (lib tests), (4) cargo audit. Run on ubuntu-latest with Bevy system deps installed. Keep it under 15 minutes.",
+    "pr_validation": "Push the current branch to cafca/p2panda, open a PR, and confirm the CI workflow runs green. Fix any failures found (missing deps, lint issues, test failures) until the PR check suite passes.",
+    "release_validation": "Push an experimental tag (e.g. v0.1.0-experimental.1) to cafca/p2panda to trigger the release.yml workflow. Verify all three platform jobs (macOS, Linux, Windows) complete successfully and produce artifacts. Iterate with .experimental.2, .experimental.3 etc. if fixes are needed.",
+    "safety_constraint": "All pushes, tags, and workflow runs MUST happen on the fork remote (cafca/p2panda) only. Never push tags or trigger CI on origin (p2panda/p2panda). Verify the remote before every push command.",
+    "cleanup": "After validation, delete experimental tags from the fork. Leave the PR CI workflow in place as permanent infrastructure."
+  },
+  "acceptance": [
+    "A .github/workflows/ci.yml exists and runs fmt, clippy, test, and audit checks on PRs",
+    "A PR on cafca/p2panda shows a green CI check suite",
+    "Pushing a v*-experimental.* tag to cafca/p2panda triggers release.yml and all three platform jobs (macOS, Linux, Windows) complete successfully",
+    "Release artifacts (.dmg, .AppImage, .tar.gz, .msi, .zip) and SHA-256 checksums are uploaded to the experimental GitHub Release",
+    "No tags or workflow runs were triggered on p2panda/p2panda (origin)"
+  ],
+  "passes": false
+}
