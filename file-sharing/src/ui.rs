@@ -58,9 +58,10 @@ pub struct UiState {
     pub discovery_sort: DiscoverySort,
     pub pending_share_path: Option<PathBuf>,
     pub selected_download_directory: PathBuf,
+    pub mdns_enabled: bool,
     pub relay_mode: RelayMode,
     pub custom_relay_url_input: String,
-    pub relay_restart_required: bool,
+    pub network_restart_required: bool,
     pub profile_display_name_input: String,
     pub profile_error: Option<String>,
     pub settings_error: Option<String>,
@@ -104,9 +105,10 @@ impl UiState {
             discovery_sort: DiscoverySort::MutualCount,
             pending_share_path: None,
             selected_download_directory: default_download_directory,
+            mdns_enabled: true,
             relay_mode: RelayMode::TestingRelay,
             custom_relay_url_input: String::new(),
-            relay_restart_required: false,
+            network_restart_required: false,
             profile_display_name_input: String::new(),
             profile_error: None,
             settings_error: None,
@@ -126,11 +128,13 @@ impl UiState {
 
     pub fn with_settings(
         default_download_directory: PathBuf,
+        mdns_enabled: bool,
         relay_mode: RelayMode,
         custom_relay_url: Option<String>,
         profile_display_name: String,
     ) -> Self {
         let mut state = Self::with_default_download_directory(default_download_directory);
+        state.mdns_enabled = mdns_enabled;
         state.relay_mode = relay_mode;
         state.custom_relay_url_input = custom_relay_url.unwrap_or_default();
         state.profile_display_name_input = profile_display_name;
@@ -451,25 +455,27 @@ pub fn ui_system(params: UiSystemParams, mut drag_and_drop_events: EventReader<F
             } else {
                 render_transfer_list_header(ui, transfers.transfers().len());
                 ui.add_space(4.0);
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    if transfers.transfers().is_empty() {
-                        render_empty_state(ui);
-                    }
-
-                    let mut pending_actions = Vec::new();
-                    for transfer in transfers.transfers() {
-                        if let Some(action) =
-                            render_transfer_row(ui, transfer, ui_state.global_paused)
-                        {
-                            pending_actions.push(action);
+                egui::ScrollArea::vertical()
+                    .id_salt("transfer-list-scroll")
+                    .show(ui, |ui| {
+                        if transfers.transfers().is_empty() {
+                            render_empty_state(ui);
                         }
-                        ui.add_space(8.0);
-                    }
 
-                    for action in pending_actions {
-                        apply_transfer_action(&mut transfers, &mut ui_state, &bridge, action);
-                    }
-                });
+                        let mut pending_actions = Vec::new();
+                        for transfer in transfers.transfers() {
+                            if let Some(action) =
+                                render_transfer_row(ui, transfer, ui_state.global_paused)
+                            {
+                                pending_actions.push(action);
+                            }
+                            ui.add_space(8.0);
+                        }
+
+                        for action in pending_actions {
+                            apply_transfer_action(&mut transfers, &mut ui_state, &bridge, action);
+                        }
+                    });
             }
         });
 
@@ -769,10 +775,7 @@ fn render_followed_contacts_view(
                 } else {
                     for share in &contact.cached_shares {
                         columns[1].group(|ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(&share.share_name);
-                                ui.small(truncate_hash(&share.collection_hash));
-                            });
+                            ui.label(&share.share_name);
                             ui.horizontal_wrapped(|ui| {
                                 ui.monospace(&share.share_code);
                                 if ui.button("Copy").clicked() {
@@ -988,10 +991,7 @@ fn render_discovered_profile_shares(
 
     for share in &profile.cached_shares {
         ui.group(|ui| {
-            ui.horizontal(|ui| {
-                ui.label(&share.share_name);
-                ui.small(truncate_hash(&share.collection_hash));
-            });
+            ui.label(&share.share_name);
             ui.horizontal_wrapped(|ui| {
                 ui.monospace(&share.share_code);
                 if ui.button("Copy").clicked() {
@@ -1187,6 +1187,27 @@ fn render_settings_view(
     }
 
     ui.separator();
+    ui.heading("Discovery");
+    if ui
+        .checkbox(&mut ui_state.mdns_enabled, "Enable mDNS discovery")
+        .changed()
+    {
+        match settings_store.set_mdns_enabled(ui_state.mdns_enabled) {
+            Ok(changed) => {
+                if changed {
+                    ui_state.network_restart_required = true;
+                }
+                ui_state.settings_error = None;
+            }
+            Err(err) => {
+                ui_state.settings_error = Some(err.to_string());
+                ui_state.mdns_enabled = settings_store.settings().mdns_enabled;
+            }
+        }
+    }
+    ui.small("Restart the app after changing discovery settings.");
+
+    ui.separator();
     ui.heading("Relay Server");
     ui.label("Relay servers help connect peers who cannot reach each other directly. Data is encrypted end-to-end.");
 
@@ -1224,7 +1245,7 @@ fn render_settings_view(
         ) {
             Ok(changed) => {
                 if changed {
-                    ui_state.relay_restart_required = true;
+                    ui_state.network_restart_required = true;
                 }
                 ui_state.settings_error = None;
             }
@@ -1234,10 +1255,10 @@ fn render_settings_view(
         }
     }
 
-    if ui_state.relay_restart_required {
+    if ui_state.network_restart_required {
         ui.colored_label(
             egui::Color32::YELLOW,
-            "Restart required to apply relay changes",
+            "Restart required to apply network changes",
         );
     }
 
@@ -1433,6 +1454,7 @@ fn render_diagnostics_view(ui: &mut egui::Ui, ui_state: &UiState, transfers: &Tr
         ui.label("No recent connection events");
     } else {
         egui::ScrollArea::vertical()
+            .id_salt("diagnostics-connection-history")
             .max_height(140.0)
             .show(ui, |ui| {
                 for entry in snapshot.connection_history.iter().rev() {
@@ -1492,6 +1514,7 @@ fn render_diagnostics_view(ui: &mut egui::Ui, ui_state: &UiState, transfers: &Tr
         ui.label("No recent errors");
     } else {
         egui::ScrollArea::vertical()
+            .id_salt("diagnostics-error-log")
             .max_height(120.0)
             .show(ui, |ui| {
                 for entry in snapshot.error_log.iter().rev() {
@@ -1640,29 +1663,18 @@ fn render_transfer_row(
                 ui.colored_label(color, label);
             }
 
-            if let Some(collection_hash) = &transfer.collection_hash {
-                ui.horizontal(|ui| {
-                    ui.label("Collection hash:");
-                    ui.monospace(truncate_hash(collection_hash));
-                    if ui.button("Copy hash").clicked() {
-                        copy_text(ui.ctx(), collection_hash);
-                    }
-                });
-            }
-
             if matches!(transfer.direction, Direction::Download) && !transfer.files.is_empty() {
                 egui::CollapsingHeader::new("Integrity details")
                     .default_open(false)
                     .show(ui, |ui| {
-                        for (index, file) in transfer.files.iter().enumerate() {
-                            ui.horizontal(|ui| {
-                                ui.label(format!("File {}", index + 1));
-                                ui.label(match &file.verification {
-                                    FileVerification::Pending => "Pending",
-                                    FileVerification::Verified => "Verified",
-                                    FileVerification::Failed(_) => "Failed",
-                                });
+                        for file in &transfer.files {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(file_integrity_label(file));
+                                ui.label(file_verification_label(file));
                             });
+                            if let FileVerification::Failed(message) = &file.verification {
+                                ui.small(message);
+                            }
                         }
                     });
             }
@@ -1727,6 +1739,18 @@ fn verification_badge(transfer: &Transfer) -> Option<(&'static str, egui::Color3
     }
 
     None
+}
+
+fn file_integrity_label(file: &crate::state::FileProgress) -> String {
+    format!("{} ({})", file.relative_path, format_bytes(file.total_size))
+}
+
+fn file_verification_label(file: &crate::state::FileProgress) -> &'static str {
+    match &file.verification {
+        FileVerification::Pending => "Pending",
+        FileVerification::Verified => "Verified",
+        FileVerification::Failed(_) => "Failed",
+    }
 }
 
 fn truncate_hash(hash: &str) -> String {
@@ -2194,6 +2218,20 @@ mod tests {
     fn hash_truncation_keeps_prefix_and_suffix() {
         let hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
         assert_eq!(truncate_hash(hash), "0123456789...6789abcdef");
+    }
+
+    #[test]
+    fn integrity_labels_include_file_name_and_size() {
+        let file = FileProgress {
+            relative_path: "nested/photo.jpg".into(),
+            total_size: 2_048,
+            downloaded_bytes: 2_048,
+            completed: true,
+            verification: FileVerification::Verified,
+        };
+
+        assert_eq!(file_integrity_label(&file), "nested/photo.jpg (2.0 KB)");
+        assert_eq!(file_verification_label(&file), "Verified");
     }
 
     #[test]

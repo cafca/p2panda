@@ -1380,3 +1380,30 @@ What doesn't work:
 - Task 41 remains externally blocked from a truthful pass in this environment:
   - `bash scripts/release/validate-fork.sh preflight` still reports no authenticated `gh` session, no GitHub token, and no local `ssh` client, so I cannot push local `HEAD` `8881bd70a5d76b10f9ab27c89d6ce3ae20730637` or an experimental tag to `cafca/p2panda`
   - `bash scripts/release/validate-fork.sh summary port-blobs-to-net-v0.5 port-blobs-to-net-v0.5 v0.1.0-experimental.1` still shows the public fork branch is stale at `0746e60cda013423f93730c6543c7ec1d1f85ab8`, PR `cafca/p2panda#1` is still draft with failing `clippy`, `test`, and `check` runs on that stale SHA, and the experimental tag `v0.1.0-experimental.1` still does not exist on the fork
+
+# 2026-03-06 17:15 UTC
+
+- picked Task 36 (`UI polish — widget ID collision, mDNS toggle, share list cleanup, integrity details`) as the highest-priority unfinished feature because it is the dependency gate for Tasks 42, 43, and 44, while Task 41 remains externally blocked on fork-side GitHub access
+- implemented the task-36 UI/runtime fixes in `file-sharing`:
+  - added persisted `mdns_enabled` settings state plus `SettingsStore::set_mdns_enabled(...)`
+  - wired `mdns_enabled` through plugin startup into `NodeOptions` and made node startup skip `MdnsDiscovery` when the setting is off
+  - added an `Enable mDNS discovery` toggle to Settings, persisted it immediately, and surfaced the existing restart requirement as a general network-settings notice
+  - assigned explicit `ScrollArea` IDs for the transfer list plus the diagnostics connection-history and error-log panes to eliminate duplicate-widget collisions
+  - removed collection-hash displays from the user-facing share lists and transfer rows
+  - changed integrity details from numbered entries to file-path + file-size rows with verification status
+- added focused regression coverage for the new behavior:
+  - settings persistence now asserts `mdns_enabled` default/load/save behavior
+  - plugin option resolution now asserts the persisted mDNS flag is propagated into runtime `NodeOptions`
+  - node tests now cover startup with mDNS disabled
+  - UI tests now cover the integrity-detail file-label formatting
+- ran feedback loops:
+  - `cargo fmt --package p2panda-file-sharing-gui`
+  - `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-file-sharing-gui --lib`
+  - `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui settings --lib -- --nocapture`
+  - `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui plugin --lib -- --nocapture`
+  - `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui node --lib -- --nocapture`
+  - `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui ui --lib -- --nocapture`
+- confirmed Task 36 acceptance in this run and updated Task 36 `passes` to `true` in `PRD.jsonl`
+
+What doesn't work:
+- no additional blocker for Task 36 in this run

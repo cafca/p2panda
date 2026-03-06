@@ -28,6 +28,8 @@ pub enum RelayMode {
 pub struct AppSettings {
     #[serde(default)]
     pub default_download_dir: Option<PathBuf>,
+    #[serde(default = "default_mdns_enabled")]
+    pub mdns_enabled: bool,
     #[serde(default)]
     pub relay_mode: RelayMode,
     #[serde(default)]
@@ -44,6 +46,7 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             default_download_dir: None,
+            mdns_enabled: default_mdns_enabled(),
             relay_mode: RelayMode::TestingRelay,
             custom_relay_url: None,
             auto_update_checks: default_auto_update_checks(),
@@ -94,6 +97,15 @@ impl SettingsStore {
             self.save()?;
         }
         Ok(())
+    }
+
+    pub fn set_mdns_enabled(&mut self, enabled: bool) -> Result<bool> {
+        let changed = self.settings.mdns_enabled != enabled;
+        if changed {
+            self.settings.mdns_enabled = enabled;
+            self.save()?;
+        }
+        Ok(changed)
     }
 
     pub fn set_relay_config(
@@ -197,6 +209,10 @@ const fn default_auto_update_checks() -> bool {
     true
 }
 
+const fn default_mdns_enabled() -> bool {
+    true
+}
+
 fn parse_https_relay_url(value: &str) -> Result<RelayUrl> {
     if !value.to_ascii_lowercase().starts_with("https://") {
         anyhow::bail!("Relay URL must use https://");
@@ -216,6 +232,7 @@ mod tests {
         let dir = tempdir()?;
         let settings = load_settings(dir.path())?;
         assert_eq!(settings, AppSettings::default());
+        assert!(settings.mdns_enabled);
         assert_eq!(settings.relay_mode, RelayMode::TestingRelay);
         assert!(settings.auto_update_checks);
         Ok(())
@@ -295,10 +312,12 @@ mod tests {
         let dir = tempdir()?;
         let mut store = SettingsStore::load(dir.path())?;
 
+        assert!(store.set_mdns_enabled(false)?);
         store.set_auto_update_checks(false)?;
         store.set_update_last_checked(Some(1234))?;
 
         let loaded = load_settings(dir.path())?;
+        assert!(!loaded.mdns_enabled);
         assert!(!loaded.auto_update_checks);
         assert_eq!(loaded.update_channel, UpdateChannel::Stable);
         assert_eq!(loaded.update_last_checked_unix_secs, Some(1234));

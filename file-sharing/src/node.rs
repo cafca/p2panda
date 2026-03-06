@@ -15,10 +15,21 @@ const APP_NAME: &str = "p2panda-file-sharing";
 const NODE_KEY_FILE: &str = "node.key";
 const BLOBS_DIR: &str = "blobs";
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct NodeOptions {
     pub relay_url: Option<RelayUrl>,
+    pub mdns_enabled: bool,
     pub insecure_skip_relay_cert_verify: bool,
+}
+
+impl Default for NodeOptions {
+    fn default() -> Self {
+        Self {
+            relay_url: None,
+            mdns_enabled: true,
+            insecure_skip_relay_cert_verify: false,
+        }
+    }
 }
 
 pub struct AppNode {
@@ -30,7 +41,7 @@ pub struct AppNode {
     pub relay_url: Option<RelayUrl>,
     pub data_dir: PathBuf,
     _fs_store: FsStore,
-    _mdns: MdnsDiscovery,
+    _mdns: Option<MdnsDiscovery>,
 }
 
 impl AppNode {
@@ -63,10 +74,16 @@ impl AppNode {
 
         let endpoint = endpoint_builder.spawn().await?;
 
-        let mdns = MdnsDiscovery::builder(address_book.clone(), endpoint.clone())
-            .mode(MdnsDiscoveryMode::Active)
-            .spawn()
-            .await?;
+        let mdns = if opts.mdns_enabled {
+            Some(
+                MdnsDiscovery::builder(address_book.clone(), endpoint.clone())
+                    .mode(MdnsDiscoveryMode::Active)
+                    .spawn()
+                    .await?,
+            )
+        } else {
+            None
+        };
 
         let discovery = Discovery::builder(address_book.clone(), endpoint.clone())
             .spawn()
@@ -195,6 +212,23 @@ mod tests {
 
         let _handle_a = node.join_topic(topic_a).await?;
         let _handle_b = node.join_topic(topic_b).await?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn can_start_with_mdns_disabled() -> Result<()> {
+        let temp_dir = tempdir()?;
+        let node = AppNode::with_data_dir(
+            temp_dir.path(),
+            NodeOptions {
+                mdns_enabled: false,
+                ..Default::default()
+            },
+        )
+        .await?;
+
+        assert!(node._mdns.is_none());
 
         Ok(())
     }

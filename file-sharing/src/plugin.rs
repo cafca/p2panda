@@ -98,6 +98,7 @@ fn initialize_plugin_resources() -> Result<PluginResources> {
             .default_download_dir
             .clone()
             .unwrap_or_else(default_download_directory),
+        settings.mdns_enabled,
         settings.relay_mode,
         settings.custom_relay_url.clone(),
         profile_store.profile().display_name.clone(),
@@ -133,6 +134,7 @@ fn resolve_node_options(settings: &AppSettings) -> Result<NodeOptions> {
 
     Ok(NodeOptions {
         relay_url,
+        mdns_enabled: settings.mdns_enabled,
         insecure_skip_relay_cert_verify,
     })
 }
@@ -718,6 +720,7 @@ mod tests {
             .relay_url
             .expect("testing relay should be configured");
         assert!(relay.to_string().contains("relay.iroh.network"));
+        assert!(options.mdns_enabled);
         Ok(())
     }
 
@@ -745,6 +748,17 @@ mod tests {
         };
         let options = resolve_node_options(&settings)?;
         assert!(options.relay_url.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_node_options_uses_mdns_setting() -> Result<()> {
+        let settings = AppSettings {
+            mdns_enabled: false,
+            ..Default::default()
+        };
+        let options = resolve_node_options(&settings)?;
+        assert!(!options.mdns_enabled);
         Ok(())
     }
 }

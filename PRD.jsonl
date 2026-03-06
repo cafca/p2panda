@@ -860,7 +860,7 @@
     "Share list does not display download hashes",
     "Integrity details show file names and sizes for each file"
   ],
-  "passes": false
+  "passes": true
 }
 {
   "id": 37,
