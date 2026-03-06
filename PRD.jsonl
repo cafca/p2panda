@@ -845,29 +845,22 @@
 }
 {
   "id": 36,
-  "title": "Rewrite the desktop UI in Slint",
-  "description": "Replace the existing Bevy/egui presentation layer with a Slint-based desktop UI. Preserve file-sharing capabilities, but do not preserve the current layout by default — redesign the UX for clarity and speed. The new UI should feel purpose-built for desktop file sharing and not constrained by previous visual structure.",
-  "depends_on": [
-    35
-  ],
+  "title": "UI polish — widget ID collision, mDNS toggle, share list cleanup, integrity details (new entry that replaces the old 36)",
+  "description": "A batch of small UI fixes: fix the duplicate widget ID error in diagnostics, add an mDNS on/off toggle to settings, hide the download hash from the share list, and show file names and sizes in integrity details instead of a numbered list.",
+  "depends_on": [],
   "spec": {
-    "scope": "Migrate the app UI runtime from Bevy/egui to Slint while retaining existing backend/network functionality (sharing, downloading, progress, settings, diagnostics where applicable). Keep the async bridge architecture, but adapt event/state plumbing to Slint models and callbacks.",
-    "ux_redesign": "Design a fresh interaction model and visual hierarchy optimized for common flows: start share, paste share code, monitor progress, manage contacts/profiles/settings. Improve typography, spacing, affordances, status visibility, and error presentation. It is acceptable to remove weak legacy UI patterns if replacements are more usable.",
-    "state_integration": "Expose transfer lists, details, dialogs, and actions through Slint data models. Ensure transfer progress updates are smooth and non-blocking. Maintain thread-safe boundaries between network runtime and UI thread.",
-    "platform_behavior": "Support macOS, Linux, and Windows with appropriate window sizing, scaling, and keyboard navigation behavior. Keep startup and runtime performance at least on par with the current app.",
-    "verification_screenshots": "Capture screenshots from the running Slint app for visual verification. Save them in-repo under file-sharing/artifacts/ui/ with stable filenames including the date and view (e.g. 2026-03-06-main.png). Include at least: main transfer list with active transfers, share/download initiation flow, and settings/profile view. Capture at multiple window sizes to verify layout resilience.",
-    "constraints": "Do not regress backend transfer correctness. If specific legacy views are dropped, document the replacement path clearly in progress notes.",
-    "workaround": "If it is not technically possible to capture screenshots it is okay to leave that spec out",
+    "widget_id_collision": "Fix the error 'second use of widget ID DBD0. First use of ScrollArea 1F50' in the diagnostics view. Each ScrollArea must have a unique ID.",
+    "mdns_toggle": "Add a toggle in the settings UI to enable/disable mDNS discovery. Wire it to the existing discovery configuration.",
+    "share_list_hash": "Remove the download hash from the share list display. The hash is an implementation detail and should not be shown to the user.",
+    "integrity_details": "In the integrity/verification details view, show actual file names and sizes instead of a numbered list of files."
   },
   "acceptance": [
-    "The app starts with a Slint UI (no Bevy/egui window) and all primary actions are available",
-    "Core flows still work end-to-end: create share, consume share code, track progress, and remove transfers/shares",
-    "The new UI demonstrates an intentional redesign rather than a visual clone of the previous interface",
-    "No UI-thread stalls occur during active transfers (progress remains responsive)",
-    "At least 3 screenshots from the running app are committed under file-sharing/artifacts/ui/",
-    "Screenshots include at least two window sizes and show readable, well-laid-out UX on each"
+    "No 'second use of widget ID' errors in the diagnostics view or log output",
+    "Settings UI has a working mDNS toggle that persists across restarts",
+    "Share list does not display download hashes",
+    "Integrity details show file names and sizes for each file"
   ],
-  "passes": true
+  "passes": false
 }
 {
   "id": 37,
@@ -998,12 +991,12 @@
   "id": 42,
   "title": "Remove nickname from follow flow — display name owned by profile",
   "description": "The nickname shown for a contact is determined by the profile owner, not the follower. Remove the nickname input from the follow UI and the nickname field from Contact and ContactFollowRecord. When following someone, only a profile ID is needed. The app shows a truncated profile ID placeholder until the contact's profile document has been synced over the network, at which point their self-chosen display name is shown and kept in sync going forward.",
-  "depends_on": [],
+  "depends_on": [36],
   "spec": {
     "ui": "Remove the nickname text input from the 'Add Contact' dialog. The follow action requires only a profile ID. Show truncated profile ID (first 8 chars) as placeholder for unsynced contacts.",
     "contact_model": "Remove the `nickname` field from `Contact`. Remove `normalize_nickname`. Update `label()` to fall back from `cached_display_name` to truncated `profile_id`. Remove nickname params from `ContactsStore::follow_contact` and `ProfileStore::follow_contact`.",
     "profile_record": "Remove the `nickname` field from `ContactFollowRecord`. The follow record only needs the followed profile ID, active flag, and timestamp.",
-    "profile_sync": "The profile display name is already stored as a `ProfileMetadataRecord` in the owner's profile-records.json. Implement network sync of profile records: when a contact is followed, the app should fetch their profile-records from the network (via the p2panda document sync protocol) and write them to `contact-record-cache/{profile_id}.json`. Periodic re-sync keeps `cached_display_name` up to date. If sync infrastructure does not exist yet, build the minimal version needed: publish profile records as a p2panda document/blob, discover and fetch it from peers on the gossip network.",
+    "profile_sync": "The profile display name is already stored as a `ProfileMetadataRecord` in the owner's profile-records.json. Implement network sync of profile records: when a contact is followed, the app should fetch their profile-records from the network (via the p2panda document sync protocol) and write them to `contact-record-cache/{profile_id}.json`. Periodic re-sync keeps `cached_display_name` up to date. If sync infrastructure does not exist yet, build the minimal version needed using p2panda's tooling",
     "display_fallback": "Until synced: show first 8 chars of profile ID. Once synced: show the owner's display name. If display name is empty/blank, fall back to truncated profile ID."
   },
   "acceptance": [
@@ -1013,6 +1006,41 @@
     "Profile records are fetched over the network after following a contact",
     "Once synced, the contact's self-chosen display name is displayed and kept up to date",
     "If the profile owner changes their display name, the follower sees the update after the next sync"
+  ],
+  "passes": false
+}
+{
+  "id": 43,
+  "title": "Reusable copyable ID component",
+  "description": "Create a reusable UI component for displaying copyable IDs (profile IDs, share codes, node IDs, etc.). Shows first 8 characters in a pill with strongly rounded corners. On hover, a copy button appears. On click, the outline turns green briefly as confirmation, then fades back. Use this component everywhere an ID is displayed.",
+  "depends_on": [36],
+  "spec": {
+    "component": "Build a reusable component that takes a full ID string. Displays first 8 chars truncated with an ellipsis. Styled as a pill with rounded corners and a subtle outline. On hover, show a copy-to-clipboard button. On click, copy the full ID and flash the outline green, fading back over ~2 seconds.",
+    "integration": "Replace all inline ID displays with this component: profile ID in profile view, node ID in diagnostics, contact profile IDs in contacts list, share codes where shown, and any other copyable identifiers."
+  },
+  "acceptance": [
+    "A reusable ID pill component exists and is used for all copyable IDs in the app",
+    "The component shows 8 truncated chars by default",
+    "Hovering reveals a copy button",
+    "Clicking copies the full ID and shows a green outline that fades back",
+    "The component is used in at least: profile view, contacts list, and diagnostics"
+  ],
+  "passes": false
+}
+{
+  "id": 44,
+  "title": "Add vertical scrolling to top-level views",
+  "description": "Several top-level views overflow without scroll bars when content exceeds the window height. Add vertical scrolling to all top-level views that need it: share list, diagnostics, and settings.",
+  "depends_on": [36],
+  "spec": {
+    "scrolling": "Wrap the content of each top-level view in a ScrollArea so that the view is scrollable when content overflows. Affected views: share list, diagnostics view, settings. Sub-views like connection history and error log already have scroll bars and do not need changes.",
+    "behavior": "Scroll bars should appear only when content overflows (auto-hide or overlay style preferred). Scroll position should reset when switching between views. Ensure each ScrollArea has a unique widget ID to avoid collisions (task 43 fixes the existing collision first)."
+  },
+  "acceptance": [
+    "Share list is scrollable when many shares are present",
+    "Diagnostics view is scrollable when content overflows",
+    "Settings view is scrollable when the window is too short to fit all options",
+    "No duplicate widget ID errors after adding scroll areas"
   ],
   "passes": false
 }
