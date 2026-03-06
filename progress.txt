@@ -219,6 +219,27 @@ What doesn't work:
 - implemented the missing relay-based integration test in `file-sharing/tests/transfer.rs` (`relay_based_transfer`) using `iroh::test_utils::run_relay_server`, relay-configured `AppNode` instances, and relay-only bootstrap addressing (`node_id + relay_url`)
 - verified end-to-end relay transfer by sharing a nested test directory from node A and downloading via share code on node B, then byte-comparing source/output trees
 
+# Fri, 06 Mar 2026 17:43:59 GMT
+
+- picked Task 42 (`Remove nickname from follow flow — display name owned by profile`) as the highest-priority remaining product task because Task 41 is external fork validation and Tasks 43/44 build on the cleaned-up contact/profile surfaces
+- removed nickname from the contact model and signed follow records:
+  `file-sharing/src/contacts.rs` no longer stores `nickname`, contact labels now fall back from synced display name to the first 8 chars of the profile ID, and discovery source labels come from cached profile metadata instead of follower-owned aliases
+  `file-sharing/src/profile.rs` no longer records `nickname` in `ContactFollowRecord` or `ProfileStore::follow_contact(...)`
+- removed the nickname input from the contacts UI and changed follow/remove/display-name actions to notify the runtime bridge so local profile changes can be re-published and followed profiles can be re-synced
+- added runtime profile-sync scaffolding in `file-sharing/src/profile_sync.rs` and wired it from `file-sharing/src/bridge.rs`; the runtime now joins per-profile topics, publishes local profile snapshots, and requests snapshots for followed contacts
+- updated affected tests and call sites in `file-sharing/tests/contacts.rs`, `file-sharing/tests/discovery.rs`, and `file-sharing/src/ui.rs`
+- ran `cargo fmt --package p2panda-file-sharing-gui`
+- ran `cargo check -p p2panda-file-sharing-gui --lib`
+- ran `cargo test -p p2panda-file-sharing-gui --lib contacts -- --nocapture`
+- ran `cargo test -p p2panda-file-sharing-gui --lib profile -- --nocapture`
+- ran `cargo test -p p2panda-file-sharing-gui --lib ui -- --nocapture`
+- ran `cargo test -p p2panda-file-sharing-gui --test contacts -- --nocapture`
+- ran `cargo test -p p2panda-file-sharing-gui --test discovery -- --nocapture`
+
+What doesn't work:
+- Task 42 remains `passes: false`; I could verify the nickname-removal/model/UI acceptance locally, but I could not truthfully verify the network-fetch acceptance in this sandbox. The end-to-end profile sync test in `file-sharing/src/profile_sync.rs` is currently marked `#[ignore]` because the per-profile gossip sync path remained nondeterministic here even after switching to the same relay-backed setup used by the transfer tests.
+- Because Task 42 was already `passes: false` in `PRD.jsonl`, no content change to that file was needed in this run; it should remain false until the ignored sync test (or equivalent end-to-end verification) is made deterministic and passing.
+
 - ran `cargo fmt --package p2panda-file-sharing-gui`
 - ran `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-file-sharing-gui --test transfer`
 - ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui --test transfer relay_based_transfer -- --nocapture`

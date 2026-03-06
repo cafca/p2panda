@@ -6,7 +6,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 use p2panda_core::cbor::{decode_cbor, encode_cbor};
 use p2panda_core::identity::PRIVATE_KEY_LEN;
-use p2panda_core::{validate_operation, Body, Hash, Header, Operation, PrivateKey, PublicKey};
+use p2panda_core::{
+    validate_operation, Body, Hash, Header, Operation, PrivateKey, PublicKey, RawOperation,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::persist::ShareRecord;
@@ -87,7 +89,6 @@ pub struct ContactFollowRecord {
     pub author: PublicKey,
     pub profile_id: String,
     pub followed_profile_id: String,
-    pub nickname: Option<String>,
     pub recorded_at: u64,
     pub active: bool,
 }
@@ -122,8 +123,6 @@ enum ProfileRecordBody {
     ContactFollow {
         profile_id: String,
         followed_profile_id: String,
-        #[serde(default)]
-        nickname: Option<String>,
         recorded_at: u64,
         active: bool,
     },
@@ -261,16 +260,12 @@ impl ProfileStore {
             .collect())
     }
 
-    pub fn follow_contact(
-        &mut self,
-        followed_profile_id: impl Into<String>,
-        nickname: Option<String>,
-    ) -> Result<bool> {
-        self.set_contact_follow_state(followed_profile_id.into(), nickname, true)
+    pub fn follow_contact(&mut self, followed_profile_id: impl Into<String>) -> Result<bool> {
+        self.set_contact_follow_state(followed_profile_id.into(), true)
     }
 
     pub fn unfollow_contact(&mut self, followed_profile_id: impl Into<String>) -> Result<bool> {
-        self.set_contact_follow_state(followed_profile_id.into(), None, false)
+        self.set_contact_follow_state(followed_profile_id.into(), false)
     }
 
     pub fn ensure_share_ownership_record(&mut self, share: &ShareRecord) -> Result<bool> {
@@ -389,11 +384,9 @@ impl ProfileStore {
     fn set_contact_follow_state(
         &mut self,
         followed_profile_id: String,
-        nickname: Option<String>,
         active: bool,
     ) -> Result<bool> {
         let followed_profile_id = normalize_profile_id(followed_profile_id)?;
-        let nickname = normalize_optional_text(nickname);
         let follow_records = self.contact_follow_records()?;
         let latest = latest_contact_follow_record(
             &self.profile.profile_id,
@@ -401,7 +394,7 @@ impl ProfileStore {
             &follow_records,
         );
         if let Some(latest) = latest {
-            if latest.active == active && (!active || latest.nickname == nickname) {
+            if latest.active == active {
                 return Ok(false);
             }
         }
@@ -409,7 +402,6 @@ impl ProfileStore {
         self.append_record(ProfileRecordBody::ContactFollow {
             profile_id: self.profile.profile_id.clone(),
             followed_profile_id,
-            nickname,
             recorded_at: now_unix_secs(),
             active,
         })?;
@@ -470,6 +462,40 @@ pub fn load_profile_records_from_path(path: impl AsRef<Path>) -> Result<Vec<Prof
         .iter()
         .map(decode_stored_operation)
         .collect()
+}
+
+pub fn load_raw_profile_operations_from_path(path: impl AsRef<Path>) -> Result<Vec<RawOperation>> {
+    let path = path.as_ref();
+    let bytes = fs::read(path)
+        .with_context(|| format!("failed to read profile records file {}", path.display()))?;
+    let records: PersistedProfileRecords = serde_json::from_slice(&bytes)
+        .with_context(|| format!("failed to parse profile records at {}", path.display()))?;
+    Ok(records
+        .operations
+        .into_iter()
+        .map(|operation| (operation.header.to_bytes(), Some(operation.body)))
+        .collect())
+}
+
+pub fn write_raw_profile_operations_to_path(
+    path: impl AsRef<Path>,
+    operations: impl IntoIterator<Item = RawOperation>,
+) -> Result<()> {
+    let operations = operations
+        .into_iter()
+        .map(|(header_bytes, body)| {
+            let header = ciborium::de::from_reader::<Header<()>, _>(&header_bytes[..])
+                .context("failed to decode raw profile operation header")?;
+            let body = body.context("profile sync operation is missing a body")?;
+            Ok(StoredOperation { header, body })
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    let records = PersistedProfileRecords {
+        version: PROFILE_RECORDS_VERSION,
+        operations,
+    };
+    write_json_atomic(path.as_ref(), &records, "profile records")
 }
 
 pub fn active_follow_records_for_profile(
@@ -546,14 +572,12 @@ fn decode_stored_operation(operation: &StoredOperation) -> Result<ProfileRecord>
         ProfileRecordBody::ContactFollow {
             profile_id,
             followed_profile_id,
-            nickname,
             recorded_at,
             active,
         } => ProfileRecord::ContactFollow(ContactFollowRecord {
             author,
             profile_id,
             followed_profile_id,
-            nickname,
             recorded_at,
             active,
         }),
@@ -674,12 +698,6 @@ fn normalize_profile_id(profile_id: String) -> Result<String> {
         .parse()
         .with_context(|| format!("invalid profile ID {profile_id}"))?;
     Ok(profile_id)
-}
-
-fn normalize_optional_text(value: Option<String>) -> Option<String> {
-    value
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty())
 }
 
 fn move_corrupt_file_aside(path: &Path) -> Result<PathBuf> {
@@ -885,12 +903,11 @@ mod tests {
         write_node_key(dir.path(), &private_key)?;
 
         let mut store = ProfileStore::load_or_create(dir.path())?;
-        assert!(store.follow_contact(followed_key.public_key().to_string(), Some("Alice".into()))?);
+        assert!(store.follow_contact(followed_key.public_key().to_string())?);
         assert!(store.unfollow_contact(followed_key.public_key().to_string())?);
 
         let records = store.contact_follow_records()?;
         assert_eq!(records.len(), 2);
-        assert_eq!(records[0].nickname.as_deref(), Some("Alice"));
         assert!(records[0].active);
         assert!(!records[1].active);
 

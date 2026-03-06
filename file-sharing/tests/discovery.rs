@@ -46,8 +46,8 @@ async fn discover_second_degree_profile_browse_shares_and_download() -> Result<(
     let mut alice_profile = ProfileStore::load_or_create(alice_dir.path())?;
     let mut dana_profile = ProfileStore::load_or_create(dana_dir.path())?;
 
-    alice_profile.follow_contact(bob_profile.profile().profile_id.clone(), None)?;
-    dana_profile.follow_contact(bob_profile.profile().profile_id.clone(), None)?;
+    alice_profile.follow_contact(bob_profile.profile().profile_id.clone())?;
+    dana_profile.follow_contact(bob_profile.profile().profile_id.clone())?;
     bob_profile.ensure_downloaded_share_record(
         &bob_profile.profile().profile_id.clone(),
         share.share_code.clone(),
@@ -58,14 +58,10 @@ async fn discover_second_degree_profile_browse_shares_and_download() -> Result<(
     )?;
 
     let mut contacts = ContactsStore::load(charlie_dir.path())?;
-    contacts.follow_contact(
-        alice_profile.profile().profile_id.clone(),
-        Some("Alice".into()),
-    )?;
-    contacts.follow_contact(
-        dana_profile.profile().profile_id.clone(),
-        Some("Dana".into()),
-    )?;
+    contacts.follow_contact(alice_profile.profile().profile_id.clone())?;
+    contacts.follow_contact(dana_profile.profile().profile_id.clone())?;
+    contacts.refresh_contact(&alice_profile.profile().profile_id)?;
+    contacts.refresh_contact(&dana_profile.profile().profile_id)?;
 
     for (profile_id, source_path) in [
         (

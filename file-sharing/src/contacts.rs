@@ -26,8 +26,6 @@ pub struct ContactShare {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Contact {
     pub profile_id: String,
-    #[serde(default)]
-    pub nickname: Option<String>,
     pub followed_at: u64,
     #[serde(default)]
     pub cached_display_name: Option<String>,
@@ -40,12 +38,10 @@ pub struct Contact {
 }
 
 impl Contact {
-    pub fn label(&self) -> &str {
-        self.nickname
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
-            .or(self.cached_display_name.as_deref())
-            .unwrap_or(&self.profile_id)
+    pub fn label(&self) -> String {
+        self.display_name()
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| truncate_profile_id(&self.profile_id))
     }
 
     pub fn display_name(&self) -> Option<&str> {
@@ -80,11 +76,12 @@ pub struct DiscoveredProfile {
 }
 
 impl DiscoveredProfile {
-    pub fn label(&self) -> &str {
+    pub fn label(&self) -> String {
         self.cached_display_name
             .as_deref()
             .filter(|value| !value.trim().is_empty())
-            .unwrap_or(&self.profile_id)
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| truncate_profile_id(&self.profile_id))
     }
 
     pub fn display_name(&self) -> Option<&str> {
@@ -142,11 +139,7 @@ impl ContactsStore {
             .find(|contact| contact.profile_id == profile_id)
     }
 
-    pub fn follow_contact(
-        &mut self,
-        profile_id: impl Into<String>,
-        nickname: Option<String>,
-    ) -> Result<()> {
+    pub fn follow_contact(&mut self, profile_id: impl Into<String>) -> Result<()> {
         let profile_id = normalize_profile_id(profile_id.into())?;
         if self
             .state
@@ -159,7 +152,6 @@ impl ContactsStore {
 
         self.state.followed_contacts.push(Contact {
             profile_id,
-            nickname: normalize_nickname(nickname),
             followed_at: now_unix_secs(),
             cached_display_name: None,
             cached_shares: Vec::new(),
@@ -263,7 +255,9 @@ impl ContactsStore {
                     }
                 };
 
-            let source_label = source_contact.label().to_owned();
+            let source_label = latest_profile_metadata(&source_contact.profile_id, &source_records)
+                .map(|record| record.display_name)
+                .unwrap_or_else(|| source_contact.label());
             for follow_record in
                 active_follow_records_for_profile(&source_contact.profile_id, &source_records)
             {
@@ -360,19 +354,19 @@ impl ContactsStore {
                 .cmp(&left.mutual_count)
                 .then_with(|| right.has_shares().cmp(&left.has_shares()))
                 .then_with(|| right.last_seen_at.cmp(&left.last_seen_at))
-                .then_with(|| left.label().cmp(right.label())),
+                .then_with(|| left.label().cmp(&right.label())),
             DiscoverySort::RecentlySeen => right
                 .last_seen_at
                 .cmp(&left.last_seen_at)
                 .then_with(|| right.mutual_count.cmp(&left.mutual_count))
                 .then_with(|| right.has_shares().cmp(&left.has_shares()))
-                .then_with(|| left.label().cmp(right.label())),
+                .then_with(|| left.label().cmp(&right.label())),
             DiscoverySort::HasShares => right
                 .has_shares()
                 .cmp(&left.has_shares())
                 .then_with(|| right.mutual_count.cmp(&left.mutual_count))
                 .then_with(|| right.last_seen_at.cmp(&left.last_seen_at))
-                .then_with(|| left.label().cmp(right.label())),
+                .then_with(|| left.label().cmp(&right.label())),
         });
         discovered
     }
@@ -484,10 +478,8 @@ fn normalize_profile_id(profile_id: String) -> Result<String> {
     Ok(profile_id)
 }
 
-fn normalize_nickname(nickname: Option<String>) -> Option<String> {
-    nickname
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty())
+fn truncate_profile_id(profile_id: &str) -> String {
+    profile_id.chars().take(8).collect()
 }
 
 fn load_from_path(path: &Path) -> Result<PersistedContacts> {
@@ -570,15 +562,18 @@ mod tests {
         let profile_id = private_key.public_key().to_string();
         let mut store = ContactsStore::load(dir.path())?;
 
-        assert!(store.follow_contact("not-a-key", None).is_err());
+        assert!(store.follow_contact("not-a-key").is_err());
 
-        store.follow_contact(profile_id.clone(), Some("Alice".into()))?;
+        store.follow_contact(profile_id.clone())?;
         assert_eq!(store.contacts().len(), 1);
-        assert_eq!(store.contacts()[0].nickname.as_deref(), Some("Alice"));
+        assert_eq!(
+            store.contacts()[0].label(),
+            truncate_profile_id(&profile_id)
+        );
 
         let reloaded = ContactsStore::load(dir.path())?;
         assert_eq!(reloaded.contacts().len(), 1);
-        assert!(store.follow_contact(profile_id, None).is_err());
+        assert!(store.follow_contact(profile_id).is_err());
 
         Ok(())
     }
@@ -605,14 +600,10 @@ mod tests {
         )?;
 
         let mut contacts = ContactsStore::load(follower_dir.path())?;
-        contacts.follow_contact(
-            sharer_store.profile().profile_id.clone(),
-            Some("Alice".into()),
-        )?;
+        contacts.follow_contact(sharer_store.profile().profile_id.clone())?;
         contacts.refresh_contact(&sharer_store.profile().profile_id)?;
 
         let contact = contacts.get(&sharer_store.profile().profile_id).unwrap();
-        assert_eq!(contact.nickname.as_deref(), Some("Alice"));
         assert_eq!(
             contact.display_name(),
             Some(sharer_store.profile().display_name.as_str())
@@ -631,7 +622,7 @@ mod tests {
         let private_key = PrivateKey::new();
         let profile_id = private_key.public_key().to_string();
         let mut store = ContactsStore::load(dir.path())?;
-        store.follow_contact(profile_id.clone(), Some("Offline".into()))?;
+        store.follow_contact(profile_id.clone())?;
 
         store.refresh_contact(&profile_id)?;
 
@@ -656,7 +647,7 @@ mod tests {
         fs::write(&downloaded_file, b"keep me")?;
 
         let mut store = ContactsStore::load(dir.path())?;
-        store.follow_contact(profile_id.clone(), Some("Alice".into()))?;
+        store.follow_contact(profile_id.clone())?;
         assert!(store.remove_contact(&profile_id)?);
         assert!(store.get(&profile_id).is_none());
         assert_eq!(fs::read(&downloaded_file)?, b"keep me");
@@ -689,22 +680,16 @@ mod tests {
         let mut bob_profile = ProfileStore::load_or_create(bob_dir.path())?;
         let erin_profile = ProfileStore::load_or_create(erin_dir.path())?;
 
-        alice_profile.follow_contact(bob_profile.profile().profile_id.clone(), None)?;
-        dana_profile.follow_contact(bob_profile.profile().profile_id.clone(), None)?;
-        dana_profile.follow_contact(erin_profile.profile().profile_id.clone(), None)?;
+        alice_profile.follow_contact(bob_profile.profile().profile_id.clone())?;
+        dana_profile.follow_contact(bob_profile.profile().profile_id.clone())?;
+        dana_profile.follow_contact(erin_profile.profile().profile_id.clone())?;
 
         let bob_share = sample_share_record(&bob_profile.profile().profile_id);
         bob_profile.ensure_share_ownership_record(&bob_share)?;
 
         let mut contacts = ContactsStore::load(viewer_dir.path())?;
-        contacts.follow_contact(
-            alice_profile.profile().profile_id.clone(),
-            Some("Alice".into()),
-        )?;
-        contacts.follow_contact(
-            dana_profile.profile().profile_id.clone(),
-            Some("Dana".into()),
-        )?;
+        contacts.follow_contact(alice_profile.profile().profile_id.clone())?;
+        contacts.follow_contact(dana_profile.profile().profile_id.clone())?;
 
         for profile_id in [
             alice_profile.profile().profile_id.clone(),
@@ -726,23 +711,30 @@ mod tests {
             fs::copy(source_path, cache_path)?;
         }
 
+        contacts.refresh_contact(&alice_profile.profile().profile_id)?;
+        contacts.refresh_contact(&dana_profile.profile().profile_id)?;
+
         let discovered =
             contacts.discover_second_degree_profiles(false, false, "", DiscoverySort::MutualCount);
         assert_eq!(discovered.len(), 2);
         assert_eq!(discovered[0].profile_id, bob_profile.profile().profile_id);
         assert_eq!(discovered[0].mutual_count, 2);
-        assert_eq!(
-            discovered[0]
-                .source_contacts
-                .iter()
-                .map(|source| source.label.as_str())
-                .collect::<Vec<_>>(),
-            vec!["Alice", "Dana"]
-        );
+        let mut source_labels = discovered[0]
+            .source_contacts
+            .iter()
+            .map(|source| source.label.as_str())
+            .collect::<Vec<_>>();
+        let mut expected_labels = vec![
+            alice_profile.profile().display_name.as_str(),
+            dana_profile.profile().display_name.as_str(),
+        ];
+        source_labels.sort_unstable();
+        expected_labels.sort_unstable();
+        assert_eq!(source_labels, expected_labels);
         assert_eq!(discovered[0].cached_shares.len(), 1);
         assert_eq!(discovered[1].profile_id, erin_profile.profile().profile_id);
 
-        contacts.follow_contact(bob_profile.profile().profile_id.clone(), None)?;
+        contacts.follow_contact(bob_profile.profile().profile_id.clone())?;
         let filtered =
             contacts.discover_second_degree_profiles(false, false, "", DiscoverySort::MutualCount);
         assert_eq!(filtered.len(), 1);
@@ -768,10 +760,7 @@ mod tests {
 
         let source_profile = ProfileStore::load_or_create(source_dir.path())?;
         let mut contacts = ContactsStore::load(viewer_dir.path())?;
-        contacts.follow_contact(
-            source_profile.profile().profile_id.clone(),
-            Some("Alice".into()),
-        )?;
+        contacts.follow_contact(source_profile.profile().profile_id.clone())?;
 
         let cache_path =
             contact_records_cache_path(viewer_dir.path(), &source_profile.profile().profile_id);

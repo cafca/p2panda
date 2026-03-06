@@ -32,6 +32,7 @@ use crate::persist::{
     StateStore,
 };
 use crate::profile::ProfileStore;
+use crate::profile_sync::ProfileSyncService;
 use crate::settings::load_settings;
 use crate::share::{share_directory, share_pin_name, ShareSession};
 use crate::share_code::{decode_share_code, derive_topic};
@@ -48,6 +49,10 @@ pub struct ContactDownloadSource {
 pub enum NetworkCommand {
     RecoverStartup,
     RequestDiagnostics,
+    RefreshLocalProfileSync,
+    SyncContactProfile {
+        profile_id: String,
+    },
     ShareDirectory {
         transfer_id: u64,
         directory_path: PathBuf,
@@ -78,6 +83,8 @@ impl NetworkCommand {
     fn transfer_id(&self) -> u64 {
         match self {
             Self::RecoverStartup => u64::MAX,
+            Self::RefreshLocalProfileSync => u64::MAX - 4,
+            Self::SyncContactProfile { .. } => u64::MAX - 5,
             Self::RequestDiagnostics => u64::MAX - 3,
             Self::PauseAll => u64::MAX - 1,
             Self::ResumeAll => u64::MAX - 2,
@@ -338,6 +345,7 @@ struct RuntimeState {
     node: AppNode,
     inner: tokio::sync::Mutex<RuntimeInner>,
     profile_store: tokio::sync::Mutex<ProfileStore>,
+    profile_sync: tokio::sync::Mutex<ProfileSyncService>,
     _settings: crate::settings::AppSettings,
     next_recovery_transfer_id: AtomicU64,
 }
@@ -380,6 +388,8 @@ impl RuntimeState {
         let profile_id = profile_store.profile().profile_id.clone();
         store.attach_profile_to_existing_shares(&profile_id)?;
         profile_store.ensure_share_ownership_records(store.state().active_shares.iter())?;
+        let mut profile_sync = ProfileSyncService::new(&node, profile_id).await?;
+        let _ = profile_sync.sync_followed_contacts_from_disk().await?;
         Ok(Self {
             node,
             inner: tokio::sync::Mutex::new(RuntimeInner {
@@ -402,6 +412,7 @@ impl RuntimeState {
                 },
             }),
             profile_store: tokio::sync::Mutex::new(profile_store),
+            profile_sync: tokio::sync::Mutex::new(profile_sync),
             _settings: settings,
             next_recovery_transfer_id: AtomicU64::new(1_000_000),
         })
@@ -425,6 +436,16 @@ async fn default_handle_command(
 ) -> Result<()> {
     match command {
         NetworkCommand::RecoverStartup => recover_startup_state(&state, &event_tx).await,
+        NetworkCommand::RefreshLocalProfileSync => {
+            let mut profile_sync = state.profile_sync.lock().await;
+            profile_sync.refresh_local_profile().await?;
+            Ok(())
+        }
+        NetworkCommand::SyncContactProfile { profile_id } => {
+            let mut profile_sync = state.profile_sync.lock().await;
+            profile_sync.sync_contact_profile(&profile_id).await?;
+            Ok(())
+        }
         NetworkCommand::RequestDiagnostics => {
             let snapshot = collect_diagnostics_snapshot(&state).await?;
             event_tx
@@ -463,6 +484,10 @@ async fn default_handle_command(
             {
                 let mut profile_store = state.profile_store.lock().await;
                 profile_store.ensure_share_ownership_record(&share_record)?;
+            }
+            {
+                let mut profile_sync = state.profile_sync.lock().await;
+                let _ = profile_sync.refresh_local_profile().await?;
             }
             let mut runtime = state.inner.lock().await;
             runtime.store.add_share(share_record)?;
@@ -620,6 +645,10 @@ async fn persist_contact_download_ownership(
         Some(source_contact_profile_id.clone()),
         record.source_contact_display_name.clone(),
     )?;
+    drop(profile_store);
+
+    let mut profile_sync = state.profile_sync.lock().await;
+    let _ = profile_sync.refresh_local_profile().await?;
     Ok(())
 }
 
@@ -1939,6 +1968,8 @@ mod tests {
             Box::pin(async move {
                 let (transfer_id, delay_ms) = match command {
                     NetworkCommand::RecoverStartup => (u64::MAX, 0),
+                    NetworkCommand::RefreshLocalProfileSync => (u64::MAX - 4, 0),
+                    NetworkCommand::SyncContactProfile { .. } => (u64::MAX - 5, 0),
                     NetworkCommand::RequestDiagnostics => (u64::MAX - 3, 0),
                     NetworkCommand::PauseAll => (u64::MAX - 1, 0),
                     NetworkCommand::ResumeAll => (u64::MAX - 2, 0),

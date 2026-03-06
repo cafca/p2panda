@@ -8,6 +8,7 @@ pub mod notifications;
 pub mod persist;
 pub mod plugin;
 pub mod profile;
+pub mod profile_sync;
 pub mod protocol;
 pub mod settings;
 pub mod share;

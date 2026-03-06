@@ -47,7 +47,7 @@ async fn follow_contact_browse_share_and_record_download_provenance() -> Result<
     fs::copy(profile_records_path(sharer_dir.path()), &cache_path)?;
 
     let mut contacts = ContactsStore::load(downloader_dir.path())?;
-    contacts.follow_contact(sharer_profile_id.clone(), Some("Alice".into()))?;
+    contacts.follow_contact(sharer_profile_id.clone())?;
     contacts.refresh_contact(&sharer_profile_id)?;
 
     let contact = contacts.get(&sharer_profile_id).unwrap();

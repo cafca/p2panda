@@ -47,7 +47,6 @@ pub struct UiState {
     pub download_dialog_open: bool,
     pub download_share_code_input: String,
     pub contact_profile_id_input: String,
-    pub contact_nickname_input: String,
     pub selected_contact_profile_id: Option<String>,
     pub selected_discovered_profile_id: Option<String>,
     pub contact_error: Option<String>,
@@ -94,7 +93,6 @@ impl UiState {
             download_dialog_open: false,
             download_share_code_input: String::new(),
             contact_profile_id_input: String::new(),
-            contact_nickname_input: String::new(),
             selected_contact_profile_id: None,
             selected_discovered_profile_id: None,
             contact_error: None,
@@ -448,6 +446,7 @@ pub fn ui_system(params: UiSystemParams, mut drag_and_drop_events: EventReader<F
                     &mut profile_store,
                     &mut settings_store,
                     &mut updater,
+                    &bridge,
                     dialog_busy,
                 );
             } else if ui_state.show_diagnostics_view {
@@ -621,10 +620,6 @@ fn render_contacts_view(
         ui.add(
             egui::TextEdit::singleline(&mut ui_state.contact_profile_id_input).desired_width(360.0),
         );
-        ui.label("Nickname");
-        ui.add(
-            egui::TextEdit::singleline(&mut ui_state.contact_nickname_input).desired_width(180.0),
-        );
         let can_follow = !ui_state.contact_profile_id_input.trim().is_empty();
         if ui
             .add_enabled(can_follow, egui::Button::new("Follow"))
@@ -636,17 +631,11 @@ fn render_contacts_view(
 
     if should_follow {
         let profile_id = ui_state.contact_profile_id_input.trim().to_owned();
-        match follow_contact_from_ui(
-            contacts_store,
-            profile_store,
-            profile_id.clone(),
-            Some(ui_state.contact_nickname_input.clone()),
-        ) {
+        match follow_contact_from_ui(contacts_store, profile_store, profile_id.clone(), bridge) {
             Ok(()) => {
                 ui_state.selected_contact_profile_id = Some(profile_id);
                 ui_state.contacts_view = ContactsView::Followed;
                 ui_state.contact_profile_id_input.clear();
-                ui_state.contact_nickname_input.clear();
                 ui_state.contact_error = None;
             }
             Err(err) => {
@@ -788,8 +777,8 @@ fn render_followed_contacts_view(
                                             profile_id: contact.profile_id.clone(),
                                             display_name: contact
                                                 .display_name()
-                                                .unwrap_or(contact.label())
-                                                .to_owned(),
+                                                .map(ToOwned::to_owned)
+                                                .unwrap_or_else(|| contact.label()),
                                         },
                                     ));
                                 }
@@ -803,6 +792,9 @@ fn render_followed_contacts_view(
     });
 
     if let Some(profile_id) = refresh_profile_id {
+        let _ = bridge.send(NetworkCommand::SyncContactProfile {
+            profile_id: profile_id.clone(),
+        });
         if let Err(err) = contacts_store.refresh_contact(&profile_id) {
             ui_state.contact_error = Some(err.to_string());
         } else {
@@ -811,7 +803,7 @@ fn render_followed_contacts_view(
     }
 
     if let Some(profile_id) = remove_profile_id {
-        match remove_contact_from_ui(contacts_store, profile_store, &profile_id) {
+        match remove_contact_from_ui(contacts_store, profile_store, &profile_id, bridge) {
             Ok(()) => {
                 if ui_state.selected_contact_profile_id.as_deref() == Some(profile_id.as_str()) {
                     ui_state.selected_contact_profile_id = contacts_store
@@ -956,7 +948,7 @@ fn render_discovery_view(
     });
 
     if let Some(profile_id) = follow_request {
-        match follow_contact_from_ui(contacts_store, profile_store, profile_id.clone(), None) {
+        match follow_contact_from_ui(contacts_store, profile_store, profile_id.clone(), bridge) {
             Ok(()) => {
                 ui_state.selected_contact_profile_id = Some(profile_id);
                 ui_state.contacts_view = ContactsView::Followed;
@@ -1004,8 +996,8 @@ fn render_discovered_profile_shares(
                             profile_id: profile.profile_id.clone(),
                             display_name: profile
                                 .display_name()
-                                .unwrap_or(profile.label())
-                                .to_owned(),
+                                .map(ToOwned::to_owned)
+                                .unwrap_or_else(|| profile.label()),
                         },
                     ));
                 }
@@ -1019,14 +1011,17 @@ fn follow_contact_from_ui(
     contacts_store: &mut ContactsStore,
     profile_store: &mut ProfileStore,
     profile_id: String,
-    nickname: Option<String>,
+    bridge: &AsyncBridge,
 ) -> anyhow::Result<()> {
-    contacts_store.follow_contact(profile_id.clone(), nickname.clone())?;
-    if let Err(err) = profile_store.follow_contact(profile_id.clone(), nickname) {
+    contacts_store.follow_contact(profile_id.clone())?;
+    if let Err(err) = profile_store.follow_contact(profile_id.clone()) {
         let _ = contacts_store.remove_contact(&profile_id);
         return Err(err);
     }
-    contacts_store.refresh_contact(&profile_id)?;
+    let _ = bridge.send(NetworkCommand::RefreshLocalProfileSync);
+    let _ = bridge.send(NetworkCommand::SyncContactProfile {
+        profile_id: profile_id.clone(),
+    });
     Ok(())
 }
 
@@ -1034,11 +1029,13 @@ fn remove_contact_from_ui(
     contacts_store: &mut ContactsStore,
     profile_store: &mut ProfileStore,
     profile_id: &str,
+    bridge: &AsyncBridge,
 ) -> anyhow::Result<()> {
     if !contacts_store.remove_contact(profile_id)? {
         anyhow::bail!("unknown contact {profile_id}");
     }
     profile_store.unfollow_contact(profile_id.to_owned())?;
+    let _ = bridge.send(NetworkCommand::RefreshLocalProfileSync);
     Ok(())
 }
 
@@ -1113,6 +1110,7 @@ fn render_settings_view(
     profile_store: &mut ProfileStore,
     settings_store: &mut SettingsStore,
     updater: &mut UpdateController,
+    bridge: &AsyncBridge,
     dialog_busy: bool,
 ) {
     ui.heading("Settings");
@@ -1141,6 +1139,7 @@ fn render_settings_view(
                     ui_state.profile_display_name_input =
                         profile_store.profile().display_name.clone();
                     ui_state.profile_error = None;
+                    let _ = bridge.send(NetworkCommand::RefreshLocalProfileSync);
                 }
                 Err(err) => {
                     ui_state.profile_error = Some(err.to_string());
@@ -2369,22 +2368,37 @@ mod tests {
         let mut contacts = ContactsStore::load(data_dir.path())?;
         let mut profile_store = ProfileStore::load_or_create(data_dir.path())?;
 
+        let discovered_profile_id = discovered_key.public_key().to_string();
+        let bridge = spawn_test_bridge({
+            let expected_profile_id = discovered_profile_id.clone();
+            move |_, command, _| {
+                let expected_profile_id = expected_profile_id.clone();
+                Box::pin(async move {
+                    match command {
+                        NetworkCommand::RefreshLocalProfileSync => Ok(()),
+                        NetworkCommand::SyncContactProfile { profile_id } => {
+                            assert_eq!(profile_id, expected_profile_id);
+                            Ok(())
+                        }
+                        other => panic!("unexpected command: {other:?}"),
+                    }
+                })
+            }
+        });
+
         follow_contact_from_ui(
             &mut contacts,
             &mut profile_store,
-            discovered_key.public_key().to_string(),
-            None,
+            discovered_profile_id.clone(),
+            &bridge,
         )?;
 
-        assert!(contacts
-            .get(&discovered_key.public_key().to_string())
-            .is_some());
+        assert!(contacts.get(&discovered_profile_id).is_some());
         assert!(profile_store
             .contact_follow_records()?
             .iter()
             .any(|record| {
-                record.followed_profile_id == discovered_key.public_key().to_string()
-                    && record.active
+                record.followed_profile_id == discovered_profile_id && record.active
             }));
 
         Ok(())
