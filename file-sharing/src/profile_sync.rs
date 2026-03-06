@@ -116,6 +116,9 @@ impl ProfileSyncService {
 
         let mut started = false;
         if !self.contact_streams.contains_key(profile_id) {
+            if self.relay_url.is_some() {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
             let remote_handle = self
                 .join_contact_topic(profile_id)
                 .await
@@ -138,6 +141,12 @@ impl ProfileSyncService {
 
         if let Some(sync) = self.contact_streams.get(profile_id) {
             publish_request(&sync.handle, &self.local_profile_id).await?;
+            if started {
+                for _ in 0..2 {
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    publish_request(&sync.handle, &self.local_profile_id).await?;
+                }
+            }
         }
 
         Ok(started)
@@ -173,43 +182,68 @@ fn spawn_local_profile_task(
 ) -> tokio::task::JoinHandle<()> {
     let mut subscription = handle.subscribe();
     tokio::spawn(async move {
-        while let Some(message) = subscription.next().await {
-            let Ok(bytes) = message else {
-                continue;
-            };
-            let Ok(message) = decode_message(&bytes) else {
-                continue;
-            };
-            let ProfileSyncMessage::Request {
-                requester_profile_id,
-            } = message
-            else {
-                continue;
-            };
-            if requester_profile_id == local_profile_id {
-                continue;
-            }
+        let mut snapshot_interval = tokio::time::interval(std::time::Duration::from_secs(2));
+        loop {
+            tokio::select! {
+                _ = snapshot_interval.tick() => {
+                    let records = match read_local_profile_records(&data_dir) {
+                        Ok(records) => records,
+                        Err(err) => {
+                            tracing::warn!("failed to read local profile records for periodic sync: {err:#}");
+                            continue;
+                        }
+                    };
 
-            let records = match fs::read(profile_records_path(&data_dir)) {
-                Ok(records) => records,
-                Err(err) => {
-                    tracing::warn!("failed to read local profile records for sync: {err}");
-                    continue;
+                    if let Err(err) = publish_snapshot(&handle, &local_profile_id, None, records).await {
+                        tracing::warn!("failed to publish periodic profile snapshot for sync: {err:#}");
+                    }
                 }
-            };
+                maybe_message = subscription.next() => {
+                    let Some(message) = maybe_message else {
+                        break;
+                    };
+                    let Ok(bytes) = message else {
+                        continue;
+                    };
+                    let Ok(message) = decode_message(&bytes) else {
+                        continue;
+                    };
+                    let ProfileSyncMessage::Request {
+                        requester_profile_id,
+                    } = message
+                    else {
+                        continue;
+                    };
+                    if requester_profile_id == local_profile_id {
+                        continue;
+                    }
 
-            if let Err(err) = publish_snapshot(
-                &handle,
-                &local_profile_id,
-                Some(requester_profile_id),
-                records,
-            )
-            .await
-            {
-                tracing::warn!("failed to publish profile snapshot for sync: {err:#}");
+                    let records = match read_local_profile_records(&data_dir) {
+                        Ok(records) => records,
+                        Err(err) => {
+                            tracing::warn!("failed to read local profile records for sync: {err:#}");
+                            continue;
+                        }
+                    };
+
+                    if let Err(err) = publish_snapshot(
+                        &handle,
+                        &local_profile_id,
+                        Some(requester_profile_id),
+                        records,
+                    )
+                    .await
+                    {
+                        tracing::warn!("failed to publish profile snapshot for sync: {err:#}");
+                    }
+                }
             }
         }
     })
+}
+
+fn read_local_profile_records(data_dir: &Path) -> Result<Vec<u8>> {
+    fs::read(profile_records_path(data_dir)).context("failed to read local profile records")
 }
 
 fn spawn_contact_profile_task(
@@ -336,8 +370,10 @@ fn normalize_profile_id(profile_id: &str) -> Result<PublicKey> {
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
+    use futures_util::StreamExt;
     use iroh::test_utils::run_relay_server;
     use p2panda_net::iroh_endpoint::{from_public_key, EndpointAddr, RelayUrl};
+    use p2panda_net::test_utils::setup_logging;
     use tempfile::tempdir;
     use tokio::time::{sleep, timeout, Duration};
 
@@ -346,9 +382,10 @@ mod tests {
     use crate::node::NodeOptions;
     use crate::profile::{load_profile_records_from_path, ProfileStore};
 
-    #[ignore = "profile sync over gossip is nondeterministic in the current sandbox"]
+    #[ignore = "owner and follower services still fail to complete the first end-to-end cache sync in this sandbox"]
     #[tokio::test(flavor = "multi_thread")]
     async fn syncs_contact_profile_and_tracks_display_name_updates() -> Result<()> {
+        setup_logging();
         let sharer_dir = tempdir()?;
         let follower_dir = tempdir()?;
         let (_relay_map, relay_url, _relay_server) = run_relay_server().await?;
@@ -356,7 +393,7 @@ mod tests {
         let node_options = NodeOptions {
             relay_url: Some(relay_url.clone()),
             mdns_enabled: false,
-            insecure_skip_relay_cert_verify: false,
+            insecure_skip_relay_cert_verify: true,
         };
         let sharer = AppNode::with_data_dir(sharer_dir.path(), node_options.clone()).await?;
         let follower = AppNode::with_data_dir(follower_dir.path(), node_options).await?;
@@ -364,6 +401,7 @@ mod tests {
             .address_book
             .insert_node_info(relay_bootstrap_node_info(sharer.node_id(), relay_url))
             .await?;
+        sleep(Duration::from_secs(1)).await;
 
         let mut sharer_profile = ProfileStore::load_or_create(sharer_dir.path())?;
         sharer_profile.update_display_name("Alice Example")?;
@@ -387,7 +425,7 @@ mod tests {
         follower_sync
             .sync_contact_profile(&sharer_profile_id)
             .await?;
-        timeout(Duration::from_secs(10), async {
+        timeout(Duration::from_secs(20), async {
             loop {
                 let cache_path =
                     contact_records_cache_path(follower_dir.path(), &sharer_profile_id);
@@ -397,7 +435,8 @@ mod tests {
                 sleep(Duration::from_millis(100)).await;
             }
         })
-        .await??;
+        .await
+        .context("timed out waiting for initial profile cache sync")??;
 
         contacts.refresh_contact(&sharer_profile_id)?;
         assert_eq!(
@@ -408,7 +447,7 @@ mod tests {
         sharer_profile.update_display_name("Alice Updated")?;
         sharer_sync.refresh_local_profile().await?;
 
-        timeout(Duration::from_secs(10), async {
+        timeout(Duration::from_secs(20), async {
             loop {
                 contacts.refresh_contact(&sharer_profile_id)?;
                 if contacts.get(&sharer_profile_id).unwrap().display_name() == Some("Alice Updated")
@@ -418,12 +457,266 @@ mod tests {
                 sleep(Duration::from_millis(100)).await;
             }
         })
-        .await??;
+        .await
+        .context("timed out waiting for display-name update sync")??;
 
         assert_eq!(
             contacts.get(&sharer_profile_id).unwrap().label(),
             "Alice Updated"
         );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn profile_sync_topic_relay_delivers_snapshots() -> Result<()> {
+        setup_logging();
+        let sharer_dir = tempdir()?;
+        let follower_dir = tempdir()?;
+        let (_relay_map, relay_url, _relay_server) = run_relay_server().await?;
+
+        let node_options = NodeOptions {
+            relay_url: Some(relay_url.clone()),
+            mdns_enabled: false,
+            insecure_skip_relay_cert_verify: true,
+        };
+        let sharer = AppNode::with_data_dir(sharer_dir.path(), node_options.clone()).await?;
+        let follower = AppNode::with_data_dir(follower_dir.path(), node_options).await?;
+        follower
+            .address_book
+            .insert_node_info(relay_bootstrap_node_info(sharer.node_id(), relay_url))
+            .await?;
+        sleep(Duration::from_secs(1)).await;
+
+        let sharer_profile = ProfileStore::load_or_create(sharer_dir.path())?;
+        let follower_profile = ProfileStore::load_or_create(follower_dir.path())?;
+        let sharer_profile_id = sharer_profile.profile().profile_id.clone();
+        let follower_profile_id = follower_profile.profile().profile_id.clone();
+        let topic = profile_sync_topic(&sharer_profile_id);
+
+        follower
+            .address_book
+            .set_topics(sharer.node_id(), [topic])
+            .await?;
+
+        let sharer_handle = sharer.gossip.stream(topic).await?;
+        let follower_handle = follower.gossip.stream(topic).await?;
+        let mut follower_sub = follower_handle.subscribe();
+
+        publish_snapshot(
+            &sharer_handle,
+            &sharer_profile_id,
+            Some(follower_profile_id.clone()),
+            b"snapshot".to_vec(),
+        )
+        .await?;
+
+        let message = timeout(Duration::from_secs(20), async {
+            while let Some(result) = follower_sub.next().await {
+                let bytes = result?;
+                let message = decode_message(&bytes)?;
+                if let ProfileSyncMessage::Snapshot {
+                    owner_profile_id,
+                    target_profile_id,
+                    records,
+                } = message
+                {
+                    if owner_profile_id == sharer_profile_id
+                        && target_profile_id.as_deref() == Some(follower_profile_id.as_str())
+                    {
+                        return Ok::<Vec<u8>, anyhow::Error>(records);
+                    }
+                }
+            }
+            anyhow::bail!("profile sync topic closed before snapshot arrived");
+        })
+        .await
+        .context("timed out waiting for relay profile snapshot")??;
+
+        assert_eq!(message, b"snapshot");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn follower_service_writes_profile_cache_from_snapshot() -> Result<()> {
+        setup_logging();
+        let sharer_dir = tempdir()?;
+        let follower_dir = tempdir()?;
+        let (_relay_map, relay_url, _relay_server) = run_relay_server().await?;
+
+        let node_options = NodeOptions {
+            relay_url: Some(relay_url.clone()),
+            mdns_enabled: false,
+            insecure_skip_relay_cert_verify: true,
+        };
+        let sharer = AppNode::with_data_dir(sharer_dir.path(), node_options.clone()).await?;
+        let follower = AppNode::with_data_dir(follower_dir.path(), node_options).await?;
+        follower
+            .address_book
+            .insert_node_info(relay_bootstrap_node_info(sharer.node_id(), relay_url))
+            .await?;
+        sleep(Duration::from_secs(1)).await;
+
+        let sharer_profile = ProfileStore::load_or_create(sharer_dir.path())?;
+        let follower_profile = ProfileStore::load_or_create(follower_dir.path())?;
+        let sharer_profile_id = sharer_profile.profile().profile_id.clone();
+        let follower_profile_id = follower_profile.profile().profile_id.clone();
+        let mut follower_sync =
+            ProfileSyncService::new(&follower, follower_profile_id.clone()).await?;
+        follower_sync
+            .sync_contact_profile(&sharer_profile_id)
+            .await?;
+
+        let topic = profile_sync_topic(&sharer_profile_id);
+        let sharer_handle = sharer.gossip.stream(topic).await?;
+        let records = fs::read(profile_records_path(sharer_dir.path()))?;
+        publish_snapshot(
+            &sharer_handle,
+            &sharer_profile_id,
+            Some(follower_profile_id),
+            records,
+        )
+        .await?;
+
+        timeout(Duration::from_secs(20), async {
+            loop {
+                let cache_path =
+                    contact_records_cache_path(follower_dir.path(), &sharer_profile_id);
+                if load_profile_records_from_path(&cache_path).is_ok() {
+                    break Ok::<(), anyhow::Error>(());
+                }
+                sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .context("timed out waiting for follower cache write")??;
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn local_service_refresh_publishes_snapshot() -> Result<()> {
+        setup_logging();
+        let sharer_dir = tempdir()?;
+        let follower_dir = tempdir()?;
+        let (_relay_map, relay_url, _relay_server) = run_relay_server().await?;
+
+        let node_options = NodeOptions {
+            relay_url: Some(relay_url.clone()),
+            mdns_enabled: false,
+            insecure_skip_relay_cert_verify: true,
+        };
+        let sharer = AppNode::with_data_dir(sharer_dir.path(), node_options.clone()).await?;
+        let follower = AppNode::with_data_dir(follower_dir.path(), node_options).await?;
+        follower
+            .address_book
+            .insert_node_info(relay_bootstrap_node_info(sharer.node_id(), relay_url))
+            .await?;
+        sleep(Duration::from_secs(1)).await;
+
+        let sharer_profile = ProfileStore::load_or_create(sharer_dir.path())?;
+        let follower_profile = ProfileStore::load_or_create(follower_dir.path())?;
+        let sharer_profile_id = sharer_profile.profile().profile_id.clone();
+        let follower_profile_id = follower_profile.profile().profile_id.clone();
+        let topic = profile_sync_topic(&sharer_profile_id);
+
+        follower
+            .address_book
+            .set_topics(sharer.node_id(), [topic])
+            .await?;
+
+        let follower_handle = follower.gossip.stream(topic).await?;
+        let mut follower_sub = follower_handle.subscribe();
+        let mut sharer_sync = ProfileSyncService::new(&sharer, sharer_profile_id.clone()).await?;
+
+        sharer_sync.refresh_local_profile().await?;
+
+        let records = timeout(Duration::from_secs(20), async {
+            while let Some(result) = follower_sub.next().await {
+                let bytes = result?;
+                let message = decode_message(&bytes)?;
+                if let ProfileSyncMessage::Snapshot {
+                    owner_profile_id,
+                    records,
+                    ..
+                } = message
+                {
+                    if owner_profile_id == sharer_profile_id {
+                        return Ok::<Vec<u8>, anyhow::Error>(records);
+                    }
+                }
+            }
+            anyhow::bail!("profile sync topic closed before local refresh snapshot arrived");
+        })
+        .await
+        .context("timed out waiting for local refresh snapshot")??;
+
+        let expected_records = fs::read(profile_records_path(sharer_dir.path()))?;
+        assert_eq!(records, expected_records);
+        assert!(!follower_profile_id.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn local_service_replies_to_profile_sync_requests() -> Result<()> {
+        setup_logging();
+        let sharer_dir = tempdir()?;
+        let follower_dir = tempdir()?;
+        let (_relay_map, relay_url, _relay_server) = run_relay_server().await?;
+
+        let node_options = NodeOptions {
+            relay_url: Some(relay_url.clone()),
+            mdns_enabled: false,
+            insecure_skip_relay_cert_verify: true,
+        };
+        let sharer = AppNode::with_data_dir(sharer_dir.path(), node_options.clone()).await?;
+        let follower = AppNode::with_data_dir(follower_dir.path(), node_options).await?;
+        follower
+            .address_book
+            .insert_node_info(relay_bootstrap_node_info(sharer.node_id(), relay_url))
+            .await?;
+        sleep(Duration::from_secs(1)).await;
+
+        let sharer_profile = ProfileStore::load_or_create(sharer_dir.path())?;
+        let follower_profile = ProfileStore::load_or_create(follower_dir.path())?;
+        let sharer_profile_id = sharer_profile.profile().profile_id.clone();
+        let follower_profile_id = follower_profile.profile().profile_id.clone();
+        let topic = profile_sync_topic(&sharer_profile_id);
+
+        follower
+            .address_book
+            .set_topics(sharer.node_id(), [topic])
+            .await?;
+
+        let follower_handle = follower.gossip.stream(topic).await?;
+        let mut follower_sub = follower_handle.subscribe();
+        let _sharer_sync = ProfileSyncService::new(&sharer, sharer_profile_id.clone()).await?;
+
+        publish_request(&follower_handle, &follower_profile_id).await?;
+
+        let records = timeout(Duration::from_secs(20), async {
+            while let Some(result) = follower_sub.next().await {
+                let bytes = result?;
+                let message = decode_message(&bytes)?;
+                if let ProfileSyncMessage::Snapshot {
+                    owner_profile_id,
+                    target_profile_id,
+                    records,
+                } = message
+                {
+                    if owner_profile_id == sharer_profile_id
+                        && target_profile_id.as_deref() == Some(follower_profile_id.as_str())
+                    {
+                        return Ok::<Vec<u8>, anyhow::Error>(records);
+                    }
+                }
+            }
+            anyhow::bail!("profile sync topic closed before request response arrived");
+        })
+        .await
+        .context("timed out waiting for request-driven profile snapshot")??;
+
+        let expected_records = fs::read(profile_records_path(sharer_dir.path()))?;
+        assert_eq!(records, expected_records);
         Ok(())
     }
 

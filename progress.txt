@@ -238,7 +238,6 @@ What doesn't work:
 
 What doesn't work:
 - Task 42 remains `passes: false`; I could verify the nickname-removal/model/UI acceptance locally, but I could not truthfully verify the network-fetch acceptance in this sandbox. The end-to-end profile sync test in `file-sharing/src/profile_sync.rs` is currently marked `#[ignore]` because the per-profile gossip sync path remained nondeterministic here even after switching to the same relay-backed setup used by the transfer tests.
-- Because Task 42 was already `passes: false` in `PRD.jsonl`, no content change to that file was needed in this run; it should remain false until the ignored sync test (or equivalent end-to-end verification) is made deterministic and passing.
 
 - ran `cargo fmt --package p2panda-file-sharing-gui`
 - ran `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-file-sharing-gui --test transfer`
@@ -1428,3 +1427,19 @@ What doesn't work:
 
 What doesn't work:
 - no additional blocker for Task 36 in this run
+
+# Fri, 06 Mar 2026 18:00:58 GMT
+
+- picked Task 42 (`Remove nickname from follow flow — display name owned by profile`) again because it is still the highest-priority actionable unfinished product task in this workspace; Task 41 is external fork validation and Tasks 43/44 depend on the already-polished contact/profile surfaces
+- hardened `file-sharing/src/profile_sync.rs` around relay-backed profile sync by adding periodic owner snapshot publication, a short relay-bootstrap settling delay before the first contact-topic join, and an initial burst of follow-up sync requests after a new contact subscription starts
+- added focused relay-backed tests proving the individual pieces now work in isolation: direct snapshot delivery on the profile-sync topic, follower-side cache persistence from snapshots, owner-side explicit snapshot publication, and owner-side replies to request messages
+- ran `cargo fmt --package p2panda-file-sharing-gui`
+- ran `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-file-sharing-gui --lib`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui profile_sync --lib -- --nocapture`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui --test contacts -- --nocapture`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui --test discovery -- --nocapture`
+
+What doesn't work:
+- Task 42 still remains `passes: false`; the full end-to-end acceptance test `syncs_contact_profile_and_tracks_display_name_updates` still times out on the initial cache sync when both owner and follower are driven through `ProfileSyncService`, even though the underlying relay delivery, request/reply, owner publish, and follower cache-write paths now each pass in isolation
+- I restored that end-to-end test to `#[ignore]` so the crate does not regress to a red test suite; this is a concrete manual-PRD-note item if you want to split the remaining gap into a narrower infrastructure/debugging task later
+- Because Task 42 was already `passes: false` in `PRD.jsonl`, no content change to that file was needed in this run; it should remain false until the ignored sync test (or equivalent end-to-end verification) is made deterministic and passing.
