@@ -54,6 +54,16 @@ If the sandbox is missing or stopped, either bootstrap it first or let the verif
 
 This path is intentionally explicit. It avoids the old `docker sandbox run` flow that launched the agent itself instead of a shell command, which made acceptance checks awkward or impossible to automate.
 
+## Fork CI Validation
+
+Task 41 has one part that cannot be proven purely with local cargo runs: actual PR and release workflow execution on the `cafca/p2panda` fork. The repo now includes a guarded helper for that path:
+
+```bash
+./scripts/release/validate-fork.sh preflight
+```
+
+Use it before any branch push or experimental tag push. It refuses unsafe remote setups and is documented in [docs/fork-validation.md](/Users/pv/code/p2panda/docs/fork-validation.md).
+
 ## Ralph Workflow
 
 `./ralph.sh` and `./watch-ralph.sh` now use the same named Docker container model:

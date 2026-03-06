@@ -1155,3 +1155,31 @@ What doesn't work:
   - `gh auth status` reports no GitHub login, so I could not push a branch to `cafca/p2panda`, open/inspect a PR there, or push/delete experimental tags on the fork
   - the configured `fork` remote uses SSH (`git@github.com:cafca/p2panda.git`) but this container has no host SSH/client access for authenticated pushes outside the sandbox, so the fork-only PR/tag workflow steps remain unavailable here
 - the local Linux release smoke test did not complete end-to-end: after `cargo-appimage` installed successfully and the release build progressed deeply into Bevy dependencies, the sandbox killed `rustc` with `signal: 9 (SIGKILL)` while compiling `bevy_ecs`, so I could not verify artifact generation locally in this run
+
+# 2026-03-06 13:10 UTC
+
+- picked Task 41 (`Ensure basic CI/CD works: Validate GitHub CI on fork (cafca/p2panda)`) again because it is still the only remaining PRD task with `passes: false`
+- added a guarded fork-validation helper at `scripts/release/validate-fork.sh` to make the manual PR/tag workflow safer and more repeatable:
+  - `preflight` verifies `fork` still points to `cafca/p2panda` and `origin` still points to `p2panda/p2panda`
+  - `push-branch` only pushes to `fork`
+  - `open-pr` opens against `cafca/p2panda:main`
+  - `push-tag` and `cleanup-tag` only allow `v<version>-experimental.<n>` tags and re-check the safe remote setup before touching tags
+- documented the fork-only validation workflow in `docs/fork-validation.md` and linked it from `docs/dev-environment.md`
+- ran script-level verification:
+  - `bash -n scripts/release/validate-fork.sh scripts/release/check-version.sh scripts/bootstrap-sandbox-toolchain.sh`
+  - `./scripts/release/validate-fork.sh preflight`
+  - `./scripts/release/validate-fork.sh push-tag v0.1.0` and confirmed the helper rejects non-experimental tags before any push attempt
+  - `./scripts/release/validate-fork.sh push-tag v0.1.0-experimental.1` and confirmed the helper surfaces the environment's missing SSH transport before any remote mutation
+- reran the Task 41 local feedback loops after the script/doc changes:
+  - `cargo fmt --all --check`
+  - `./scripts/verify-in-sandbox.sh -- cargo clippy --workspace --locked -- -D warnings`
+  - `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui --lib --locked -- --nocapture`
+  - `./scripts/verify-in-sandbox.sh -- cargo audit`
+- confirmed the local CI-equivalent checks still pass: formatting is clean, workspace clippy passes, all 94 `p2panda-file-sharing-gui` lib tests pass, and `cargo audit` reports only the already-accepted unmaintained warnings (`atomic-polyfill`, `paste`, `proc-macro-error`)
+
+What doesn't work:
+- Task 41 still cannot be marked passing, so `PRD.jsonl` remains unchanged with `passes: false` for Task 41
+- fork-only validation is still blocked in this environment:
+  - `gh` is installed but unauthenticated (`gh auth status` fails), so I cannot create or inspect a PR on `cafca/p2panda`
+  - the `fork` remote uses SSH and this environment does not have an `ssh` client, so authenticated `git push fork ...` and experimental tag push/cleanup cannot run here
+- because those fork operations are blocked, I still cannot prove the acceptance criteria requiring a green PR check suite, a successful `release.yml` run on the fork, uploaded experimental release artifacts, and confirmation that no workflows were triggered on `origin`
