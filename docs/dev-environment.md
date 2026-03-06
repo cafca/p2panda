@@ -77,7 +77,7 @@ For read-only verification after a push, the same helper can inspect the public 
 ./scripts/release/validate-fork.sh origin-status HEAD
 ```
 
-The `wait-pr` and `wait-release` variants poll until GitHub finishes the relevant checks or the timeout expires, which is safer than manually re-running status commands during fork validation.
+`pr-status` and `wait-pr` now also verify that the fork PR head matches the commit you intend to validate (`HEAD` by default), which avoids falsely accepting a green but stale PR. The `wait-pr` and `wait-release` variants poll until GitHub finishes the relevant checks or the timeout expires, which is safer than manually re-running status commands during fork validation.
 
 ## Ralph Workflow
 

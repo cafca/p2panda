@@ -8,8 +8,8 @@ Usage:
   ./scripts/release/validate-fork.sh push-branch [branch]
   ./scripts/release/validate-fork.sh open-pr [branch]
   ./scripts/release/validate-fork.sh branch-status <branch> [commit-ish]
-  ./scripts/release/validate-fork.sh pr-status <pr-number|branch>
-  ./scripts/release/validate-fork.sh wait-pr <pr-number|branch> [timeout-seconds] [poll-seconds]
+  ./scripts/release/validate-fork.sh pr-status <pr-number|branch> [commit-ish]
+  ./scripts/release/validate-fork.sh wait-pr <pr-number|branch> [commit-ish] [timeout-seconds] [poll-seconds]
   ./scripts/release/validate-fork.sh push-tag <vX.Y.Z-experimental.N>
   ./scripts/release/validate-fork.sh release-status <vX.Y.Z-experimental.N>
   ./scripts/release/validate-fork.sh wait-release <vX.Y.Z-experimental.N> [timeout-seconds] [poll-seconds]
@@ -601,7 +601,8 @@ cmd_branch_status() {
 
 cmd_pr_status() {
   local selector="${1:-}"
-  local pr_json pr_number title state draft head_ref head_sha pr_url
+  local expected_commitish="${2:-HEAD}"
+  local pr_json pr_number title state draft head_ref head_sha pr_url expected_sha
 
   if [[ -z "$selector" ]]; then
     echo "missing PR selector (number or branch)" >&2
@@ -611,6 +612,11 @@ cmd_pr_status() {
 
   assert_safe_remotes
   require_api_tools
+
+  if ! expected_sha="$(git rev-parse "${expected_commitish}^{commit}" 2>/dev/null)"; then
+    echo "unknown commit-ish: $expected_commitish" >&2
+    exit 1
+  fi
 
   if ! pr_json="$(resolve_pr_json "$selector" 2>/dev/null)"; then
     echo "failed to query PR data from ${FORK_REPO}" >&2
@@ -638,6 +644,7 @@ cmd_pr_status() {
   echo "draft:       ${draft}"
   echo "head ref:    ${head_ref}"
   echo "head sha:    ${head_sha}"
+  echo "expected:    ${expected_sha} (${expected_commitish})"
   echo "check runs:"
   print_check_runs "$FORK_REPO" "$head_sha"
 
@@ -646,13 +653,19 @@ cmd_pr_status() {
     exit 1
   fi
 
+  if [[ "$head_sha" != "$expected_sha" ]]; then
+    echo "PR head does not match ${expected_commitish}; push the latest commit to the fork before treating this PR as valid" >&2
+    exit 1
+  fi
+
   check_runs_all_green "$FORK_REPO" "$head_sha"
 }
 
 cmd_wait_pr() {
   local selector="${1:-}"
-  local timeout_seconds="${2:-$DEFAULT_WAIT_TIMEOUT_SECONDS}"
-  local poll_seconds="${3:-$DEFAULT_WAIT_POLL_SECONDS}"
+  local expected_commitish="${2:-HEAD}"
+  local timeout_seconds="${3:-$DEFAULT_WAIT_TIMEOUT_SECONDS}"
+  local poll_seconds="${4:-$DEFAULT_WAIT_POLL_SECONDS}"
 
   if [[ -z "$selector" ]]; then
     echo "missing PR selector (number or branch)" >&2
@@ -660,7 +673,7 @@ cmd_wait_pr() {
     exit 1
   fi
 
-  wait_with_polling "PR ${selector} on ${FORK_REPO}" "$timeout_seconds" "$poll_seconds" cmd_pr_status "$selector"
+  wait_with_polling "PR ${selector} on ${FORK_REPO}" "$timeout_seconds" "$poll_seconds" cmd_pr_status "$selector" "$expected_commitish"
 }
 
 cmd_push_branch() {

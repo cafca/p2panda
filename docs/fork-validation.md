@@ -49,7 +49,7 @@ Inspect the PR and its check suite from the public GitHub API:
 ./scripts/release/validate-fork.sh pr-status port-blobs-to-net-v0.5
 ```
 
-You can also pass a PR number instead of a branch name. The command exits non-zero unless the PR is open, not draft, and all check runs are green.
+You can also pass a PR number instead of a branch name. By default, the command compares the PR head SHA to local `HEAD` and exits non-zero unless the PR is open, not draft, on the expected commit, and all check runs are green. Pass an explicit commit-ish as the second argument if you need to validate something other than `HEAD`.
 
 To block until the PR is actually green instead of manually re-running `pr-status`, use:
 
@@ -57,7 +57,7 @@ To block until the PR is actually green instead of manually re-running `pr-statu
 ./scripts/release/validate-fork.sh wait-pr port-blobs-to-net-v0.5
 ```
 
-Optional second and third arguments override the default `900` second timeout and `15` second poll interval.
+Optional arguments are `[commit-ish] [timeout-seconds] [poll-seconds]`. As with `pr-status`, the default commit-ish is local `HEAD`.
 
 ## Release Validation
 

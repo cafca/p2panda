@@ -1272,3 +1272,41 @@ What doesn't work:
 - Task 41 remains externally blocked from a truthful pass in this environment:
   - `./scripts/release/validate-fork.sh preflight` still reports no `gh` auth, no GitHub token, and no local `ssh` client, so I cannot push the current branch or an experimental tag to `cafca/p2panda` from here
   - without a real fork push/update, I still cannot prove a green PR check suite, a successful fork `release.yml` run across macOS/Linux/Windows, uploaded experimental release artifacts, or experimental tag cleanup on the fork
+
+# 2026-03-06 14:19 UTC
+
+- picked Task 41 (`Ensure basic CI/CD works: Validate GitHub CI on fork (cafca/p2panda)`) again because it is still the only remaining task with `passes: false`
+- tightened `scripts/release/validate-fork.sh` so PR validation cannot accidentally accept a stale fork PR:
+  - `pr-status` now takes an optional `[commit-ish]` argument and defaults to verifying the PR head SHA against local `HEAD`
+  - `wait-pr` now threads the same expected-commit check through its polling path
+  - the helper now prints both the PR head SHA and the expected SHA so stale fork state is explicit in logs
+- updated `docs/fork-validation.md` and `docs/dev-environment.md` to document the new `pr-status` / `wait-pr` commit-matching behavior
+- ran feedback loops:
+  - `bash -n scripts/release/validate-fork.sh`
+  - `./scripts/release/validate-fork.sh preflight`
+  - `./scripts/release/validate-fork.sh branch-status port-blobs-to-net-v0.5`
+  - `./scripts/release/validate-fork.sh pr-status port-blobs-to-net-v0.5`
+  - `./scripts/release/validate-fork.sh wait-pr port-blobs-to-net-v0.5 HEAD 1 1`
+  - `./scripts/release/validate-fork.sh release-status v0.1.0-experimental.1`
+  - `./scripts/release/validate-fork.sh wait-release v0.1.0-experimental.1 1 1`
+  - `./scripts/release/validate-fork.sh origin-status HEAD`
+  - `cargo fmt --all --check`
+  - `./scripts/verify-in-sandbox.sh -- cargo clippy --workspace --locked -- -D warnings`
+  - `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui --lib --locked -- --nocapture`
+  - `cargo audit -q`
+- confirmed the local repo-side verification remains green after the helper change:
+  - formatting passes
+  - workspace clippy passes with `-D warnings`
+  - all 94 `p2panda-file-sharing-gui` lib tests pass
+  - `cargo audit` still reports only the previously accepted unmaintained-warning set (`atomic-polyfill`, `paste`, `proc-macro-error`)
+  - `origin-status HEAD` still reports no matching workflow runs on upstream `p2panda/p2panda`
+- confirmed the new stale-PR guard is catching the real external state instead of allowing a false positive:
+  - fork branch `port-blobs-to-net-v0.5` is still stale at `0746e60cda013423f93730c6543c7ec1d1f85ab8` instead of local `HEAD` `9840a5be5580d84dbc7e45297760aceb69f3529a`
+  - PR `cafca/p2panda#1` is still draft and still failing `clippy`, `test`, and `check`
+  - experimental tag `v0.1.0-experimental.1` still does not exist on the fork
+- left Task 41 `passes` as `false`; `PRD.jsonl` was not marked passing because the fork-side acceptance criteria were not actually completed in this run
+
+What doesn't work:
+- Task 41 remains externally blocked from a truthful pass in this environment:
+  - `./scripts/release/validate-fork.sh preflight` still reports no `gh` auth, no GitHub token, and no local `ssh` client, so I cannot push the current branch or an experimental tag to `cafca/p2panda` from here
+  - without a real fork push/update, I still cannot prove a green PR check suite, a successful fork `release.yml` run across macOS/Linux/Windows, uploaded experimental release artifacts, or experimental tag cleanup on the fork
