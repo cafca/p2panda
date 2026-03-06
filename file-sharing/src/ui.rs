@@ -5,7 +5,8 @@ use bevy::prelude::{EventReader, Res, ResMut, Resource};
 use bevy::window::FileDragAndDrop;
 use bevy_egui::{egui, EguiContexts};
 
-use crate::bridge::{AsyncBridge, NetworkCommand};
+use crate::bridge::{AsyncBridge, ContactDownloadSource, NetworkCommand};
+use crate::contacts::ContactsStore;
 use crate::diagnostics::{
     now_unix_ms, DiagnosticsSnapshot, PeerConnectionState, PeerDiscoveryMethod,
 };
@@ -32,10 +33,15 @@ enum TransferAction {
 #[derive(Debug, Resource)]
 pub struct UiState {
     pub global_paused: bool,
+    pub show_contacts_view: bool,
     pub show_settings_view: bool,
     pub show_diagnostics_view: bool,
     pub download_dialog_open: bool,
     pub download_share_code_input: String,
+    pub contact_profile_id_input: String,
+    pub contact_nickname_input: String,
+    pub selected_contact_profile_id: Option<String>,
+    pub contact_error: Option<String>,
     pub pending_share_path: Option<PathBuf>,
     pub selected_download_directory: PathBuf,
     pub relay_mode: RelayMode,
@@ -49,6 +55,7 @@ pub struct UiState {
     pub diagnostics_snapshot: DiagnosticsSnapshot,
     pub diagnostics_total_bytes_received: u64,
     pub diagnostics_total_bytes_sent: u64,
+    next_contact_refresh_unix_secs: u64,
     upload_byte_counted_transfers: HashSet<u64>,
     download_progress_watermark: HashMap<(u64, usize), u64>,
     pending_share_removal: Option<u64>,
@@ -66,10 +73,15 @@ impl UiState {
     pub fn with_default_download_directory(default_download_directory: PathBuf) -> Self {
         Self {
             global_paused: false,
+            show_contacts_view: false,
             show_settings_view: false,
             show_diagnostics_view: false,
             download_dialog_open: false,
             download_share_code_input: String::new(),
+            contact_profile_id_input: String::new(),
+            contact_nickname_input: String::new(),
+            selected_contact_profile_id: None,
+            contact_error: None,
             pending_share_path: None,
             selected_download_directory: default_download_directory,
             relay_mode: RelayMode::TestingRelay,
@@ -83,6 +95,7 @@ impl UiState {
             diagnostics_snapshot: DiagnosticsSnapshot::default(),
             diagnostics_total_bytes_received: 0,
             diagnostics_total_bytes_sent: 0,
+            next_contact_refresh_unix_secs: 0,
             upload_byte_counted_transfers: HashSet::new(),
             download_progress_watermark: HashMap::new(),
             pending_share_removal: None,
@@ -209,6 +222,7 @@ pub fn ui_system(
     mut ui_state: ResMut<UiState>,
     mut transfers: ResMut<TransferRegistry>,
     bridge: Res<AsyncBridge>,
+    mut contacts_store: ResMut<ContactsStore>,
     mut profile_store: ResMut<ProfileStore>,
     mut settings_store: ResMut<SettingsStore>,
     mut drag_and_drop_events: EventReader<FileDragAndDrop>,
@@ -253,6 +267,13 @@ pub fn ui_system(
     }
 
     let dialog_busy = ui_state.folder_dialog.is_some();
+    let now_unix_secs = now_unix_ms() / 1_000;
+    if ui_state.show_contacts_view && now_unix_secs >= ui_state.next_contact_refresh_unix_secs {
+        if let Err(err) = contacts_store.refresh_due_contacts(now_unix_secs) {
+            ui_state.contact_error = Some(err.to_string());
+        }
+        ui_state.next_contact_refresh_unix_secs = now_unix_secs.saturating_add(5);
+    }
 
     let ctx = egui_contexts.ctx_mut();
     apply_app_theme(ctx);
@@ -333,11 +354,23 @@ pub fn ui_system(
 
                         ui.separator();
                         if ui
+                            .selectable_label(ui_state.show_contacts_view, "Contacts")
+                            .clicked()
+                        {
+                            ui_state.show_contacts_view = !ui_state.show_contacts_view;
+                            if ui_state.show_contacts_view {
+                                ui_state.show_settings_view = false;
+                                ui_state.show_diagnostics_view = false;
+                            }
+                        }
+
+                        if ui
                             .selectable_label(ui_state.show_settings_view, "Settings")
                             .clicked()
                         {
                             ui_state.show_settings_view = !ui_state.show_settings_view;
                             if ui_state.show_settings_view {
+                                ui_state.show_contacts_view = false;
                                 ui_state.show_diagnostics_view = false;
                             }
                         }
@@ -348,6 +381,7 @@ pub fn ui_system(
                         {
                             ui_state.show_diagnostics_view = !ui_state.show_diagnostics_view;
                             if ui_state.show_diagnostics_view {
+                                ui_state.show_contacts_view = false;
                                 ui_state.show_settings_view = false;
                             }
                         }
@@ -360,7 +394,15 @@ pub fn ui_system(
                 ui.add_space(6.0);
             }
 
-            if ui_state.show_settings_view {
+            if ui_state.show_contacts_view {
+                render_contacts_view(
+                    ui,
+                    &mut ui_state,
+                    &mut contacts_store,
+                    &mut transfers,
+                    &bridge,
+                );
+            } else if ui_state.show_settings_view {
                 render_settings_view(
                     ui,
                     &mut ui_state,
@@ -412,6 +454,7 @@ pub fn render_transfer_ui(
     ui_state: ResMut<UiState>,
     transfers: ResMut<TransferRegistry>,
     bridge: Res<AsyncBridge>,
+    contacts_store: ResMut<ContactsStore>,
     profile_store: ResMut<ProfileStore>,
     settings_store: ResMut<SettingsStore>,
     drag_and_drop_events: EventReader<FileDragAndDrop>,
@@ -421,6 +464,7 @@ pub fn render_transfer_ui(
         ui_state,
         transfers,
         bridge,
+        contacts_store,
         profile_store,
         settings_store,
         drag_and_drop_events,
@@ -528,6 +572,211 @@ fn render_download_dialog(
     }
 
     ui_state.download_dialog_open = is_open;
+}
+
+fn render_contacts_view(
+    ui: &mut egui::Ui,
+    ui_state: &mut UiState,
+    contacts_store: &mut ContactsStore,
+    transfers: &mut TransferRegistry,
+    bridge: &AsyncBridge,
+) {
+    ui.heading("Contacts");
+    ui.label("Follow profile IDs, inspect published shares, and start downloads directly.");
+    ui.add_space(8.0);
+
+    let mut should_follow = false;
+    ui.horizontal_wrapped(|ui| {
+        ui.label("Profile ID");
+        ui.add(
+            egui::TextEdit::singleline(&mut ui_state.contact_profile_id_input).desired_width(360.0),
+        );
+        ui.label("Nickname");
+        ui.add(
+            egui::TextEdit::singleline(&mut ui_state.contact_nickname_input).desired_width(180.0),
+        );
+        let can_follow = !ui_state.contact_profile_id_input.trim().is_empty();
+        if ui
+            .add_enabled(can_follow, egui::Button::new("Follow"))
+            .clicked()
+        {
+            should_follow = true;
+        }
+    });
+
+    if should_follow {
+        let profile_id = ui_state.contact_profile_id_input.trim().to_owned();
+        match contacts_store.follow_contact(
+            profile_id.clone(),
+            Some(ui_state.contact_nickname_input.clone()),
+        ) {
+            Ok(()) => {
+                if let Err(err) = contacts_store.refresh_contact(&profile_id) {
+                    ui_state.contact_error = Some(err.to_string());
+                } else {
+                    ui_state.contact_error = None;
+                }
+                ui_state.selected_contact_profile_id = Some(profile_id);
+                ui_state.contact_profile_id_input.clear();
+                ui_state.contact_nickname_input.clear();
+            }
+            Err(err) => {
+                ui_state.contact_error = Some(err.to_string());
+            }
+        }
+    }
+
+    if let Some(error) = &ui_state.contact_error {
+        ui.colored_label(egui::Color32::from_rgb(240, 119, 119), error);
+        ui.add_space(6.0);
+    }
+
+    if ui_state.selected_contact_profile_id.is_none() {
+        ui_state.selected_contact_profile_id = contacts_store
+            .contacts()
+            .first()
+            .map(|contact| contact.profile_id.clone());
+    }
+
+    if contacts_store.contacts().is_empty() {
+        render_empty_contacts_state(ui);
+        return;
+    }
+
+    let mut refresh_profile_id = None;
+    let mut remove_profile_id = None;
+    let mut download_request = None;
+
+    ui.columns(2, |columns| {
+        columns[0].heading("Followed");
+        columns[0].add_space(4.0);
+        for contact in contacts_store.contacts() {
+            columns[0].group(|ui| {
+                ui.horizontal(|ui| {
+                    let selected = ui_state.selected_contact_profile_id.as_deref()
+                        == Some(contact.profile_id.as_str());
+                    if ui.selectable_label(selected, contact.label()).clicked() {
+                        ui_state.selected_contact_profile_id = Some(contact.profile_id.clone());
+                    }
+                    if ui.button("Remove").clicked() {
+                        remove_profile_id = Some(contact.profile_id.clone());
+                    }
+                });
+                ui.small(truncate_hash(&contact.profile_id));
+                if let Some(display_name) = contact.display_name() {
+                    ui.small(format!("Name: {display_name}"));
+                }
+                let status = contact.last_error.as_deref().unwrap_or("Ready");
+                ui.small(status);
+            });
+            columns[0].add_space(6.0);
+        }
+
+        columns[1].heading("Detail");
+        columns[1].add_space(4.0);
+        if let Some(profile_id) = ui_state.selected_contact_profile_id.as_deref() {
+            if let Some(contact) = contacts_store.get(profile_id) {
+                columns[1].horizontal(|ui| {
+                    ui.heading(contact.label());
+                    if ui.button("Copy ID").clicked() {
+                        copy_text(ui.ctx(), &contact.profile_id);
+                    }
+                    if ui.button("Refresh").clicked() {
+                        refresh_profile_id = Some(contact.profile_id.clone());
+                    }
+                });
+                columns[1].monospace(&contact.profile_id);
+                if let Some(display_name) = contact.display_name() {
+                    columns[1].label(format!("Display name: {display_name}"));
+                }
+                columns[1].label(format!(
+                    "Followed: {}",
+                    format_unix_date(contact.followed_at)
+                ));
+                if let Some(last_error) = &contact.last_error {
+                    columns[1].colored_label(egui::Color32::from_rgb(240, 119, 119), last_error);
+                }
+
+                columns[1].separator();
+                columns[1].label("Published shares");
+                if contact.cached_shares.is_empty() {
+                    columns[1].small("No published shares discovered yet.");
+                } else {
+                    for share in &contact.cached_shares {
+                        columns[1].group(|ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(&share.share_name);
+                                ui.small(truncate_hash(&share.collection_hash));
+                            });
+                            ui.horizontal_wrapped(|ui| {
+                                ui.monospace(&share.share_code);
+                                if ui.button("Copy").clicked() {
+                                    copy_text(ui.ctx(), &share.share_code);
+                                }
+                                if ui.button("Download").clicked() {
+                                    download_request = Some((
+                                        share.share_code.clone(),
+                                        ContactDownloadSource {
+                                            profile_id: contact.profile_id.clone(),
+                                            display_name: contact
+                                                .display_name()
+                                                .unwrap_or(contact.label())
+                                                .to_owned(),
+                                        },
+                                    ));
+                                }
+                            });
+                        });
+                        columns[1].add_space(6.0);
+                    }
+                }
+            }
+        }
+    });
+
+    if let Some(profile_id) = refresh_profile_id {
+        if let Err(err) = contacts_store.refresh_contact(&profile_id) {
+            ui_state.contact_error = Some(err.to_string());
+        } else {
+            ui_state.contact_error = None;
+        }
+    }
+
+    if let Some(profile_id) = remove_profile_id {
+        if let Err(err) = contacts_store.remove_contact(&profile_id) {
+            ui_state.contact_error = Some(err.to_string());
+        } else {
+            if ui_state.selected_contact_profile_id.as_deref() == Some(profile_id.as_str()) {
+                ui_state.selected_contact_profile_id = contacts_store
+                    .contacts()
+                    .first()
+                    .map(|contact| contact.profile_id.clone());
+            }
+            ui_state.contact_error = None;
+        }
+    }
+
+    if let Some((share_code, source_contact)) = download_request {
+        start_download_transfer_with_source(
+            transfers,
+            bridge,
+            share_code,
+            ui_state.selected_download_directory.clone(),
+            Some(source_contact),
+        );
+    }
+}
+
+fn render_empty_contacts_state(ui: &mut egui::Ui) {
+    egui::Frame::new()
+        .fill(egui::Color32::from_rgb(24, 29, 36))
+        .corner_radius(egui::CornerRadius::same(10))
+        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(49, 59, 73)))
+        .inner_margin(egui::Margin::same(14))
+        .show(ui, |ui| {
+            ui.heading("No contacts yet");
+            ui.label("Paste a profile ID to follow someone and browse their published shares.");
+        });
 }
 
 fn render_drag_drop_overlay(ctx: &egui::Context) {
@@ -1352,6 +1601,16 @@ fn start_download_transfer(
     share_code: String,
     output_directory: PathBuf,
 ) -> u64 {
+    start_download_transfer_with_source(transfers, bridge, share_code, output_directory, None)
+}
+
+fn start_download_transfer_with_source(
+    transfers: &mut TransferRegistry,
+    bridge: &AsyncBridge,
+    share_code: String,
+    output_directory: PathBuf,
+    source_contact: Option<ContactDownloadSource>,
+) -> u64 {
     let transfer_id = transfers.allocate_id();
     transfers.push(Transfer::new(transfer_id, "Download", Direction::Download));
 
@@ -1359,6 +1618,7 @@ fn start_download_transfer(
         transfer_id,
         share_code,
         output_directory,
+        source_contact,
     }) {
         if let Some(transfer) = transfers.get_mut(transfer_id) {
             transfer.status = TransferStatus::Error(err.to_string());
@@ -1382,6 +1642,10 @@ pub fn default_download_directory() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("Downloads"));
 
     base.join("p2panda")
+}
+
+fn format_unix_date(timestamp: u64) -> String {
+    format!("{timestamp}")
 }
 
 fn format_bytes(bytes: u64) -> String {
@@ -1575,6 +1839,51 @@ mod tests {
                 total_bytes: 5,
                 file_count: 1,
             }
+        );
+    }
+
+    #[test]
+    fn contact_download_transfer_sends_contact_metadata() {
+        let expected_source = ContactDownloadSource {
+            profile_id: "z6Mktestcontact".into(),
+            display_name: "Alice".into(),
+        };
+        let expected_source_for_assert = expected_source.clone();
+        let bridge = spawn_test_bridge(move |_, command, events| {
+            let expected_source = expected_source_for_assert.clone();
+            Box::pin(async move {
+                match command {
+                    NetworkCommand::StartDownload {
+                        transfer_id,
+                        source_contact,
+                        ..
+                    } => {
+                        assert_eq!(source_contact, Some(expected_source));
+                        events
+                            .send_async(NetworkEvent::TransferCompleted { transfer_id })
+                            .await?;
+                    }
+                    other => panic!("unexpected command: {other:?}"),
+                }
+                Ok(())
+            })
+        });
+
+        let mut registry = TransferRegistry::default();
+        let transfer_id = start_download_transfer_with_source(
+            &mut registry,
+            &bridge,
+            "p2p-CONTACT".to_owned(),
+            PathBuf::from("/tmp/contact-download"),
+            Some(expected_source),
+        );
+
+        let transfer = registry.get(transfer_id).unwrap();
+        assert_eq!(transfer.direction, Direction::Download);
+        assert_eq!(transfer.status, TransferStatus::Pending);
+        assert_eq!(
+            wait_for_event(&bridge),
+            NetworkEvent::TransferCompleted { transfer_id }
         );
     }
 

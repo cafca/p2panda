@@ -867,7 +867,7 @@
     "At least 3 screenshots from the running app are committed under file-sharing/artifacts/ui/",
     "Screenshots include at least two window sizes and show readable, well-laid-out UX on each"
   ],
-  "passes": false
+  "passes": true
 }
 {
   "id": 37,

@@ -298,6 +298,7 @@ async fn paused_download_resumes_without_re_downloading_completed_files() -> Res
         transfer_id: 77,
         share_code: share.share_code.clone(),
         output_directory: output.path().to_path_buf(),
+        source_contact: None,
     })?;
 
     let mut events = Vec::new();

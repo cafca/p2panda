@@ -77,6 +77,8 @@ pub struct ShareOwnershipRecord {
     pub share_code: String,
     pub source_dir: PathBuf,
     pub recorded_at: u64,
+    pub source_contact_profile_id: Option<String>,
+    pub source_contact_display_name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,6 +102,10 @@ enum ProfileRecordBody {
         share_code: String,
         source_dir: PathBuf,
         recorded_at: u64,
+        #[serde(default)]
+        source_contact_profile_id: Option<String>,
+        #[serde(default)]
+        source_contact_display_name: Option<String>,
     },
 }
 
@@ -243,6 +249,35 @@ impl ProfileStore {
             share_code: share.share_code.clone(),
             source_dir: share.source_dir.clone(),
             recorded_at: now_unix_secs(),
+            source_contact_profile_id: None,
+            source_contact_display_name: None,
+        })?;
+        Ok(true)
+    }
+
+    pub fn ensure_downloaded_share_record(
+        &mut self,
+        profile_id: &str,
+        share_code: impl Into<String>,
+        collection_hash: impl Into<String>,
+        source_dir: impl Into<PathBuf>,
+        source_contact_profile_id: Option<String>,
+        source_contact_display_name: Option<String>,
+    ) -> Result<bool> {
+        let share_code = share_code.into();
+        let collection_hash = collection_hash.into();
+        if self.has_share_ownership_record(profile_id, &collection_hash, &share_code)? {
+            return Ok(false);
+        }
+
+        self.append_record(ProfileRecordBody::ShareOwnership {
+            profile_id: profile_id.to_owned(),
+            collection_hash,
+            share_code,
+            source_dir: source_dir.into(),
+            recorded_at: now_unix_secs(),
+            source_contact_profile_id,
+            source_contact_display_name,
         })?;
         Ok(true)
     }
@@ -346,6 +381,23 @@ impl ProfileStore {
     }
 }
 
+pub fn profile_records_path(data_dir: impl AsRef<Path>) -> PathBuf {
+    data_dir.as_ref().join(PROFILE_RECORDS_FILE_NAME)
+}
+
+pub fn load_profile_records_from_path(path: impl AsRef<Path>) -> Result<Vec<ProfileRecord>> {
+    let path = path.as_ref();
+    let bytes = fs::read(path)
+        .with_context(|| format!("failed to read profile records file {}", path.display()))?;
+    let records: PersistedProfileRecords = serde_json::from_slice(&bytes)
+        .with_context(|| format!("failed to parse profile records at {}", path.display()))?;
+    records
+        .operations
+        .iter()
+        .map(decode_stored_operation)
+        .collect()
+}
+
 fn decode_stored_operation(operation: &StoredOperation) -> Result<ProfileRecord> {
     let body = Body::from(operation.body.clone());
     let validated = Operation {
@@ -377,6 +429,8 @@ fn decode_stored_operation(operation: &StoredOperation) -> Result<ProfileRecord>
             share_code,
             source_dir,
             recorded_at,
+            source_contact_profile_id,
+            source_contact_display_name,
         } => ProfileRecord::ShareOwnership(ShareOwnershipRecord {
             author,
             profile_id,
@@ -384,6 +438,8 @@ fn decode_stored_operation(operation: &StoredOperation) -> Result<ProfileRecord>
             share_code,
             source_dir,
             recorded_at,
+            source_contact_profile_id,
+            source_contact_display_name,
         }),
     })
 }
@@ -645,6 +701,35 @@ mod tests {
         assert_eq!(ownerships[0].profile_id, store.profile().profile_id);
         assert_eq!(ownerships[0].share_code, "p2p-SHARE");
         assert_eq!(ownerships[0].author, private_key.public_key());
+        assert!(ownerships[0].source_contact_profile_id.is_none());
+
+        Ok(())
+    }
+
+    #[test]
+    fn downloaded_share_records_can_store_contact_provenance() -> Result<()> {
+        let dir = tempdir()?;
+        let private_key = PrivateKey::new();
+        write_node_key(dir.path(), &private_key)?;
+
+        let mut store = ProfileStore::load_or_create(dir.path())?;
+        let local_profile_id = store.profile().profile_id.clone();
+        assert!(store.ensure_downloaded_share_record(
+            &local_profile_id,
+            "p2p-DOWNLOAD",
+            BlobHash::new(b"downloaded-share").to_string(),
+            PathBuf::from("/tmp/downloads/shared"),
+            Some("contact-profile".into()),
+            Some("Alice".into()),
+        )?);
+
+        let ownerships = store.share_ownership_records()?;
+        assert!(ownerships.iter().any(|record| {
+            record.profile_id == local_profile_id
+                && record.share_code == "p2p-DOWNLOAD"
+                && record.source_contact_profile_id.as_deref() == Some("contact-profile")
+                && record.source_contact_display_name.as_deref() == Some("Alice")
+        }));
 
         Ok(())
     }

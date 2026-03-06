@@ -1,4 +1,5 @@
 pub mod bridge;
+pub mod contacts;
 pub mod diagnostics;
 pub mod download;
 pub mod manifest;

@@ -39,6 +39,12 @@ use crate::share_code::{decode_share_code, derive_topic};
 type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContactDownloadSource {
+    pub profile_id: String,
+    pub display_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NetworkCommand {
     RecoverStartup,
     RequestDiagnostics,
@@ -50,6 +56,7 @@ pub enum NetworkCommand {
         transfer_id: u64,
         share_code: String,
         output_directory: PathBuf,
+        source_contact: Option<ContactDownloadSource>,
     },
     CancelTransfer {
         transfer_id: u64,
@@ -466,10 +473,17 @@ async fn default_handle_command(
             transfer_id,
             share_code,
             output_directory,
+            source_contact,
         } => {
             let decoded = decode_share_code(&share_code)?;
             let record =
-                DownloadRecord::new(share_code, output_directory, decoded.collection_hash());
+                DownloadRecord::new(share_code, output_directory, decoded.collection_hash())
+                    .with_source_contact(
+                        source_contact
+                            .as_ref()
+                            .map(|contact| contact.profile_id.clone()),
+                        source_contact.map(|contact| contact.display_name),
+                    );
             start_download_task(state, transfer_id, record, event_tx).await
         }
         NetworkCommand::CancelTransfer { transfer_id } => {
@@ -557,7 +571,13 @@ async fn start_download_task(
         runtime.active_downloads.remove(&transfer_id);
 
         match result {
-            Ok(_) => {
+            Ok(session) => {
+                if let Err(err) =
+                    persist_contact_download_ownership(&task_state, &task_record, &session).await
+                {
+                    task_state.push_error(err.to_string()).await;
+                    warn!("failed to persist downloaded contact ownership: {err:#}");
+                }
                 let _ = runtime
                     .store
                     .remove_download_by_code(&task_record.share_code, &task_record.output_dir);
@@ -578,6 +598,28 @@ async fn start_download_task(
         .active_downloads
         .insert(transfer_id, ActiveDownload { record, handle });
 
+    Ok(())
+}
+
+async fn persist_contact_download_ownership(
+    state: &RuntimeState,
+    record: &DownloadRecord,
+    session: &crate::download::DownloadSession,
+) -> Result<()> {
+    let Some(source_contact_profile_id) = &record.source_contact_profile_id else {
+        return Ok(());
+    };
+
+    let mut profile_store = state.profile_store.lock().await;
+    let local_profile_id = profile_store.profile().profile_id.clone();
+    profile_store.ensure_downloaded_share_record(
+        &local_profile_id,
+        session.share_code.encode()?,
+        session.collection_hash.to_string(),
+        session.output_root.clone(),
+        Some(source_contact_profile_id.clone()),
+        record.source_contact_display_name.clone(),
+    )?;
     Ok(())
 }
 
@@ -1927,6 +1969,7 @@ mod tests {
                 transfer_id: 2,
                 share_code: "p2p-FAST".into(),
                 output_directory: PathBuf::from("/tmp/fast"),
+                source_contact: None,
             })
             .unwrap();
 

@@ -521,6 +521,25 @@ What doesn't work:
 What doesn't work:
 - no additional blocker for Task 33 in this run
 
+# 2026-03-06 11:47
+
+- picked Task 38 (`Follow contacts by profile ID and browse/download their shares`) as the highest-priority unfinished feature because it is the next dependency gate for Task 39 and the smallest remaining product feature that can be completed and verified in one run
+- added a persisted `ContactsStore` in `file-sharing/src/contacts.rs` with profile-ID validation, duplicate prevention, removal, cached contact snapshots, and refresh logic that derives display names and published shares from signed profile-record logs
+- wired contact-origin metadata through the existing download flow so contact-triggered downloads can carry provenance and record completed downloads into the local profile ledger
+- extended the app/plugin/UI wiring to load contacts as a resource, expose a Contacts view, follow/remove contacts, inspect cached published shares, refresh contacts, and start one-click downloads from a contact share
+- added focused verification coverage:
+  - contacts store unit tests for invalid IDs, duplicate follows, offline contact errors, cached-share refresh, and removal without touching downloaded files
+  - UI command-dispatch coverage for contact-triggered downloads carrying contact metadata
+  - integration test `file-sharing/tests/contacts.rs` covering follow → browse cached share → download → provenance record creation
+- ran `cargo fmt --package p2panda-file-sharing-gui`
+- ran `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-file-sharing-gui --tests --locked`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui contact --lib --locked -- --nocapture`
+- ran `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui --test contacts --locked -- --nocapture`
+- confirmed Task 38 acceptance criteria in this run and updated Task 38 `passes` to `true` in `PRD.jsonl`
+
+What doesn't work:
+- no additional blocker for Task 38 in this run
+
 # 2026-03-05 20:08
 
 - picked Task 34 (`Relay server configuration settings`) as the highest-priority unfinished feature because Task 33 is now complete and relay-mode configurability is the next startup-configuration gate

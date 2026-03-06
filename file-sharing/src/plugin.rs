@@ -9,6 +9,7 @@ use directories::ProjectDirs;
 use flume::TryRecvError;
 
 use crate::bridge::{AsyncBridge, NetworkCommand, NetworkEvent};
+use crate::contacts::ContactsStore;
 use crate::node::NodeOptions;
 use crate::notifications::NotificationState;
 use crate::profile::ProfileStore;
@@ -33,6 +34,7 @@ struct PluginStartupError {
 
 struct PluginResources {
     bridge: AsyncBridge,
+    contacts_store: ContactsStore,
     profile_store: ProfileStore,
     settings_store: SettingsStore,
     ui_state: UiState,
@@ -52,6 +54,7 @@ impl Plugin for FileSharingPlugin {
             Ok(resources) => {
                 app.insert_resource(resources.bridge);
                 app.insert_resource(TransferRegistry::default());
+                app.insert_resource(resources.contacts_store);
                 app.insert_resource(resources.profile_store);
                 app.insert_resource(resources.settings_store);
                 app.insert_resource(resources.ui_state);
@@ -79,6 +82,8 @@ fn initialize_plugin_resources() -> Result<PluginResources> {
         resolve_node_options(&settings).context("failed to resolve node options from settings")?;
     let bridge = AsyncBridge::spawn_with_data_dir(node_options, data_dir.clone())
         .context("failed to initialize async bridge")?;
+    let contacts_store =
+        ContactsStore::load(&data_dir).context("failed to load contacts from disk")?;
     let profile_store =
         ProfileStore::load_or_create(&data_dir).context("failed to load profile")?;
     let ui_state = UiState::with_settings(
@@ -94,6 +99,7 @@ fn initialize_plugin_resources() -> Result<PluginResources> {
 
     Ok(PluginResources {
         bridge,
+        contacts_store,
         profile_store,
         settings_store,
         ui_state,
@@ -450,6 +456,7 @@ mod tests {
                 transfer_id: 41,
                 share_code: "p2p-TEST".into(),
                 output_directory: PathBuf::from("/tmp/out"),
+                source_contact: None,
             })
             .unwrap();
 
@@ -508,6 +515,7 @@ mod tests {
                 transfer_id: 7,
                 share_code: "p2p-BANDWIDTH".into(),
                 output_directory: PathBuf::from("/tmp/out"),
+                source_contact: None,
             })
             .unwrap();
 

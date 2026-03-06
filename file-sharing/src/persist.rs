@@ -31,6 +31,10 @@ pub struct DownloadRecord {
     pub output_dir: PathBuf,
     pub collection_hash: String,
     #[serde(default)]
+    pub source_contact_profile_id: Option<String>,
+    #[serde(default)]
+    pub source_contact_display_name: Option<String>,
+    #[serde(default)]
     pub paused: bool,
 }
 
@@ -44,6 +48,8 @@ impl DownloadRecord {
             share_code: share_code.into(),
             output_dir: output_dir.into(),
             collection_hash: collection_hash.to_hex(),
+            source_contact_profile_id: None,
+            source_contact_display_name: None,
             paused: false,
         }
     }
@@ -52,6 +58,16 @@ impl DownloadRecord {
         self.collection_hash
             .parse()
             .with_context(|| format!("invalid collection hash {}", self.collection_hash))
+    }
+
+    pub fn with_source_contact(
+        mut self,
+        profile_id: Option<String>,
+        display_name: Option<String>,
+    ) -> Self {
+        self.source_contact_profile_id = profile_id;
+        self.source_contact_display_name = display_name;
+        self
     }
 }
 
