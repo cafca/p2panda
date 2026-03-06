@@ -846,7 +846,7 @@
 {
   "id": 36,
   "title": "Rewrite the desktop UI in Slint",
-  "description": "Replace the existing Bevy/egui presentation layer with a Slint-based desktop UI. Preserve core file-sharing capabilities, but do not preserve the current layout by default — redesign the UX for clarity and speed. The new UI should feel purpose-built for desktop file sharing and not constrained by previous visual structure.",
+  "description": "Replace the existing Bevy/egui presentation layer with a Slint-based desktop UI. Preserve file-sharing capabilities, but do not preserve the current layout by default — redesign the UX for clarity and speed. The new UI should feel purpose-built for desktop file sharing and not constrained by previous visual structure.",
   "depends_on": [
     35
   ],
@@ -970,28 +970,49 @@
     "On failed update, the current version remains usable and an error is shown",
     "Auto-check preference persists across restarts"
   ],
-  "passes": true  
+  "passes": true
 }
 {
   "id": 41,
   "title": "Validate GitHub CI on fork (cafca/p2panda)",
-  "description": "Push the current branch to the cafca/p2panda fork, open a PR, and iterate until CI is green. Then push an experimental tag to validate release packaging. Do NOT create helper scripts, validation frameworks, or documentation for the validation process itself.",
+  "description": "Push the current branch to the cafca/p2panda fork, open a PR, and iterate until CI is green. Then push an experimental tag to validate release packaging.",
   "depends_on": [
     31,
     32
   ],
   "spec": {
-    "step_1_create_ci_workflow": "Create .github/workflows/ci.yml triggered on pull_request and push to main. Jobs: (1) cargo fmt --check, (2) cargo clippy --workspace, (3) cargo test -p p2panda-file-sharing-gui, (4) cargo audit. Run on ubuntu-latest with Bevy system deps (libasound2-dev, libudev-dev). Keep it under 15 minutes.",
-    "step_2_push_and_open_pr": "Run: git push fork HEAD:port-blobs-to-net-v0.5 && gh pr create --repo cafca/p2panda --base main --head port-blobs-to-net-v0.5 --title 'CI validation' --body 'Validate CI workflows'",
-    "step_3_iterate_pr_ci": "Wait for the PR check suite: gh pr checks --repo cafca/p2panda <PR_NUMBER> --watch. If a job fails, read the log with gh run view <RUN_ID> --repo cafca/p2panda --log-failed, fix the code, commit, and push again. Maximum 5 iterations before asking the user.",
-    "step_4_validate_release": "Once PR CI is green, push an experimental tag: git tag v0.1.0-experimental.1 && git push fork v0.1.0-experimental.1. Watch the release workflow with gh run list --repo cafca/p2panda --workflow=release.yml --limit=1 and gh run watch. Iterate with .experimental.2 etc. if needed.",
-    "prohibition": "Do NOT create shell scripts, validation frameworks, helper functions, or documentation files for this task. The task is to run commands and fix code, not to build tooling."
+    "ci_workflow": "Create .github/workflows/ci.yml triggered on pull_request and push to main. Jobs: (1) cargo fmt --check, (2) cargo clippy --workspace, (3) cargo test -p p2panda-file-sharing-gui, (4) cargo audit. Run on ubuntu-latest with Bevy system deps (libasound2-dev, libudev-dev). Keep it under 15 minutes.",
+    "pr": "Ensure there is a PR that runs CI that you can check. Create a draft PR if needed.",
+    "iterate": "Wait for the PR check suite. If a job fails, read the log, fix the code, commit, and push again. If you encounter a blokcer that requires user intervention, mark this task failed and report in detail in progress.txt",
+    "validate": "Once PR CI is green, push an experimental tag. Watch the release workflow. Iterate if needed until every platform is green.",
   },
   "acceptance": [
-    ".github/workflows/ci.yml exists and runs fmt, clippy, test, and audit checks on PRs",
+    "GH CI workflow exists and runs fmt, clippy, test, and audit checks on PRs",
     "A PR on cafca/p2panda shows a green CI check suite",
-    "Pushing a v0.1.0-experimental.* tag to cafca/p2panda triggers release.yml and all three platform jobs complete successfully",
+    "Pushing an appropriate experimental tag to cafca/p2panda triggers release.yml and all three platform jobs complete successfully",
     "Release artifacts are uploaded to the experimental GitHub Release"
+  ],
+  "passes": false
+}
+{
+  "id": 42,
+  "title": "Remove nickname from follow flow — display name owned by profile",
+  "description": "The nickname shown for a contact is determined by the profile owner, not the follower. Remove the nickname input from the follow UI and the nickname field from Contact and ContactFollowRecord. When following someone, only a profile ID is needed. The app shows a truncated profile ID placeholder until the contact's profile document has been synced over the network, at which point their self-chosen display name is shown and kept in sync going forward.",
+  "depends_on": [],
+  "spec": {
+    "ui": "Remove the nickname text input from the 'Add Contact' dialog. The follow action requires only a profile ID. Show truncated profile ID (first 8 chars) as placeholder for unsynced contacts.",
+    "contact_model": "Remove the `nickname` field from `Contact`. Remove `normalize_nickname`. Update `label()` to fall back from `cached_display_name` to truncated `profile_id`. Remove nickname params from `ContactsStore::follow_contact` and `ProfileStore::follow_contact`.",
+    "profile_record": "Remove the `nickname` field from `ContactFollowRecord`. The follow record only needs the followed profile ID, active flag, and timestamp.",
+    "profile_sync": "The profile display name is already stored as a `ProfileMetadataRecord` in the owner's profile-records.json. Implement network sync of profile records: when a contact is followed, the app should fetch their profile-records from the network (via the p2panda document sync protocol) and write them to `contact-record-cache/{profile_id}.json`. Periodic re-sync keeps `cached_display_name` up to date. If sync infrastructure does not exist yet, build the minimal version needed: publish profile records as a p2panda document/blob, discover and fetch it from peers on the gossip network.",
+    "display_fallback": "Until synced: show first 8 chars of profile ID. Once synced: show the owner's display name. If display name is empty/blank, fall back to truncated profile ID."
+  },
+  "acceptance": [
+    "The 'Add Contact' UI has no nickname input — only a profile ID field",
+    "Contact struct and ContactFollowRecord have no nickname field",
+    "Newly followed contacts show a truncated profile ID placeholder until profile syncs",
+    "Profile records are fetched over the network after following a contact",
+    "Once synced, the contact's self-chosen display name is displayed and kept up to date",
+    "If the profile owner changes their display name, the follower sees the update after the next sync"
   ],
   "passes": false
 }
