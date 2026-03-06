@@ -16,7 +16,7 @@ Usage:
   ./scripts/release/validate-fork.sh release-status <vX.Y.Z-experimental.N>
   ./scripts/release/validate-fork.sh wait-release <vX.Y.Z-experimental.N> [timeout-seconds] [poll-seconds]
   ./scripts/release/validate-fork.sh cleanup-tag <vX.Y.Z-experimental.N>
-  ./scripts/release/validate-fork.sh origin-status <commit-ish>
+  ./scripts/release/validate-fork.sh origin-status <commit-ish> [tag]
 
 Safety rules:
   - only the `fork` remote may be used for pushes and tag operations
@@ -596,7 +596,7 @@ cmd_summary() {
   fi
 
   echo "== upstream safety =="
-  if ! (cmd_origin_status "$expected_commitish"); then
+  if ! (cmd_origin_status "$expected_commitish" "$release_tag"); then
     failures=$((failures + 1))
   fi
 
@@ -962,7 +962,9 @@ cmd_cleanup_tag() {
 
 cmd_origin_status() {
   local commitish="${1:-HEAD}"
+  local tag="${2:-}"
   local sha
+  local tag_exists=1
 
   assert_safe_remotes
   require_api_tools
@@ -990,8 +992,27 @@ cmd_origin_status() {
         end
     '
 
-  ! api_get "/repos/${ORIGIN_REPO}/actions/runs?per_page=100" |
-    jq -e --arg sha "$sha" 'any(.workflow_runs[]?; .head_sha == $sha)' >/dev/null
+  if ! api_get "/repos/${ORIGIN_REPO}/actions/runs?per_page=100" |
+    jq -e --arg sha "$sha" 'any(.workflow_runs[]?; .head_sha == $sha)' >/dev/null; then
+    echo "run status: no matching upstream workflow runs found"
+  else
+    echo "run status: matching upstream workflow runs found" >&2
+    return 1
+  fi
+
+  if [[ -n "$tag" ]]; then
+    echo "tag:      ${tag}"
+    if api_get "/repos/${ORIGIN_REPO}/git/ref/tags/${tag}" >/dev/null 2>&1; then
+      tag_exists=0
+    fi
+
+    if [[ "$tag_exists" -eq 0 ]]; then
+      echo "tag status: tag exists on upstream origin" >&2
+      return 1
+    fi
+
+    echo "tag status: tag not present on upstream origin"
+  fi
 }
 
 COMMAND="${1:-}"

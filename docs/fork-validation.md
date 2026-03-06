@@ -25,7 +25,7 @@ For a single read-only snapshot of the full Task 41 state, use:
 ./scripts/release/validate-fork.sh summary port-blobs-to-net-v0.5 port-blobs-to-net-v0.5 v0.1.0-experimental.1
 ```
 
-This runs preflight, fork branch freshness, PR status, optional release status, and the upstream safety check in one command. It exits non-zero if any surface is stale, draft, failing, or missing. Omit the tag argument if you have not pushed an experimental release tag yet.
+This runs preflight, fork branch freshness, PR status, optional release status, and the upstream safety check in one command. It exits non-zero if any surface is stale, draft, failing, missing, or if the experimental tag is visible on upstream. Omit the tag argument if you have not pushed an experimental release tag yet.
 
 Before opening or re-checking a PR, confirm that the fork branch actually contains the local commit you intend to validate:
 
@@ -121,4 +121,10 @@ After a branch push or tag validation, confirm the same commit did not trigger a
 ./scripts/release/validate-fork.sh origin-status HEAD
 ```
 
-The command exits non-zero if it finds a matching GitHub Actions run on `origin`.
+When you are validating an experimental release tag, pass it as the second argument so the helper also confirms that the tag does not exist on upstream:
+
+```bash
+./scripts/release/validate-fork.sh origin-status HEAD v0.1.0-experimental.1
+```
+
+The command exits non-zero if it finds a matching GitHub Actions run on `origin` or if the tag exists on `p2panda/p2panda`.

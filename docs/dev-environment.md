@@ -81,9 +81,12 @@ For read-only verification after a push, the same helper can inspect the public 
 ./scripts/release/validate-fork.sh release-status v0.1.0-experimental.1
 ./scripts/release/validate-fork.sh wait-release v0.1.0-experimental.1
 ./scripts/release/validate-fork.sh origin-status HEAD
+./scripts/release/validate-fork.sh origin-status HEAD v0.1.0-experimental.1
 ```
 
 `pr-status` and `wait-pr` now also verify that the fork PR head matches the commit you intend to validate (`HEAD` by default), which avoids falsely accepting a green but stale PR. The `wait-pr` and `wait-release` variants poll until GitHub finishes the relevant checks or the timeout expires, which is safer than manually re-running status commands during fork validation.
+
+When you pass a tag to `origin-status`, it also verifies that the experimental validation tag does not exist on upstream `p2panda/p2panda`, which closes the remaining blind spot where a tag could leak upstream without sharing the same commit SHA as your fork validation run.
 
 ## Ralph Workflow
 
