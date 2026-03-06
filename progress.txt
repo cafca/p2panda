@@ -1330,3 +1330,24 @@ What doesn't work:
 What doesn't work:
 - Task 41 remains externally blocked from a truthful pass in this environment because `./scripts/release/validate-fork.sh preflight` still reports no GitHub auth token, no authenticated `gh` session, and no local `ssh` client, so I cannot actually push the current branch or promote/push the required experimental release tag on `cafca/p2panda` from here
 - without a real fork push/update, I still cannot prove a green PR check suite on the expected commit, a successful `release.yml` run across macOS/Linux/Windows on the fork, uploaded experimental release artifacts, or cleanup of experimental validation tags on the fork
+
+# 2026-03-06 14:56
+
+- picked Task 41 (`Ensure basic CI/CD works: Validate GitHub CI on fork (cafca/p2panda)`) as the highest-priority unfinished feature because it is still the only remaining PRD task with `passes: false`
+- verified the current fork-validation state against the real public fork with:
+  - `bash scripts/release/validate-fork.sh preflight`
+  - `bash scripts/release/validate-fork.sh branch-status port-blobs-to-net-v0.5`
+  - `bash scripts/release/validate-fork.sh pr-status port-blobs-to-net-v0.5`
+  - `bash scripts/release/validate-fork.sh origin-status HEAD`
+- implemented a Task-41 helper improvement in `scripts/release/validate-fork.sh`:
+  - added `summary <branch> [pr-number|branch] [tag] [commit-ish]` to run preflight, fork branch freshness, PR status, optional release status, and upstream safety checks in one read-only command
+  - extended PR check output to include direct GitHub check-run URLs so failing jobs can be opened immediately from terminal output
+  - fixed the new summary command to isolate subcommand failures and continue reporting all blockers instead of exiting at the first failing check
+- documented the new summary flow and check-run URL output in `docs/fork-validation.md`
+- ran `bash -n scripts/release/validate-fork.sh`
+- ran `bash scripts/release/validate-fork.sh summary port-blobs-to-net-v0.5 port-blobs-to-net-v0.5`
+- left Task 41 `passes` as `false` in `PRD.jsonl`
+
+What doesn't work:
+- Task 41 cannot be truthfully marked passing in this run because GitHub-side validation is still blocked from this environment: `gh` auth is missing, no GitHub token is configured, and no `ssh` client is installed for the SSH-based `fork` remote, so this machine cannot push the current `HEAD` (`a076b3c023eece2985b335a3ef0f3e706e4f03c9`) to `cafca/p2panda`
+- the public fork branch `port-blobs-to-net-v0.5` is stale at `0746e60cda013423f93730c6543c7ec1d1f85ab8`, and PR `#1` on `cafca/p2panda` is still a draft on that stale commit with failing checks (`clippy`, `test`, and `check`)

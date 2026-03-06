@@ -5,6 +5,7 @@ usage() {
   cat <<'EOF'
 Usage:
   ./scripts/release/validate-fork.sh preflight
+  ./scripts/release/validate-fork.sh summary <branch> [pr-number|branch] [tag] [commit-ish]
   ./scripts/release/validate-fork.sh push-branch [branch]
   ./scripts/release/validate-fork.sh open-pr [branch]
   ./scripts/release/validate-fork.sh ready-pr [pr-number|branch]
@@ -311,7 +312,7 @@ print_check_runs() {
         "  (no check runs found)"
       else
         .check_runs[]
-        | "  - \(.name): status=\(.status) conclusion=\(.conclusion // "pending")"
+        | "  - \(.name): status=\(.status) conclusion=\(.conclusion // "pending") url=\(.details_url // .html_url // "n/a")"
       end
     '
 }
@@ -549,6 +550,65 @@ cmd_preflight() {
   else
     echo "pr path:       blocked (requires gh auth or token)"
   fi
+}
+
+cmd_summary() {
+  local branch="${1:-}"
+  local pr_selector="${2:-}"
+  local release_tag="${3:-}"
+  local expected_commitish="${4:-HEAD}"
+  local failures=0
+
+  if [[ -z "$branch" ]]; then
+    echo "missing branch argument" >&2
+    usage
+    exit 1
+  fi
+
+  if [[ -z "$pr_selector" ]]; then
+    pr_selector="$branch"
+  fi
+
+  echo "== preflight =="
+  if ! (cmd_preflight); then
+    failures=$((failures + 1))
+  fi
+  echo
+
+  echo "== fork branch =="
+  if ! (cmd_branch_status "$branch" "$expected_commitish"); then
+    failures=$((failures + 1))
+  fi
+  echo
+
+  echo "== fork PR =="
+  if ! (cmd_pr_status "$pr_selector" "$expected_commitish"); then
+    failures=$((failures + 1))
+  fi
+  echo
+
+  if [[ -n "$release_tag" ]]; then
+    echo "== release =="
+    if ! (cmd_release_status "$release_tag"); then
+      failures=$((failures + 1))
+    fi
+    echo
+  fi
+
+  echo "== upstream safety =="
+  if ! (cmd_origin_status "$expected_commitish"); then
+    failures=$((failures + 1))
+  fi
+
+  if [[ "$failures" -eq 0 ]]; then
+    echo
+    echo "summary: all checked Task 41 validation surfaces are currently green"
+    return 0
+  fi
+
+  echo
+  echo "summary: ${failures} validation check(s) need attention" >&2
+  return 1
 }
 
 cmd_branch_status() {
@@ -939,6 +999,10 @@ case "$COMMAND" in
   preflight)
     shift
     cmd_preflight "$@"
+    ;;
+  summary)
+    shift
+    cmd_summary "$@"
     ;;
   branch-status)
     shift

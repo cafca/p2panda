@@ -19,6 +19,14 @@ Check that baseline with:
 
 When a token is present, the helper prefers HTTPS for mutating operations even if the configured `fork` remote uses SSH. That avoids the local `ssh` client requirement in constrained environments.
 
+For a single read-only snapshot of the full Task 41 state, use:
+
+```bash
+./scripts/release/validate-fork.sh summary port-blobs-to-net-v0.5 port-blobs-to-net-v0.5 v0.1.0-experimental.1
+```
+
+This runs preflight, fork branch freshness, PR status, optional release status, and the upstream safety check in one command. It exits non-zero if any surface is stale, draft, failing, or missing. Omit the tag argument if you have not pushed an experimental release tag yet.
+
 Before opening or re-checking a PR, confirm that the fork branch actually contains the local commit you intend to validate:
 
 ```bash
@@ -58,6 +66,8 @@ Inspect the PR and its check suite from the public GitHub API:
 ```
 
 You can also pass a PR number instead of a branch name. By default, the command compares the PR head SHA to local `HEAD` and exits non-zero unless the PR is open, not draft, on the expected commit, and all check runs are green. Pass an explicit commit-ish as the second argument if you need to validate something other than `HEAD`.
+
+Each reported check run now includes its GitHub details URL so failures can be opened directly without manually hunting through the Actions UI.
 
 To block until the PR is actually green instead of manually re-running `pr-status`, use:
 

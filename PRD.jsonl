@@ -994,5 +994,5 @@
     "Release artifacts (.dmg, .AppImage, .tar.gz, .msi, .zip) and SHA-256 checksums are uploaded to the experimental GitHub Release",
     "No tags or workflow runs were triggered on p2panda/p2panda (origin)"
   ],
-  "passes": false
+  "passes":  false
 }
