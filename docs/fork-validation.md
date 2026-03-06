@@ -6,14 +6,18 @@ Task 41 requires real validation on the `cafca/p2panda` fork only. Do not push P
 
 - `fork` remote points to `cafca/p2panda`
 - `origin` remote points to `p2panda/p2panda`
-- `gh` is installed and authenticated if you want to open the PR from the CLI
-- if the `fork` remote uses SSH, the local machine must have an `ssh` client and working GitHub SSH auth
+- either:
+  - `gh` is installed and authenticated, or
+  - `GITHUB_TOKEN`, `GH_TOKEN`, or `GITHUB_TOKEN_FILE` is set so the helper can push over HTTPS and create PRs through the GitHub API
+- if the `fork` remote uses SSH and you are not using a token, the local machine must have an `ssh` client and working GitHub SSH auth
 
 Check that baseline with:
 
 ```bash
 ./scripts/release/validate-fork.sh preflight
 ```
+
+When a token is present, the helper prefers HTTPS for mutating operations even if the configured `fork` remote uses SSH. That avoids the local `ssh` client requirement in constrained environments.
 
 Before opening or re-checking a PR, confirm that the fork branch actually contains the local commit you intend to validate:
 
@@ -36,6 +40,8 @@ Open the PR against `cafca/p2panda:main`:
 ```bash
 ./scripts/release/validate-fork.sh open-pr
 ```
+
+If `gh auth` is unavailable, `open-pr` falls back to the GitHub REST API using the token from `GITHUB_TOKEN`, `GH_TOKEN`, or `GITHUB_TOKEN_FILE`.
 
 Inspect the PR and its check suite from the public GitHub API:
 

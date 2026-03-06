@@ -64,6 +64,8 @@ Task 41 has one part that cannot be proven purely with local cargo runs: actual 
 
 Use it before any branch push or experimental tag push. It refuses unsafe remote setups and is documented in [docs/fork-validation.md](/Users/pv/code/p2panda/docs/fork-validation.md).
 
+If your environment does not have an `ssh` client or `gh auth`, set `GITHUB_TOKEN`, `GH_TOKEN`, or `GITHUB_TOKEN_FILE`. The helper can then push to the fork over HTTPS and create the PR through the GitHub API while still enforcing the fork-only safety checks.
+
 For read-only verification after a push, the same helper can inspect the public fork state without `gh` auth:
 
 ```bash

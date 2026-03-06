@@ -27,6 +27,7 @@ ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 CHECK_VERSION_SCRIPT="$ROOT_DIR/scripts/release/check-version.sh"
 FORK_REPO="cafca/p2panda"
 ORIGIN_REPO="p2panda/p2panda"
+FORK_HTTPS_PUSH_URL="https://github.com/cafca/p2panda.git"
 
 EXPECTED_FORK_URLS=(
   "git@github.com:cafca/p2panda.git"
@@ -53,6 +54,108 @@ matches_expected_url() {
 
 remote_url() {
   git remote get-url "$1" 2>/dev/null || true
+}
+
+github_token_source() {
+  if [[ -n "${GITHUB_TOKEN_FILE:-}" ]]; then
+    printf '%s\n' "GITHUB_TOKEN_FILE"
+    return 0
+  fi
+
+  if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+    printf '%s\n' "GITHUB_TOKEN"
+    return 0
+  fi
+
+  if [[ -n "${GH_TOKEN:-}" ]]; then
+    printf '%s\n' "GH_TOKEN"
+    return 0
+  fi
+
+  return 1
+}
+
+read_github_token() {
+  if [[ -n "${GITHUB_TOKEN_FILE:-}" ]]; then
+    if [[ ! -f "${GITHUB_TOKEN_FILE}" ]]; then
+      echo "GITHUB_TOKEN_FILE does not exist: ${GITHUB_TOKEN_FILE}" >&2
+      return 1
+    fi
+
+    tr -d '\r\n' <"${GITHUB_TOKEN_FILE}"
+    return 0
+  fi
+
+  if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+    printf '%s' "${GITHUB_TOKEN}"
+    return 0
+  fi
+
+  if [[ -n "${GH_TOKEN:-}" ]]; then
+    printf '%s' "${GH_TOKEN}"
+    return 0
+  fi
+
+  return 1
+}
+
+has_github_token() {
+  read_github_token >/dev/null 2>&1
+}
+
+setup_github_api_netrc() {
+  local token
+  token="$(read_github_token)"
+
+  GITHUB_API_AUTH_DIR="$(mktemp -d)"
+  GITHUB_API_AUTH_NETRC="${GITHUB_API_AUTH_DIR}/netrc"
+  cat >"${GITHUB_API_AUTH_NETRC}" <<EOF
+machine api.github.com
+  login x-access-token
+  password ${token}
+EOF
+  chmod 600 "${GITHUB_API_AUTH_NETRC}"
+}
+
+cleanup_github_api_netrc() {
+  if [[ -n "${GITHUB_API_AUTH_DIR:-}" && -d "${GITHUB_API_AUTH_DIR}" ]]; then
+    rm -rf "${GITHUB_API_AUTH_DIR}"
+  fi
+  unset GITHUB_API_AUTH_DIR
+  unset GITHUB_API_AUTH_NETRC
+}
+
+setup_github_git_askpass() {
+  local token
+  token="$(read_github_token)"
+
+  GITHUB_GIT_AUTH_DIR="$(mktemp -d)"
+  GITHUB_GIT_ASKPASS="${GITHUB_GIT_AUTH_DIR}/askpass.sh"
+  cat >"${GITHUB_GIT_ASKPASS}" <<'EOF'
+#!/usr/bin/env bash
+case "$1" in
+  *Username*)
+    printf '%s\n' "x-access-token"
+    ;;
+  *Password*)
+    printf '%s\n' "${GITHUB_TOKEN_FOR_GIT_PUSH:-}"
+    ;;
+  *)
+    printf '\n'
+    ;;
+esac
+EOF
+  chmod 700 "${GITHUB_GIT_ASKPASS}"
+  GITHUB_TOKEN_FOR_GIT_PUSH="${token}"
+}
+
+cleanup_github_git_askpass() {
+  if [[ -n "${GITHUB_GIT_AUTH_DIR:-}" && -d "${GITHUB_GIT_AUTH_DIR}" ]]; then
+    rm -rf "${GITHUB_GIT_AUTH_DIR}"
+  fi
+  unset GITHUB_GIT_AUTH_DIR
+  unset GITHUB_GIT_ASKPASS
+  unset GITHUB_TOKEN_FOR_GIT_PUSH
 }
 
 assert_safe_remotes() {
@@ -106,9 +209,13 @@ require_push_transport() {
   local fork_url
   fork_url="$(remote_url fork)"
 
+  if has_github_token; then
+    return 0
+  fi
+
   if [[ "$fork_url" == git@* || "$fork_url" == ssh://* ]]; then
     if ! command -v ssh >/dev/null 2>&1; then
-      echo "fork remote uses SSH but no ssh client is available" >&2
+      echo "fork remote uses SSH but neither an ssh client nor GITHUB_TOKEN/GITHUB_TOKEN_FILE/GH_TOKEN is available" >&2
       exit 1
     fi
   fi
@@ -126,11 +233,50 @@ require_api_tools() {
   fi
 }
 
+require_token_auth() {
+  if ! has_github_token; then
+    echo "GitHub token auth is required; set GITHUB_TOKEN, GH_TOKEN, or GITHUB_TOKEN_FILE" >&2
+    exit 1
+  fi
+}
+
+api_request() {
+  local method="$1"
+  local path="$2"
+  local body="${3:-}"
+  local -a args
+  local status
+
+  args=(
+    curl
+    -fsSL
+    -X "$method"
+    -H "Accept: application/vnd.github+json"
+  )
+
+  if has_github_token; then
+    setup_github_api_netrc
+    args+=(--netrc-file "${GITHUB_API_AUTH_NETRC}")
+  fi
+
+  if [[ -n "$body" ]]; then
+    args+=(-H "Content-Type: application/json" --data "$body")
+  fi
+
+  args+=("https://api.github.com${path}")
+  "${args[@]}"
+  status=$?
+
+  cleanup_github_api_netrc
+  return "$status"
+}
+
 api_get() {
-  local path="$1"
-  curl -fsSL \
-    -H "Accept: application/vnd.github+json" \
-    "https://api.github.com${path}"
+  api_request GET "$1"
+}
+
+api_post() {
+  api_request POST "$1" "$2"
 }
 
 resolve_pr_json() {
@@ -177,6 +323,24 @@ check_runs_all_green() {
         .status == "completed" and ((.conclusion // "") | IN("success", "neutral", "skipped"))
       )
     ' >/dev/null
+}
+
+git_push_fork() {
+  local -a refspecs=("$@")
+  local status
+
+  if has_github_token; then
+    setup_github_git_askpass
+    GIT_ASKPASS="${GITHUB_GIT_ASKPASS}" \
+      GIT_TERMINAL_PROMPT=0 \
+      GITHUB_TOKEN_FOR_GIT_PUSH="${GITHUB_TOKEN_FOR_GIT_PUSH}" \
+      git -c credential.helper= push "${FORK_HTTPS_PUSH_URL}" "${refspecs[@]}"
+    status=$?
+    cleanup_github_git_askpass
+    return "$status"
+  fi
+
+  git push fork "${refspecs[@]}"
 }
 
 assert_experimental_tag() {
@@ -272,7 +436,7 @@ release_jobs_complete() {
 cmd_preflight() {
   assert_safe_remotes
 
-  local branch fork_url origin_url head_sha
+  local branch fork_url origin_url head_sha auth_source
   branch="$(current_branch)"
   fork_url="$(remote_url fork)"
   origin_url="$(remote_url origin)"
@@ -293,17 +457,43 @@ cmd_preflight() {
     echo "gh auth:       gh not installed"
   fi
 
+  if auth_source="$(github_token_source 2>/dev/null)"; then
+    echo "token auth:    ok (${auth_source})"
+  else
+    echo "token auth:    missing"
+  fi
+
   if [[ "$fork_url" == git@* || "$fork_url" == ssh://* ]]; then
     if command -v ssh >/dev/null 2>&1; then
       echo "ssh client:    ok"
-      echo "push path:     available via SSH"
+      if has_github_token; then
+        echo "push path:     available via SSH or HTTPS token"
+      else
+        echo "push path:     available via SSH"
+      fi
     else
       echo "ssh client:    missing"
-      echo "push path:     blocked (fork remote requires SSH)"
+      if has_github_token; then
+        echo "push path:     available via HTTPS token"
+      else
+        echo "push path:     blocked (fork remote requires SSH)"
+      fi
     fi
   else
     echo "ssh client:    not required"
-    echo "push path:     available without SSH client"
+    if has_github_token; then
+      echo "push path:     available via HTTPS token"
+    else
+      echo "push path:     available via fork remote credentials"
+    fi
+  fi
+
+  if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+    echo "pr path:       available via gh"
+  elif has_github_token; then
+    echo "pr path:       available via GitHub API token"
+  else
+    echo "pr path:       blocked (requires gh auth or token)"
   fi
 }
 
@@ -412,20 +602,57 @@ cmd_push_branch() {
   assert_safe_remotes
   require_push_transport
 
-  git push fork "HEAD:refs/heads/$branch"
+  git_push_fork "HEAD:refs/heads/$branch"
 }
 
 cmd_open_pr() {
   local branch="${1:-$(current_branch)}"
+  local pr_json title body payload pr_url
 
   assert_safe_remotes
-  require_gh
 
-  gh pr create \
-    --repo cafca/p2panda \
-    --base main \
-    --head "cafca:$branch" \
-    --fill
+  if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+    gh pr create \
+      --repo cafca/p2panda \
+      --base main \
+      --head "cafca:$branch" \
+      --fill
+    return 0
+  fi
+
+  require_api_tools
+  require_token_auth
+
+  if pr_json="$(resolve_pr_json "$branch" 2>/dev/null)" && [[ "$(jq -r 'type' <<<"$pr_json")" != "null" ]]; then
+    pr_url="$(jq -r '.html_url // empty' <<<"$pr_json")"
+    if [[ -n "$pr_url" ]]; then
+      echo "PR already exists: $pr_url"
+      return 0
+    fi
+  fi
+
+  title="$(git log -1 --pretty=%s)"
+  body="$(git log -1 --pretty=%b)"
+  if [[ -z "$body" ]]; then
+    body="Automated fork validation PR for branch ${branch}."
+  fi
+
+  payload="$(jq -n \
+    --arg title "$title" \
+    --arg head "cafca:${branch}" \
+    --arg base "main" \
+    --arg body "$body" \
+    '{title: $title, head: $head, base: $base, body: $body, draft: false, maintainer_can_modify: true}')"
+
+  pr_json="$(api_post "/repos/${FORK_REPO}/pulls" "$payload")"
+  pr_url="$(jq -r '.html_url // empty' <<<"$pr_json")"
+
+  if [[ -z "$pr_url" ]]; then
+    echo "failed to create PR on ${FORK_REPO}" >&2
+    exit 1
+  fi
+
+  echo "$pr_url"
 }
 
 cmd_push_tag() {
@@ -442,7 +669,7 @@ cmd_push_tag() {
   require_push_transport
   ensure_local_tag_points_to_head "$tag"
 
-  git push fork "refs/tags/$tag"
+  git_push_fork "refs/tags/$tag"
 }
 
 cmd_release_status() {
@@ -518,7 +745,7 @@ cmd_cleanup_tag() {
   assert_experimental_tag "$tag"
   require_push_transport
 
-  git push fork ":refs/tags/$tag"
+  git_push_fork ":refs/tags/$tag"
   if git rev-parse "$tag^{commit}" >/dev/null 2>&1; then
     git tag -d "$tag"
   fi

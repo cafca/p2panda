@@ -1218,3 +1218,29 @@ What doesn't work:
 
 What doesn't work:
 - Task 41 remains `passes: false`; acceptance is blocked externally because this environment cannot currently push to the SSH-only `fork` remote (`ssh` client missing here, `gh` auth missing here), so I could not update the fork PR head SHA or create/push the required experimental release tag for real GitHub workflow validation
+
+# 2026-03-06 13:51 UTC
+
+- picked Task 41 (`Ensure basic CI/CD works: Validate GitHub CI on fork (cafca/p2panda)`) again because it is still the only remaining task with `passes: false`
+- reduced the remaining repo-side blocker in `scripts/release/validate-fork.sh` by adding token-based HTTPS mutation support:
+  - the helper now accepts `GITHUB_TOKEN`, `GH_TOKEN`, or `GITHUB_TOKEN_FILE`
+  - `push-branch`, `push-tag`, and `cleanup-tag` can use authenticated HTTPS pushes to `cafca/p2panda` even when the configured `fork` remote is SSH-only and no local `ssh` client exists
+  - `open-pr` now falls back from `gh pr create` to the GitHub REST API when `gh` auth is unavailable
+  - `preflight` now reports whether token auth is available and whether PR/push paths are unblocked by that token
+- documented the new token-based fork-validation path in `docs/fork-validation.md` and `docs/dev-environment.md`
+- ran feedback loops:
+  - `bash -n scripts/release/validate-fork.sh`
+  - `./scripts/release/validate-fork.sh preflight`
+  - `GH_TOKEN=dummy ./scripts/release/validate-fork.sh preflight`
+  - `./scripts/release/validate-fork.sh push-tag v0.1.0` (confirmed non-experimental tags are still rejected)
+  - `cargo fmt --all --check`
+  - `./scripts/verify-in-sandbox.sh -- cargo clippy --workspace --locked -- -D warnings`
+  - `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui --lib --locked -- --nocapture`
+  - `./scripts/verify-in-sandbox.sh -- cargo audit`
+- confirmed local verification remains green after the fork-helper changes: formatting passes, workspace clippy passes, all 94 `p2panda-file-sharing-gui` lib tests pass, and `cargo audit` still reports only the previously accepted warning set
+- left Task 41 `passes` as `false`; `PRD.jsonl` was not changed because the fork-side acceptance criteria were not actually completed in this run
+
+What doesn't work:
+- Task 41 is still externally blocked from a truthful pass in this environment:
+  - I still do not have a real authenticated GitHub token or `gh` session for `cafca/p2panda`, so I could not actually push this branch/tag to the fork or create/update the PR from here
+  - without a real fork push, I still cannot prove a green PR check suite, a successful `release.yml` run on the fork, uploaded experimental release artifacts, or cleanup of experimental fork tags
