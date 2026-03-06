@@ -7,6 +7,7 @@ Usage:
   ./scripts/release/validate-fork.sh preflight
   ./scripts/release/validate-fork.sh push-branch [branch]
   ./scripts/release/validate-fork.sh open-pr [branch]
+  ./scripts/release/validate-fork.sh ready-pr [pr-number|branch]
   ./scripts/release/validate-fork.sh branch-status <branch> [commit-ish]
   ./scripts/release/validate-fork.sh pr-status <pr-number|branch> [commit-ish]
   ./scripts/release/validate-fork.sh wait-pr <pr-number|branch> [commit-ish] [timeout-seconds] [poll-seconds]
@@ -735,6 +736,60 @@ cmd_open_pr() {
   echo "$pr_url"
 }
 
+cmd_ready_pr() {
+  local selector="${1:-$(current_branch)}"
+  local pr_json pr_number state draft pr_url
+
+  assert_safe_remotes
+  require_api_tools
+
+  if ! pr_json="$(resolve_pr_json "$selector" 2>/dev/null)"; then
+    echo "failed to query PR data from ${FORK_REPO}" >&2
+    exit 1
+  fi
+
+  if [[ "$(jq -r 'type' <<<"$pr_json")" == "null" ]]; then
+    echo "no PR found for selector '$selector' on ${FORK_REPO}" >&2
+    exit 1
+  fi
+
+  pr_number="$(jq -r '.number' <<<"$pr_json")"
+  state="$(jq -r '.state' <<<"$pr_json")"
+  draft="$(jq -r '.draft' <<<"$pr_json")"
+  pr_url="$(jq -r '.html_url // empty' <<<"$pr_json")"
+
+  if [[ "$state" != "open" ]]; then
+    echo "PR #${pr_number} is not open; current state: ${state}" >&2
+    exit 1
+  fi
+
+  if [[ "$draft" == "false" ]]; then
+    if [[ -n "$pr_url" ]]; then
+      echo "PR already ready for review: ${pr_url}"
+    else
+      echo "PR #${pr_number} is already ready for review"
+    fi
+    return 0
+  fi
+
+  if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+    gh api \
+      --method PATCH \
+      -H "Accept: application/vnd.github+json" \
+      "/repos/${FORK_REPO}/pulls/${pr_number}" \
+      -f draft=false >/dev/null
+  else
+    require_token_auth
+    api_request PATCH "/repos/${FORK_REPO}/pulls/${pr_number}" '{"draft":false}' >/dev/null
+  fi
+
+  if [[ -n "$pr_url" ]]; then
+    echo "PR ready for review: ${pr_url}"
+  else
+    echo "PR #${pr_number} marked ready for review"
+  fi
+}
+
 cmd_push_tag() {
   local tag="${1:-}"
 
@@ -896,6 +951,10 @@ case "$COMMAND" in
   open-pr)
     shift
     cmd_open_pr "$@"
+    ;;
+  ready-pr)
+    shift
+    cmd_ready_pr "$@"
     ;;
   pr-status)
     shift

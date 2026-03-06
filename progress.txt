@@ -1310,3 +1310,23 @@ What doesn't work:
 - Task 41 remains externally blocked from a truthful pass in this environment:
   - `./scripts/release/validate-fork.sh preflight` still reports no `gh` auth, no GitHub token, and no local `ssh` client, so I cannot push the current branch or an experimental tag to `cafca/p2panda` from here
   - without a real fork push/update, I still cannot prove a green PR check suite, a successful fork `release.yml` run across macOS/Linux/Windows, uploaded experimental release artifacts, or experimental tag cleanup on the fork
+
+# 2026-03-06 14:31
+
+- picked Task 41 (`Ensure basic CI/CD works: Validate GitHub CI on fork (cafca/p2panda)`) as the highest-priority remaining feature because it is still the only task marked incomplete in `PRD.jsonl`
+- extended `scripts/release/validate-fork.sh` with a new `ready-pr <pr-number|branch>` command so the fork-validation helper can promote an existing draft PR to ready-for-review through either authenticated `gh` or token-backed GitHub API calls
+- updated `docs/fork-validation.md` and `docs/dev-environment.md` to document the new draft-to-ready step in the Task 41 workflow
+- ran the shell feedback loop for this feature:
+  - `bash -n scripts/release/validate-fork.sh`
+  - `./scripts/release/validate-fork.sh help`
+  - `./scripts/release/validate-fork.sh ready-pr port-blobs-to-net-v0.5`
+  - `./scripts/release/validate-fork.sh preflight`
+  - `./scripts/release/validate-fork.sh pr-status port-blobs-to-net-v0.5`
+  - `./scripts/release/validate-fork.sh release-status v0.1.0-experimental.1`
+  - `./scripts/release/validate-fork.sh origin-status HEAD`
+- confirmed the new command is wired correctly and fails safely without credentials, and reconfirmed the external Task 41 blockers from the public fork state: PR `cafca/p2panda#1` is still draft on stale head `0746e60cda013423f93730c6543c7ec1d1f85ab8` instead of local `HEAD` `1ab350533a3083ac4c18a0279034120bd68afc91`, its `clippy`/`test`/`check` runs are failing, no `v0.1.0-experimental.1` tag exists on the fork, and `origin-status HEAD` still shows no matching workflow runs on upstream `p2panda/p2panda`
+- left Task 41 `passes` as `false`; `PRD.jsonl` was not changed because the fork-side acceptance criteria were not actually completed in this run
+
+What doesn't work:
+- Task 41 remains externally blocked from a truthful pass in this environment because `./scripts/release/validate-fork.sh preflight` still reports no GitHub auth token, no authenticated `gh` session, and no local `ssh` client, so I cannot actually push the current branch or promote/push the required experimental release tag on `cafca/p2panda` from here
+- without a real fork push/update, I still cannot prove a green PR check suite on the expected commit, a successful `release.yml` run across macOS/Linux/Windows on the fork, uploaded experimental release artifacts, or cleanup of experimental validation tags on the fork

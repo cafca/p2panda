@@ -43,6 +43,14 @@ Open the PR against `cafca/p2panda:main`:
 
 If `gh auth` is unavailable, `open-pr` falls back to the GitHub REST API using the token from `GITHUB_TOKEN`, `GH_TOKEN`, or `GITHUB_TOKEN_FILE`.
 
+If the branch already has a draft PR on the fork, promote it before waiting on checks:
+
+```bash
+./scripts/release/validate-fork.sh ready-pr port-blobs-to-net-v0.5
+```
+
+You can pass either the PR number or the branch name. The helper no-ops when the PR is already ready for review.
+
 Inspect the PR and its check suite from the public GitHub API:
 
 ```bash

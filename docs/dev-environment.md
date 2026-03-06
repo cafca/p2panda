@@ -66,6 +66,12 @@ Use it before any branch push or experimental tag push. It refuses unsafe remote
 
 If your environment does not have an `ssh` client or `gh auth`, set `GITHUB_TOKEN`, `GH_TOKEN`, or `GITHUB_TOKEN_FILE`. The helper can then push to the fork over HTTPS and create the PR through the GitHub API while still enforcing the fork-only safety checks.
 
+If the fork already has a draft PR for your branch, you can also promote it without leaving the terminal:
+
+```bash
+./scripts/release/validate-fork.sh ready-pr port-blobs-to-net-v0.5
+```
+
 For read-only verification after a push, the same helper can inspect the public fork state without `gh` auth:
 
 ```bash
