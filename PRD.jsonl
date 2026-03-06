@@ -974,25 +974,24 @@
 }
 {
   "id": 41,
-  "title": "Ensure basic CI/CD works: Validate GitHub CI on fork (cafca/p2panda)",
-  "description": "Create a PR CI workflow and verify that both PR checks and release packaging work end-to-end on the cafca/p2panda fork. All CI operations MUST target only cafca/p2panda — never push tags or trigger workflows on the upstream p2panda/p2panda repository.",
+  "title": "Validate GitHub CI on fork (cafca/p2panda)",
+  "description": "Push the current branch to the cafca/p2panda fork, open a PR, and iterate until CI is green. Then push an experimental tag to validate release packaging. Do NOT create helper scripts, validation frameworks, or documentation for the validation process itself.",
   "depends_on": [
     31,
     32
   ],
   "spec": {
-    "pr_ci_workflow": "Create .github/workflows/ci.yml triggered on pull_request and push to main. Jobs: (1) cargo fmt --check, (2) cargo clippy --workspace, (3) cargo test for the file-sharing-gui crate (lib tests), (4) cargo audit. Run on ubuntu-latest with Bevy system deps installed. Keep it under 15 minutes.",
-    "pr_validation": "Push the current branch to cafca/p2panda, open a PR, and confirm the CI workflow runs green. Fix any failures found (missing deps, lint issues, test failures) until the PR check suite passes.",
-    "release_validation": "Push an experimental tag (e.g. v0.1.0-experimental.1) to cafca/p2panda to trigger the release.yml workflow. Verify all three platform jobs (macOS, Linux, Windows) complete successfully and produce artifacts. Iterate with .experimental.2, .experimental.3 etc. if fixes are needed.",
-    "safety_constraint": "All pushes, tags, and workflow runs MUST happen on the fork remote (cafca/p2panda) only. Never push tags or trigger CI on origin (p2panda/p2panda). Verify the remote before every push command.",
-    "cleanup": "After validation, delete experimental tags from the fork. Leave the PR CI workflow in place as permanent infrastructure."
+    "step_1_create_ci_workflow": "Create .github/workflows/ci.yml triggered on pull_request and push to main. Jobs: (1) cargo fmt --check, (2) cargo clippy --workspace, (3) cargo test -p p2panda-file-sharing-gui, (4) cargo audit. Run on ubuntu-latest with Bevy system deps (libasound2-dev, libudev-dev). Keep it under 15 minutes.",
+    "step_2_push_and_open_pr": "Run: git push fork HEAD:port-blobs-to-net-v0.5 && gh pr create --repo cafca/p2panda --base main --head port-blobs-to-net-v0.5 --title 'CI validation' --body 'Validate CI workflows'",
+    "step_3_iterate_pr_ci": "Wait for the PR check suite: gh pr checks --repo cafca/p2panda <PR_NUMBER> --watch. If a job fails, read the log with gh run view <RUN_ID> --repo cafca/p2panda --log-failed, fix the code, commit, and push again. Maximum 5 iterations before asking the user.",
+    "step_4_validate_release": "Once PR CI is green, push an experimental tag: git tag v0.1.0-experimental.1 && git push fork v0.1.0-experimental.1. Watch the release workflow with gh run list --repo cafca/p2panda --workflow=release.yml --limit=1 and gh run watch. Iterate with .experimental.2 etc. if needed.",
+    "prohibition": "Do NOT create shell scripts, validation frameworks, helper functions, or documentation files for this task. The task is to run commands and fix code, not to build tooling."
   },
   "acceptance": [
-    "A .github/workflows/ci.yml exists and runs fmt, clippy, test, and audit checks on PRs",
+    ".github/workflows/ci.yml exists and runs fmt, clippy, test, and audit checks on PRs",
     "A PR on cafca/p2panda shows a green CI check suite",
-    "Pushing a v*-experimental.* tag to cafca/p2panda triggers release.yml and all three platform jobs (macOS, Linux, Windows) complete successfully",
-    "Release artifacts (.dmg, .AppImage, .tar.gz, .msi, .zip) and SHA-256 checksums are uploaded to the experimental GitHub Release",
-    "No tags or workflow runs were triggered on p2panda/p2panda (origin)"
+    "Pushing a v0.1.0-experimental.* tag to cafca/p2panda triggers release.yml and all three platform jobs complete successfully",
+    "Release artifacts are uploaded to the experimental GitHub Release"
   ],
-  "passes":  false
+  "passes": false
 }
