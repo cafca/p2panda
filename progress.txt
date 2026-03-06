@@ -1031,3 +1031,21 @@ What doesn't work:
   - probing the `fork` remote with `git ls-remote --heads fork` failed immediately because `ssh` is not installed here (`error: cannot run ssh: No such file or directory`)
   - without fork access I could not push a PR branch to `cafca/p2panda`, verify the PR check suite there, or trigger/inspect the `release.yml` workflow with an experimental tag
 - a full local `cargo clippy --workspace --locked -- -D warnings` run remains blocked in this sandbox until the `p2panda-fuzz` member can build its `libfuzzer-sys` C++ dependency; the new CI workflow now installs `build-essential` to cover that requirement on GitHub runners
+
+# 2026-03-06 12:05 UTC
+
+- picked Task 38 (`Follow contacts by profile ID and browse/download their shares`) as the highest-priority unfinished feature because it is the direct prerequisite for Task 39 and the only remaining product-path dependency that can be fully verified inside this environment
+- verified the existing contacts implementation against the full Task 38 acceptance path instead of widening scope into Task 39 or the externally blocked CI/update work:
+  - persistent follow/remove behavior and invalid-ID/duplicate/offline error handling via `cargo test -p p2panda-file-sharing-gui --lib contacts --locked -- --nocapture`
+  - end-to-end browse/download/provenance attachment via `cargo test -p p2panda-file-sharing-gui --test contacts --locked -- --nocapture`
+  - crate compile feedback loop via `cargo check -p p2panda-file-sharing-gui --locked`
+- confirmed in this run that:
+  - followed contacts persist locally and can be removed without touching downloaded files
+  - cached profile records refresh into a contact detail view with discovered published shares
+  - listed contact shares download successfully through the existing transfer pipeline
+  - contact-triggered downloads are attached to the local profile ledger with source-contact provenance
+  - invalid IDs, duplicates, and offline contacts produce clear errors
+- updated Task 38 `passes` to `true` in `PRD.jsonl`
+
+What doesn't work:
+- no additional blocker for Task 38 in this run

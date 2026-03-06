@@ -919,7 +919,7 @@
     "Downloads initiated from contacts are attached to the local profile's share records",
     "UI handles invalid IDs, duplicates, and offline contacts with clear errors"
   ],
-  "passes": false
+  "passes": true
 }
 {
   "id": 39,
