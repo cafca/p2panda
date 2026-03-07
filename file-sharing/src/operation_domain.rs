@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 use p2panda_core::cbor::{decode_cbor, encode_cbor};
-use p2panda_core::{Body, Extension, Hash, Header, PrivateKey, PublicKey};
+use p2panda_core::{Body, Extension, Hash, Header, Operation, PrivateKey, PublicKey};
 use p2panda_net::TopicId;
 use p2panda_store::{LogStore, OperationStore};
 use p2panda_stream::operation::{ingest_operation, IngestResult};
@@ -318,6 +318,38 @@ where
                 bail!("domain operation requires retry and is {behind} entries behind")
             }
             IngestResult::Outdated(_) => bail!("domain operation was treated as outdated"),
+        }
+    }
+
+    pub async fn ingest_remote_operation(
+        &mut self,
+        operation: Operation<DomainExtensions>,
+    ) -> Result<()> {
+        let log_id = operation.header.extensions.log_id.clone();
+        let profile_id = log_id.profile_id.clone();
+        let author = operation.header.public_key;
+        let header_bytes = operation.header.to_bytes();
+
+        match ingest_operation(
+            &mut self.store,
+            operation.header,
+            operation.body,
+            header_bytes,
+            &log_id,
+            false,
+        )
+        .await
+        .map_err(|err| anyhow::anyhow!("failed to ingest replicated domain operation: {err}"))?
+        {
+            IngestResult::Complete(_) | IngestResult::Outdated(_) => {
+                self.topic_map
+                    .register_profile_author(&profile_id, author)
+                    .await;
+                Ok(())
+            }
+            IngestResult::Retry(_, _, _, behind) => {
+                bail!("replicated domain operation requires retry and is {behind} entries behind")
+            }
         }
     }
 
@@ -899,6 +931,56 @@ mod tests {
         assert_eq!(
             topic_map.known_authors(&profile_id).await,
             vec![node.node_id()]
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn ingest_remote_operation_is_idempotent_for_duplicate_delivery() -> Result<()> {
+        let private_key = PrivateKey::new();
+        let profile_id = private_key.public_key().to_string();
+        let operation = DomainOperation::ProfileUpdated {
+            profile_id: profile_id.clone(),
+            display_name: "Stable Name".to_owned(),
+            created_at: 10,
+            updated_at: 20,
+        };
+
+        let mut source_domain = FileSharingOperationDomain::new(
+            MemoryStore::<DomainLogId, DomainExtensions>::new(),
+            FileSharingTopicMap::default(),
+        );
+        let header = source_domain
+            .append_operation(&private_key, operation.clone())
+            .await?;
+        let replicated_operation = Operation {
+            hash: header.hash(),
+            header,
+            body: Some(Body::from(encode_cbor(&operation)?)),
+        };
+
+        let mut target_domain = FileSharingOperationDomain::new(
+            MemoryStore::<DomainLogId, DomainExtensions>::new(),
+            FileSharingTopicMap::default(),
+        );
+        target_domain
+            .ingest_remote_operation(replicated_operation.clone())
+            .await?;
+        target_domain
+            .ingest_remote_operation(replicated_operation)
+            .await?;
+
+        let operations = target_domain.operations_for_profile(&profile_id).await?;
+        assert_eq!(operations.len(), 1);
+        assert_eq!(
+            target_domain
+                .read_profile_state(&profile_id)
+                .await?
+                .expect("reduced profile state to exist")
+                .display_name
+                .as_deref(),
+            Some("Stable Name")
         );
 
         Ok(())

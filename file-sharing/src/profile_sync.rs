@@ -326,7 +326,7 @@ fn spawn_contact_profile_task(
     cache_path: PathBuf,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let domain = FileSharingOperationDomain::new(store, topic_map.clone());
+        let mut domain = FileSharingOperationDomain::new(store, topic_map.clone());
 
         while let Some(message) = subscription.next().await {
             let Ok(message) = message else {
@@ -335,9 +335,13 @@ fn spawn_contact_profile_task(
 
             match message.event {
                 TopicLogSyncEvent::Operation(operation) => {
-                    topic_map
-                        .register_profile_author(&profile_id, operation.header.public_key)
-                        .await;
+                    if let Err(err) = domain.ingest_remote_operation(*operation).await {
+                        tracing::warn!(
+                            remote_profile_id = %profile_id,
+                            "failed to ingest LogSync profile operation: {err:#}"
+                        );
+                        continue;
+                    }
                     if let Err(err) = persist_contact_cache(&domain, &cache_path, &profile_id).await
                     {
                         tracing::warn!(
@@ -427,7 +431,6 @@ mod tests {
     use crate::node::NodeOptions;
     use crate::profile::ProfileStore;
 
-    #[ignore = "LogSync relay catch-up still times out before the first reduced-state cache write in this sandbox"]
     #[tokio::test(flavor = "multi_thread")]
     async fn syncs_contact_profile_via_log_sync_with_catch_up_and_live_updates() -> Result<()> {
         setup_logging();

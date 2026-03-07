@@ -1083,7 +1083,7 @@
     "Concurrent profile updates from multiple sessions do not create duplicate applied updates",
     "Profile UI state stays correct under reconnect and packet-loss scenarios"
   ],
-  "passes": false
+  "passes": true
 }
 {
   "id": 47,

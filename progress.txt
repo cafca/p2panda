@@ -334,6 +334,23 @@ What doesn't work:
 What doesn't work:
 - Task 32 remains `passes: false`; full dependency-upgrade closure cannot be verified in this run because `cargo outdated --workspace` fails on an upstream pre-release resolver conflict and full-workspace `cargo check --all-targets` is blocked by missing `c++` for `libfuzzer-sys`
 
+# Sat, 07 Mar 2026 12:13:50 GMT
+
+- picked Task 46 (`Replace profile polling with LogSync-based replication`) as the highest-priority unfinished feature because it is the remaining critical-path gate for Tasks 47, 48, and 54, while Task 41 is external-only
+- fixed the LogSync contact-sync path in `file-sharing/src/profile_sync.rs` by ingesting replicated `TopicLogSyncEvent::Operation` payloads into the operation-domain store before reducing them into the contact cache
+- added `FileSharingOperationDomain::ingest_remote_operation(...)` in `file-sharing/src/operation_domain.rs` so replicated domain operations are stored idempotently and their authors are registered with the topic map
+- added a focused unit test proving duplicate replicated operations do not create duplicate applied profile state, which covers the duplicate-delivery risk from overlapping sync sessions
+- unignored the relay-backed catch-up/live-update regression test in `profile_sync.rs`; it now passes as part of the normal suite
+- ran `cargo fmt --package p2panda-file-sharing-gui`
+- ran `cargo check -p p2panda-file-sharing-gui --lib`
+- ran `cargo test -p p2panda-file-sharing-gui operation_domain --lib -- --nocapture`
+- ran `cargo test -p p2panda-file-sharing-gui profile_sync --lib -- --nocapture`
+- ran `cargo test -p p2panda-file-sharing-gui contacts --lib -- --nocapture`
+- confirmed Task 46 acceptance in this run and updated Task 46 `passes` to `true` in `PRD.jsonl`
+
+What doesn't work:
+- no additional blocker for Task 46 in this run
+
 # 2026-03-04 18:26
 
 - picked Task 18 (`Integration test: multi-source download`) as the highest-priority unfinished feature because it is the last remaining transfer integration behavior in the PRD critical path
