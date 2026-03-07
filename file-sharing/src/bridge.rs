@@ -11,7 +11,6 @@ use tokio::task::JoinHandle as TokioJoinHandle;
 use anyhow::{Context, Result};
 use bevy::prelude::Resource;
 use flume::{Receiver, Sender, TryRecvError};
-use futures_util::StreamExt;
 use iroh_blobs::hashseq::HashSeq;
 use p2panda_blobs::Hash as BlobHash;
 use p2panda_net::addrs::{NodeTransportInfo, TransportAddress};
@@ -34,7 +33,7 @@ use crate::persist::{
 use crate::profile::ProfileStore;
 use crate::profile_sync::ProfileSyncService;
 use crate::settings::load_settings;
-use crate::share::{share_directory, share_pin_name, ShareSession};
+use crate::share::{share_directory, share_pin_prefix, ShareSession};
 use crate::share_code::{decode_share_code, derive_topic};
 
 type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
@@ -1737,35 +1736,19 @@ async fn remove_share_and_purge(state: &RuntimeState, transfer_id: u64) -> Resul
             .block_serving_hashes(removable_hashes.iter().copied());
     }
 
-    if collection_removable {
+    if collection_removable || removable_manifest.is_some() || !removable_files.is_empty() {
         if let Err(err) = state
             .node
             .blobs
-            .store()
-            .tags()
-            .delete(share_pin_name(collection_hash))
+            .pins()
+            .delete_prefix(share_pin_prefix(collection_hash))
             .await
         {
             warn!(
-                "failed to delete share pin for {}: {err}",
-                removed.record.collection_hash
+                "failed to purge share-scoped pins for removed share {}: {err}",
+                transfer_id
             );
         }
-    }
-
-    if let Err(err) = delete_tags_for_hashes_in_order(
-        &state.node,
-        &removable_files,
-        removable_manifest,
-        collection_removable,
-        collection_hash,
-    )
-    .await
-    {
-        warn!(
-            "failed to purge tags for removed share {}: {err}",
-            transfer_id
-        );
     }
 
     // Give the GC actor a chance to observe unpinning before we validate removal in tests.
@@ -1800,56 +1783,6 @@ fn split_share_hashes(
     let mut iter = deduped.into_iter().filter(|hash| *hash != collection_hash);
     let manifest_hash = iter.next();
     (manifest_hash, iter.collect())
-}
-
-async fn delete_tags_for_hashes_in_order(
-    node: &AppNode,
-    file_hashes: &[BlobHash],
-    manifest_hash: Option<BlobHash>,
-    collection_removable: bool,
-    collection_hash: BlobHash,
-) -> Result<()> {
-    let mut ordered_hashes = file_hashes.to_vec();
-    if let Some(manifest_hash) = manifest_hash {
-        ordered_hashes.push(manifest_hash);
-    }
-    if collection_removable {
-        ordered_hashes.push(collection_hash);
-    }
-    if ordered_hashes.is_empty() {
-        return Ok(());
-    }
-
-    let wanted_hashes: HashSet<BlobHash> = ordered_hashes.iter().copied().collect();
-    let mut tags_by_hash: HashMap<BlobHash, Vec<_>> = HashMap::new();
-    let mut tags = node
-        .blobs
-        .store()
-        .tags()
-        .list()
-        .await
-        .context("failed to list blob tags during share removal")?;
-    while let Some(tag) = tags.next().await {
-        let tag = tag.context("failed to read blob tag during share removal")?;
-        if wanted_hashes.contains(&tag.hash) {
-            tags_by_hash.entry(tag.hash).or_default().push(tag.name);
-        }
-    }
-
-    for hash in ordered_hashes {
-        if let Some(names) = tags_by_hash.remove(&hash) {
-            for name in names {
-                if let Err(err) = node.blobs.store().tags().delete(name).await {
-                    warn!(
-                        "failed to delete blob tag for {} during share removal: {err}",
-                        hash
-                    );
-                }
-            }
-        }
-    }
-
-    Ok(())
 }
 
 #[cfg(test)]
@@ -2220,6 +2153,167 @@ mod tests {
             .any(|record| {
                 record.share_code == reloaded_state.state().active_shares[0].share_code
             }));
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn remove_share_cleanup_only_deletes_that_shares_pin_namespace() -> Result<()> {
+        let data_dir = tempdir()?;
+        let state = RuntimeState::new(
+            data_dir.path().to_path_buf(),
+            NodeOptions {
+                mdns_enabled: false,
+                ..Default::default()
+            },
+        )
+        .await?;
+
+        let source_a = tempdir()?;
+        let source_b = tempdir()?;
+        let root_a = source_a.path().join("share-a");
+        let root_b = source_b.path().join("share-b");
+        fs::create_dir_all(&root_a)?;
+        fs::create_dir_all(&root_b)?;
+        fs::write(root_a.join("common.bin"), b"same payload")?;
+        fs::write(root_a.join("only-a.txt"), b"a")?;
+        fs::write(root_b.join("common.bin"), b"same payload")?;
+        fs::write(root_b.join("only-b.txt"), b"b")?;
+
+        let share_a = share_directory(&state.node, &root_a).await?;
+        let share_b = share_directory(&state.node, &root_b).await?;
+        let share_a_collection_hash = share_a.collection_hash;
+        let share_b_collection_hash = share_b.collection_hash;
+        let shared_file_hash = share_a
+            .files
+            .iter()
+            .find(|file| file.relative_path == "common.bin")
+            .map(|file| file.hash)
+            .context("missing common.bin in first share")?;
+        assert_eq!(
+            share_b
+                .files
+                .iter()
+                .find(|file| file.relative_path == "common.bin")
+                .map(|file| file.hash),
+            Some(shared_file_hash)
+        );
+
+        state
+            .node
+            .blobs
+            .pins()
+            .set(format!("downloaded/{shared_file_hash}"), shared_file_hash)
+            .await?;
+
+        {
+            let mut runtime = state.inner.lock().await;
+            runtime.store.add_share(ShareRecord::from(&share_a))?;
+            runtime.store.add_share(ShareRecord::from(&share_b))?;
+            runtime.live_shares.insert(1, share_a);
+            runtime.live_shares.insert(2, share_b);
+        }
+
+        let share_a_prefix = share_pin_prefix(share_a_collection_hash);
+        let share_b_prefix = share_pin_prefix(share_b_collection_hash);
+        assert!(
+            state
+                .node
+                .blobs
+                .pins()
+                .list_prefix(&share_a_prefix)
+                .await?
+                .len()
+                >= 3
+        );
+        assert!(
+            state
+                .node
+                .blobs
+                .pins()
+                .list_prefix(&share_b_prefix)
+                .await?
+                .len()
+                >= 3
+        );
+
+        remove_share_and_purge(&state, 1).await?;
+
+        assert!(state
+            .node
+            .blobs
+            .pins()
+            .list_prefix(&share_a_prefix)
+            .await?
+            .is_empty());
+        assert!(!state
+            .node
+            .blobs
+            .pins()
+            .list_prefix(&share_b_prefix)
+            .await?
+            .is_empty());
+        assert_eq!(
+            state
+                .node
+                .blobs
+                .pins()
+                .get(format!("downloaded/{shared_file_hash}"))
+                .await?,
+            Some(shared_file_hash)
+        );
+
+        let runtime = state.inner.lock().await;
+        assert_eq!(runtime.store.state().active_shares.len(), 1);
+        assert_eq!(runtime.live_shares.len(), 1);
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn remove_share_cleanup_succeeds_for_large_pin_sets() -> Result<()> {
+        let data_dir = tempdir()?;
+        let state = RuntimeState::new(
+            data_dir.path().to_path_buf(),
+            NodeOptions {
+                mdns_enabled: false,
+                ..Default::default()
+            },
+        )
+        .await?;
+
+        let source_dir = tempdir()?;
+        let source_root = source_dir.path().join("many-files");
+        fs::create_dir_all(&source_root)?;
+        for file_index in 0..96 {
+            fs::write(
+                source_root.join(format!("file-{file_index:03}.bin")),
+                format!("payload-{file_index:03}-{}", "x".repeat(128)),
+            )?;
+        }
+
+        let share = share_directory(&state.node, &source_root).await?;
+        let collection_hash = share.collection_hash;
+
+        {
+            let mut runtime = state.inner.lock().await;
+            runtime.store.add_share(ShareRecord::from(&share))?;
+            runtime.live_shares.insert(7, share);
+        }
+
+        let prefix = share_pin_prefix(collection_hash);
+        let pinned_before = state.node.blobs.pins().list_prefix(&prefix).await?;
+        assert_eq!(pinned_before.len(), 98);
+
+        remove_share_and_purge(&state, 7).await?;
+
+        assert!(state
+            .node
+            .blobs
+            .pins()
+            .list_prefix(&prefix)
+            .await?
+            .is_empty());
 
         Ok(())
     }

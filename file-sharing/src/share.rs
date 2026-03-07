@@ -113,18 +113,7 @@ pub async fn share_directory(node: &AppNode, directory: impl AsRef<Path>) -> Res
         .context("failed to store collection hash sequence")?;
     let collection_hash = collection_tag.hash;
 
-    node.blobs
-        .store()
-        .tags()
-        .set(
-            share_pin_name(collection_hash),
-            HashAndFormat {
-                hash: collection_hash,
-                format: BlobFormat::HashSeq,
-            },
-        )
-        .await
-        .context("failed to pin shared collection")?;
+    pin_shared_blobs(node, collection_hash, manifest_hash, &imported_files).await?;
 
     let topic_id: TopicId = crate::share_code::derive_topic(*collection_hash.as_bytes());
     let gossip_handle = Arc::new(
@@ -298,6 +287,63 @@ async fn import_files(node: &AppNode, files: &[ScannedFile]) -> Result<Vec<Share
 
 pub(crate) fn share_pin_name(collection_hash: BlobHash) -> String {
     format!("share/{}", collection_hash.to_hex())
+}
+
+pub(crate) fn share_pin_prefix(collection_hash: BlobHash) -> String {
+    share_pin_name(collection_hash)
+}
+
+pub(crate) fn share_manifest_pin_name(collection_hash: BlobHash) -> String {
+    format!("{}/manifest", share_pin_prefix(collection_hash))
+}
+
+pub(crate) fn share_file_pin_name(collection_hash: BlobHash, file_hash: BlobHash) -> String {
+    format!(
+        "{}/file/{}",
+        share_pin_prefix(collection_hash),
+        file_hash.to_hex()
+    )
+}
+
+async fn pin_shared_blobs(
+    node: &AppNode,
+    collection_hash: BlobHash,
+    manifest_hash: BlobHash,
+    files: &[SharedFile],
+) -> Result<()> {
+    node.blobs
+        .store()
+        .tags()
+        .set(
+            share_pin_name(collection_hash),
+            HashAndFormat {
+                hash: collection_hash,
+                format: BlobFormat::HashSeq,
+            },
+        )
+        .await
+        .context("failed to pin shared collection")?;
+
+    node.blobs
+        .pins()
+        .set(share_manifest_pin_name(collection_hash), manifest_hash)
+        .await
+        .context("failed to pin shared manifest")?;
+
+    for file in files {
+        node.blobs
+            .pins()
+            .set(share_file_pin_name(collection_hash, file.hash), file.hash)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to pin shared file {} for collection {}",
+                    file.relative_path, collection_hash
+                )
+            })?;
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

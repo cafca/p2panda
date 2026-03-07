@@ -1643,3 +1643,21 @@ What doesn't work:
 
 What I learned:
 - `PRD.jsonl` is still malformed for raw `jq -s` because Task 45 retains the pre-existing trailing comma in its `spec` object; I left that structural issue untouched and changed only Task 53's `passes` field per run constraints
+
+# Sat, 07 Mar 2026 12:05:23 GMT
+
+- picked Task 52 (`Use prefix-based blob pin cleanup for share deletion`) as the highest-priority actionable feature for this run because Task 41 is external/fork-blocked, Tasks 42 and 46 are still blocked on the unresolved profile-sync catch-up path, and the existing share-removal code still risked deleting unrelated blob tags by scanning tags globally by hash
+- updated `file-sharing/src/share.rs` so each shared collection now owns a share-scoped pin namespace: the collection root tag remains `share/{collection_hash}`, and manifest/file blobs are pinned beneath that prefix
+- replaced the old hash-by-hash tag scan in `file-sharing/src/bridge.rs` with `Pins::delete_prefix(share/{collection_hash})`, keeping the existing cross-share hash-reference checks so shared blobs are only blocked when no other live or persisted share still references them
+- added focused regression coverage for:
+- deleting one share without removing another share's pins or an unrelated download pin for the same blob hash
+- successful cleanup of a share with 96 pinned files, verifying the whole share pin namespace is removed in one pass
+- ran feedback loops:
+- `cargo fmt --package p2panda-file-sharing-gui`
+- `cargo check -p p2panda-file-sharing-gui --lib`
+- `cargo test -p p2panda-file-sharing-gui bridge --lib -- --nocapture`
+- `cargo test -p p2panda-file-sharing-gui --lib -- --nocapture`
+- marked Task 52 `passes: true` in `PRD.jsonl` because this run verified prefix-based share cleanup, namespace isolation from unrelated pins, and successful cleanup across a larger pinned share set
+
+What I learned:
+- `PRD.jsonl` is still malformed for raw `jq -s` because Tasks 45, 47, and 48 have pre-existing trailing commas in their `spec` objects; I left those structural issues untouched and changed only Task 52's `passes` field per run constraints

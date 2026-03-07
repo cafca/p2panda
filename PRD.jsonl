@@ -1202,7 +1202,7 @@
     "Deleting one share does not remove pins belonging to unrelated shares",
     "Cleanup flow remains successful for large pin sets"
   ],
-  "passes": false
+  "passes": true
 }
 {
   "id": 53,
