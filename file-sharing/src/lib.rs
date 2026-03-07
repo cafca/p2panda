@@ -5,6 +5,7 @@ pub mod download;
 pub mod manifest;
 pub mod node;
 pub mod notifications;
+pub mod operation_domain;
 pub mod persist;
 pub mod plugin;
 pub mod profile;

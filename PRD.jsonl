@@ -1062,7 +1062,7 @@
     "At least one existing user state snapshot can be migrated into the new log-backed representation",
     "Core read paths can reconstruct current state from operation history"
   ],
-  "passes": false
+  "passes": true
 }
 {
   "id": 46,

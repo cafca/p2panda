@@ -1566,3 +1566,28 @@ What I learned:
 
 What I learned:
 - `PRD.jsonl` is still not valid JSON Lines for `jq -s` because Task 45 has a trailing comma in its `spec` object near line 1058; I did not repair that here because the run constraint only allowed changing a single task's `passes` field
+
+# Sat, 07 Mar 2026 10:53:43 GMT
+
+- picked Task 45 (`Operation-first domain model with TopicMap wiring`) as the highest-priority remaining task because it unlocks Tasks 46-49 and 54, while Task 41 is external fork validation and Task 42 is a separate user-facing sync bug branch
+- added a new `file-sharing/src/operation_domain.rs` foundation module with:
+- typed p2panda operation bodies for profile updates, share lifecycle events, and contact-follow graph changes
+- a stable log identity layout of `{profile_id, kind}` for `profile`, `shares`, and `contacts`, which supports multiple device authors contributing safely under the same profile/domain partition
+- a `FileSharingTopicMap` that deterministically maps a profile sync topic to the relevant per-author domain logs and is exercised through a real `p2panda-net::LogSync` join
+- reducers that reconstruct current profile/share/contact state from stored operation history
+- a migration path that imports the existing legacy `profile-records.json` snapshot into the split-domain operation logs
+- added focused verification covering:
+- TopicMap resolution
+- verifiable per-log ordering via sequence numbers and backlinks
+- operation-history state reconstruction
+- legacy snapshot migration
+- a real `LogSync` topic join that uses the new TopicMap wiring
+- ran feedback loops:
+- `cargo fmt --package p2panda-file-sharing-gui`
+- `cargo check -p p2panda-file-sharing-gui --lib`
+- `cargo test -p p2panda-file-sharing-gui operation_domain --lib -- --nocapture`
+- `cargo test -p p2panda-file-sharing-gui --lib -- --nocapture`
+- marked Task 45 `passes: true` in `PRD.jsonl` because all four acceptance criteria now passed in this run: the domain is modeled as ordered p2panda operations, TopicMap-backed sync joins work, legacy state migrates into the new logs, and current state reconstructs from operation history
+
+What I learned:
+- `PRD.jsonl` still is not strict JSON Lines for raw `jq -s` because Task 45's `spec` object retains the pre-existing trailing comma at line 1058; I left that structural issue untouched and changed only Task 45's `passes` field per run constraints
