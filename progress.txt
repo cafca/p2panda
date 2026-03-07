@@ -238,6 +238,21 @@ What doesn't work:
 - picked Task 42 (`Remove nickname from follow flow — display name owned by profile`) as the highest-priority remaining local feature because Task 41 depends on external GitHub validation and Tasks 43-44 are lower-priority UI refinements
 - verified the existing follow-flow model already satisfies the non-network parts of the task: there is no nickname field in `Contact` or `ContactFollowRecord`, the UI only asks for a profile ID, and unsynced contacts fall back to the first 8 chars of the profile ID
 - hardened `file-sharing/src/profile_sync.rs` so new contact syncs wait for an explicit `GossipEvent::Joined` instead of relying on the previous fixed one-second relay sleep before issuing the first profile-sync request
+
+# Sat, 07 Mar 2026 11:42:56 GMT
+
+- picked Task 46 (`Replace profile polling with LogSync-based replication`) as the highest-priority unblocked task because it is on the remaining critical path for Tasks 47, 48, and 54
+- replaced the active `ProfileSyncService` transport path with a LogSync-backed operation-domain sync service that migrates local profile records into `FileSharingOperationDomain`, opens per-profile LogSync streams, and writes reduced remote profile state into the contact cache
+- added reduced-profile-state cache persistence helpers in `file-sharing/src/operation_domain.rs` and taught `ContactsStore`/discovery to consume either the legacy raw-profile cache or the new reduced-state cache format
+- added focused coverage for reduced-state cache loading plus a local LogSync migration smoke test in `contacts.rs` and `profile_sync.rs`
+- added an ignored relay regression test documenting the remaining LogSync blocker for Task 46's end-to-end acceptance path
+- ran `cargo fmt --package p2panda-file-sharing-gui`
+- ran `cargo check -p p2panda-file-sharing-gui --lib`
+- ran `cargo test -p p2panda-file-sharing-gui contacts --lib -- --nocapture`
+- ran `cargo test -p p2panda-file-sharing-gui profile_sync --lib -- --nocapture`
+
+What doesn't work:
+- Task 46 remains `passes: false`; the reduced-state cache path compiles and local cache consumers are verified, but the ignored `profile_sync::tests::syncs_contact_profile_via_log_sync_with_catch_up_and_live_updates` relay scenario still times out before the first remote reduced-state cache write, so I could not truthfully mark the full LogSync catch-up/live-update acceptance criteria as passed in this run
 - ran `cargo check -p p2panda-file-sharing-gui --lib`
 - ran `cargo test -p p2panda-file-sharing-gui contacts --lib -- --nocapture`
 - ran `cargo test -p p2panda-file-sharing-gui profile_sync::tests::local_service_replies_to_profile_sync_requests --lib -- --nocapture`

@@ -498,6 +498,10 @@ pub fn write_raw_profile_operations_to_path(
     write_json_atomic(path.as_ref(), &records, "profile records")
 }
 
+pub(crate) fn load_private_key_from_data_dir(data_dir: &Path) -> Result<PrivateKey> {
+    load_private_key(data_dir)
+}
+
 pub fn active_follow_records_for_profile(
     profile_id: &str,
     records: &[ProfileRecord],

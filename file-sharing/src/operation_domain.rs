@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -18,6 +19,7 @@ use tokio::sync::RwLock;
 use crate::profile::{load_profile_records_from_path, profile_records_path, ProfileRecord};
 
 const OPERATION_DOMAIN_TOPIC_NAMESPACE: &[u8] = b"p2panda-file-sharing/operation-domain/v1";
+const REDUCED_PROFILE_STATE_VERSION: u8 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -127,7 +129,7 @@ impl DomainOperation {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReducedShareState {
     pub profile_id: String,
     pub collection_hash: String,
@@ -138,7 +140,7 @@ pub struct ReducedShareState {
     pub source_contact_display_name: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReducedProfileState {
     pub profile_id: String,
     pub display_name: Option<String>,
@@ -159,6 +161,13 @@ pub struct StoredDomainOperation {
     pub log_id: DomainLogId,
     pub header: Header<DomainExtensions>,
     pub operation: DomainOperation,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct PersistedReducedProfileState {
+    #[serde(default = "reduced_profile_state_version")]
+    version: u8,
+    state: ReducedProfileState,
 }
 
 #[derive(Clone, Default, Debug)]
@@ -599,6 +608,56 @@ fn now_unix_secs() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+const fn reduced_profile_state_version() -> u8 {
+    REDUCED_PROFILE_STATE_VERSION
+}
+
+pub fn write_reduced_profile_state_to_path(
+    path: impl AsRef<Path>,
+    state: &ReducedProfileState,
+) -> Result<()> {
+    let path = path.as_ref();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create parent directory for reduced profile cache at {}",
+                parent.display()
+            )
+        })?;
+    }
+
+    let persisted = PersistedReducedProfileState {
+        version: REDUCED_PROFILE_STATE_VERSION,
+        state: state.clone(),
+    };
+    let bytes = serde_json::to_vec_pretty(&persisted)
+        .context("failed to serialize reduced profile cache")?;
+    let tmp_path = path.with_extension("json.tmp");
+    fs::write(&tmp_path, bytes).with_context(|| {
+        format!(
+            "failed to write temporary reduced profile cache {}",
+            tmp_path.display()
+        )
+    })?;
+    fs::rename(&tmp_path, path).with_context(|| {
+        format!(
+            "failed to atomically move reduced profile cache {} to {}",
+            tmp_path.display(),
+            path.display()
+        )
+    })?;
+    Ok(())
+}
+
+pub fn load_reduced_profile_state_from_path(path: impl AsRef<Path>) -> Result<ReducedProfileState> {
+    let path = path.as_ref();
+    let bytes = fs::read(path)
+        .with_context(|| format!("failed to read reduced profile cache {}", path.display()))?;
+    let persisted: PersistedReducedProfileState = serde_json::from_slice(&bytes)
+        .with_context(|| format!("failed to parse reduced profile cache {}", path.display()))?;
+    Ok(persisted.state)
 }
 
 #[cfg(test)]
