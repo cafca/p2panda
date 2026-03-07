@@ -207,6 +207,21 @@ impl Gossip {
         ))
     }
 
+    /// Ask an existing gossip session to explicitly connect to the given nodes.
+    pub async fn join_nodes(
+        &self,
+        topic: TopicId,
+        nodes: impl IntoIterator<Item = NodeId>,
+    ) -> Result<(), GossipError> {
+        let inner = self.inner.read().await;
+        ractor::cast!(
+            inner.actor_ref,
+            ToGossipManager::JoinNodes(topic, nodes.into_iter().collect())
+        )
+        .map_err(Box::new)?;
+        Ok(())
+    }
+
     /// Subscribe to system events.
     ///
     /// NOTE: only events emitted _after_ calling this method will be received on the returned

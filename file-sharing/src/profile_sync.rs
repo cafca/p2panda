@@ -20,6 +20,11 @@ use crate::profile::profile_records_path;
 
 const PROFILE_SYNC_TOPIC_NAMESPACE: &[u8] = b"p2panda-file-sharing/profile-sync/v1";
 const CONTACT_PROFILE_REQUEST_INTERVAL_SECS: u64 = 2;
+const CONTACT_PROFILE_BOOTSTRAP_SETTLE_MILLIS: u64 = 750;
+const CONTACT_PROFILE_INITIAL_SYNC_TIMEOUT_SECS: u64 = 8;
+const CONTACT_PROFILE_INITIAL_REQUEST_INTERVAL_MILLIS: u64 = 500;
+const CONTACT_PROFILE_REPLY_BURST_ATTEMPTS: u32 = 4;
+const CONTACT_PROFILE_REPLY_BURST_INTERVAL_MILLIS: u64 = 500;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -68,6 +73,7 @@ impl ProfileSyncService {
             .context("failed to join local profile sync topic")?;
 
         let local_task = spawn_local_profile_task(
+            node.gossip.clone(),
             local_handle.clone(),
             node.data_dir.clone(),
             local_profile_id.clone(),
@@ -150,6 +156,12 @@ impl ProfileSyncService {
         }
 
         if let Some(sync) = self.contact_streams.get(profile_id) {
+            if started && self.relay_url.is_some() {
+                tokio::time::sleep(Duration::from_millis(
+                    CONTACT_PROFILE_BOOTSTRAP_SETTLE_MILLIS,
+                ))
+                .await;
+            }
             if let Some(records) =
                 request_profile_snapshot(&sync.handle, &self.local_profile_id, profile_id).await?
             {
@@ -174,26 +186,7 @@ impl ProfileSyncService {
         public_key: PublicKey,
         profile_id: &str,
     ) -> Result<()> {
-        let timeout = tokio::time::sleep(std::time::Duration::from_secs(5));
-        tokio::pin!(timeout);
-
-        loop {
-            tokio::select! {
-                _ = &mut timeout => {
-                    anyhow::bail!("timed out waiting for topic bootstrap registration for {profile_id}");
-                }
-                _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => {
-                    let node_infos = self
-                        .address_book
-                        .node_infos_by_topics([topic])
-                        .await
-                        .with_context(|| format!("failed to read topic bootstrap registration for {profile_id}"))?;
-                    if node_infos.into_iter().any(|info| info.node_id == public_key) {
-                        return Ok(());
-                    }
-                }
-            }
-        }
+        wait_for_topic_registration(&self.address_book, topic, public_key, profile_id).await
     }
 
     async fn seed_contact_bootstrap(&self, public_key: PublicKey) -> Result<()> {
@@ -212,6 +205,7 @@ impl ProfileSyncService {
 }
 
 fn spawn_local_profile_task(
+    gossip: Gossip,
     handle: GossipHandle,
     data_dir: std::path::PathBuf,
     local_profile_id: String,
@@ -250,6 +244,36 @@ fn spawn_local_profile_task(
                     requester_profile_id,
                 } = message
                 else {
+                    let ProfileSyncMessage::Snapshot {
+                        owner_profile_id,
+                        target_profile_id,
+                        records,
+                    } = message
+                    else {
+                        continue;
+                    };
+
+                    if owner_profile_id == local_profile_id {
+                        continue;
+                    }
+                    if let Some(target_profile_id) = target_profile_id.as_deref() {
+                        if target_profile_id != local_profile_id {
+                            continue;
+                        }
+                    }
+
+                    let cache_path = contact_records_cache_path(&data_dir, &owner_profile_id);
+                    if let Err(err) = write_contact_cache(&cache_path, &records) {
+                        tracing::warn!(
+                            remote_profile_id = %owner_profile_id,
+                            "failed to persist profile snapshot from local topic: {err:#}"
+                        );
+                    } else {
+                        tracing::debug!(
+                            remote_profile_id = %owner_profile_id,
+                            "persisted profile snapshot from local topic"
+                        );
+                    }
                     continue;
                 };
                 tracing::debug!(
@@ -264,6 +288,8 @@ fn spawn_local_profile_task(
                 if let (Ok(requester_public_key), Some(relay_url)) =
                     (normalize_profile_id(&requester_profile_id), relay_url.clone())
                 {
+                    let local_topic = profile_sync_topic(&local_profile_id);
+                    let requester_topic = profile_sync_topic(&requester_profile_id);
                     let endpoint_addr =
                         EndpointAddr::new(from_public_key(requester_public_key)).with_relay_url(relay_url);
                     if let Err(err) = address_book
@@ -277,7 +303,7 @@ fn spawn_local_profile_task(
                     }
 
                     if let Err(err) = address_book
-                        .add_topic(requester_public_key, profile_sync_topic(&local_profile_id))
+                        .add_topic(requester_public_key, local_topic)
                         .await
                     {
                         tracing::warn!(
@@ -285,6 +311,84 @@ fn spawn_local_profile_task(
                             "failed to register requester on local profile sync topic: {err:#}"
                         );
                     }
+
+                    if let Err(err) = wait_for_topic_registration(
+                        &address_book,
+                        local_topic,
+                        requester_public_key,
+                        &requester_profile_id,
+                    )
+                    .await
+                    {
+                        tracing::warn!(
+                            requester_profile_id = %requester_profile_id,
+                            "timed out waiting for requester topic registration before replying: {err:#}"
+                        );
+                    }
+
+                    if let Err(err) = address_book
+                        .add_topic(requester_public_key, requester_topic)
+                        .await
+                    {
+                        tracing::warn!(
+                            requester_profile_id = %requester_profile_id,
+                            "failed to register requester on requester profile sync topic: {err:#}"
+                        );
+                    }
+
+                    if let Err(err) = wait_for_topic_registration(
+                        &address_book,
+                        requester_topic,
+                        requester_public_key,
+                        &requester_profile_id,
+                    )
+                    .await
+                    {
+                        tracing::warn!(
+                            requester_profile_id = %requester_profile_id,
+                            "timed out waiting for requester reply topic registration: {err:#}"
+                        );
+                    }
+
+                    if let Err(err) = gossip.join_nodes(local_topic, [requester_public_key]).await {
+                        tracing::warn!(
+                            requester_profile_id = %requester_profile_id,
+                            "failed to explicitly join requester on local profile sync topic: {err:#}"
+                        );
+                    }
+
+                    let reply_handle = match gossip.stream(requester_topic).await {
+                        Ok(handle) => handle,
+                        Err(err) => {
+                            tracing::warn!(
+                                requester_profile_id = %requester_profile_id,
+                                "failed to join requester profile sync topic for reply: {err:#}"
+                            );
+                            handle.clone()
+                        }
+                    };
+
+                    let records = match read_local_profile_records(&data_dir) {
+                        Ok(records) => records,
+                        Err(err) => {
+                            tracing::warn!("failed to read local profile records for sync: {err:#}");
+                            continue;
+                        }
+                    };
+
+                    spawn_targeted_snapshot_burst(
+                        handle.clone(),
+                        local_profile_id.clone(),
+                        requester_profile_id.clone(),
+                        records.clone(),
+                    );
+                    spawn_targeted_snapshot_burst(
+                        reply_handle,
+                        local_profile_id.clone(),
+                        requester_profile_id,
+                        records,
+                    );
+                    continue;
                 }
 
                 let records = match read_local_profile_records(&data_dir) {
@@ -295,21 +399,12 @@ fn spawn_local_profile_task(
                         }
                     };
 
-                    if let Err(err) = publish_snapshot(
-                        &handle,
-                        &local_profile_id,
-                        Some(requester_profile_id),
+                    spawn_targeted_snapshot_burst(
+                        handle.clone(),
+                        local_profile_id.clone(),
+                        requester_profile_id,
                         records,
-                    )
-                    .await
-                    {
-                        tracing::warn!("failed to publish profile snapshot for sync: {err:#}");
-                    } else {
-                        tracing::debug!(
-                            owner_profile_id = %local_profile_id,
-                            "published targeted profile snapshot"
-                        );
-                    }
+                    );
                 }
             }
         }
@@ -395,6 +490,69 @@ fn write_contact_cache(path: &Path, records: &[u8]) -> Result<()> {
     Ok(())
 }
 
+async fn wait_for_topic_registration(
+    address_book: &p2panda_net::AddressBook,
+    topic: TopicId,
+    public_key: PublicKey,
+    profile_id: &str,
+) -> Result<()> {
+    let timeout = tokio::time::sleep(Duration::from_secs(5));
+    tokio::pin!(timeout);
+
+    loop {
+        tokio::select! {
+            _ = &mut timeout => {
+                anyhow::bail!("timed out waiting for topic bootstrap registration for {profile_id}");
+            }
+            _ = tokio::time::sleep(Duration::from_millis(50)) => {
+                let node_infos = address_book
+                    .node_infos_by_topics([topic])
+                    .await
+                    .with_context(|| format!("failed to read topic bootstrap registration for {profile_id}"))?;
+                if node_infos.into_iter().any(|info| info.node_id == public_key) {
+                    return Ok(());
+                }
+            }
+        }
+    }
+}
+
+fn spawn_targeted_snapshot_burst(
+    handle: GossipHandle,
+    owner_profile_id: String,
+    target_profile_id: String,
+    records: Vec<u8>,
+) {
+    tokio::spawn(async move {
+        for attempt in 0..CONTACT_PROFILE_REPLY_BURST_ATTEMPTS {
+            if attempt > 0 {
+                tokio::time::sleep(Duration::from_millis(
+                    CONTACT_PROFILE_REPLY_BURST_INTERVAL_MILLIS,
+                ))
+                .await;
+            }
+
+            if let Err(err) = publish_snapshot(
+                &handle,
+                &owner_profile_id,
+                Some(target_profile_id.clone()),
+                records.clone(),
+            )
+            .await
+            {
+                tracing::warn!("failed to publish profile snapshot for sync: {err:#}");
+            } else {
+                tracing::debug!(
+                    owner_profile_id = %owner_profile_id,
+                    target_profile_id = %target_profile_id,
+                    attempt,
+                    "published targeted profile snapshot"
+                );
+            }
+        }
+    });
+}
+
 async fn publish_request(handle: &GossipHandle, requester_profile_id: &str) -> Result<()> {
     let bytes = encode_message(&ProfileSyncMessage::Request {
         requester_profile_id: requester_profile_id.to_owned(),
@@ -430,14 +588,21 @@ async fn request_profile_snapshot(
     remote_profile_id: &str,
 ) -> Result<Option<Vec<u8>>> {
     let mut subscription = handle.subscribe();
+    let request_interval = Duration::from_millis(CONTACT_PROFILE_INITIAL_REQUEST_INTERVAL_MILLIS);
+    let deadline = tokio::time::Instant::now()
+        + Duration::from_secs(CONTACT_PROFILE_INITIAL_SYNC_TIMEOUT_SECS);
+    let mut next_request_at = tokio::time::Instant::now();
 
-    for _ in 0..3 {
-        publish_request(handle, local_profile_id).await?;
-
-        match tokio::time::timeout(Duration::from_secs(2), async {
-            loop {
-                let Some(message) = subscription.next().await else {
-                    return Ok::<Option<Vec<u8>>, anyhow::Error>(None);
+    loop {
+        tokio::select! {
+            _ = tokio::time::sleep_until(deadline) => return Ok(None),
+            _ = tokio::time::sleep_until(next_request_at) => {
+                publish_request(handle, local_profile_id).await?;
+                next_request_at += request_interval;
+            }
+            maybe_message = subscription.next() => {
+                let Some(message) = maybe_message else {
+                    return Ok(None);
                 };
                 let bytes = message?;
                 let ProfileSyncMessage::Snapshot {
@@ -460,20 +625,8 @@ async fn request_profile_snapshot(
 
                 return Ok(Some(records));
             }
-        })
-        .await
-        {
-            Ok(result) => {
-                if let Some(records) = result? {
-                    return Ok(Some(records));
-                }
-                return Ok(None);
-            }
-            Err(_) => continue,
         }
     }
-
-    Ok(None)
 }
 
 fn encode_message(message: &ProfileSyncMessage) -> Result<Vec<u8>> {

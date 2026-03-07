@@ -1497,3 +1497,26 @@ What doesn't work:
 - Task 42 still remains `passes: false`; even with the synchronous snapshot attempt and requester-topic healing hint, the decisive ignored end-to-end test still times out on the initial cache sync when the owner-side `ProfileSyncService` is already running before the follower joins
 - the current evidence is that isolated pieces all pass (`profile_sync` non-ignored tests are green), but the true late-join service-to-service path is still broken in this environment, so this should stay a manual PRD follow-up/debugging item unless the remaining infrastructure race is split into its own task
 - because Task 42 was already `passes: false` in `PRD.jsonl`, I left that field unchanged and made no other PRD edits
+
+# Sat, 07 Mar 2026 10:13:09 GMT
+
+- picked Task 42 (`Remove nickname from follow flow — display name owned by profile`) again because it is still the highest-priority actionable unfinished product task; Task 41 remains external fork validation and the remaining ready tasks are lower-priority UI or follow-on refactors
+- kept the scope on the late-join relay profile-sync bootstrap path in `file-sharing/src/profile_sync.rs` and `p2panda-net/src/gossip/api.rs`
+- implemented another round of startup hardening:
+  - added a bounded initial snapshot-request loop with a short relay settle delay so a newly followed contact gets a more aggressive first-sync bootstrap window before falling back to background polling
+  - taught the local profile-sync task to accept targeted `Snapshot` messages on the follower's own profile topic and persist them straight into `contact-record-cache/{owner_profile_id}.json`
+  - added a small targeted-snapshot reply burst helper so owner-side request handling republishes the first snapshot a few times instead of relying on a single reply message
+  - exposed `Gossip::join_nodes(topic, nodes)` in `p2panda-net` and used it when the owner learns about a late-joining requester, so the app can explicitly nudge the overlay toward that follower instead of waiting only on healer timing
+  - kept the original owner-topic targeted reply path intact while also attempting a requester-topic fallback reply path, so existing non-ignored request/reply tests continue to pass
+- ran feedback loops:
+  - `cargo fmt --package p2panda-file-sharing-gui --package p2panda-net`
+  - `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-file-sharing-gui --lib`
+  - `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui profile_sync --lib -- --nocapture`
+  - `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui contacts --lib -- --nocapture`
+  - `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui --test discovery -- --nocapture`
+  - attempted `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui profile_sync::tests::syncs_contact_profile_and_tracks_display_name_updates --lib -- --ignored --nocapture`
+
+What doesn't work:
+- Task 42 still remains `passes: false`; the decisive ignored end-to-end test `syncs_contact_profile_and_tracks_display_name_updates` still times out waiting for the initial profile cache sync when the owner-side `ProfileSyncService` is already running before the follower joins
+- the new hardening does keep the narrower checks green again (`cargo check`, non-ignored `profile_sync` tests, `contacts` lib tests, and the `discovery` integration test), but it still does not close the full service-to-service late-join gap required to truthfully mark Task 42 as passing
+- because Task 42 was already `passes: false` in `PRD.jsonl`, I left that field unchanged and made no other PRD edits
