@@ -39,6 +39,14 @@ enum ContactsView {
     Discovery,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TopLevelView {
+    TransferList,
+    Contacts,
+    Settings,
+    Diagnostics,
+}
+
 #[derive(Debug, Resource)]
 pub struct UiState {
     pub global_paused: bool,
@@ -76,6 +84,9 @@ pub struct UiState {
     pending_share_removal: Option<u64>,
     confirm_clear_completed: bool,
     folder_dialog: Option<(PendingDialog, flume::Receiver<Option<PathBuf>>)>,
+    transfer_list_scroll_nonce: u64,
+    settings_scroll_nonce: u64,
+    diagnostics_scroll_nonce: u64,
 }
 
 impl Default for UiState {
@@ -122,6 +133,9 @@ impl UiState {
             pending_share_removal: None,
             confirm_clear_completed: false,
             folder_dialog: None,
+            transfer_list_scroll_nonce: 0,
+            settings_scroll_nonce: 0,
+            diagnostics_scroll_nonce: 0,
         }
     }
 
@@ -174,6 +188,44 @@ impl UiState {
     pub fn prune_download_progress(&mut self, transfer_id: u64) {
         self.download_progress_watermark
             .retain(|(tracked_transfer_id, _), _| *tracked_transfer_id != transfer_id);
+    }
+
+    fn top_level_view(&self) -> TopLevelView {
+        if self.show_contacts_view {
+            TopLevelView::Contacts
+        } else if self.show_settings_view {
+            TopLevelView::Settings
+        } else if self.show_diagnostics_view {
+            TopLevelView::Diagnostics
+        } else {
+            TopLevelView::TransferList
+        }
+    }
+
+    fn set_top_level_view(&mut self, view: TopLevelView) {
+        let previous = self.top_level_view();
+        self.show_contacts_view = matches!(view, TopLevelView::Contacts);
+        self.show_settings_view = matches!(view, TopLevelView::Settings);
+        self.show_diagnostics_view = matches!(view, TopLevelView::Diagnostics);
+
+        if previous != view {
+            self.bump_scroll_nonce(view);
+        }
+    }
+
+    fn bump_scroll_nonce(&mut self, view: TopLevelView) {
+        match view {
+            TopLevelView::TransferList => {
+                self.transfer_list_scroll_nonce = self.transfer_list_scroll_nonce.wrapping_add(1);
+            }
+            TopLevelView::Contacts => {}
+            TopLevelView::Settings => {
+                self.settings_scroll_nonce = self.settings_scroll_nonce.wrapping_add(1);
+            }
+            TopLevelView::Diagnostics => {
+                self.diagnostics_scroll_nonce = self.diagnostics_scroll_nonce.wrapping_add(1);
+            }
+        }
     }
 }
 
@@ -394,33 +446,36 @@ pub fn ui_system(params: UiSystemParams, mut drag_and_drop_events: EventReader<F
                             .selectable_label(ui_state.show_contacts_view, "Contacts")
                             .clicked()
                         {
-                            ui_state.show_contacts_view = !ui_state.show_contacts_view;
-                            if ui_state.show_contacts_view {
-                                ui_state.show_settings_view = false;
-                                ui_state.show_diagnostics_view = false;
-                            }
+                            let next_view = if ui_state.show_contacts_view {
+                                TopLevelView::TransferList
+                            } else {
+                                TopLevelView::Contacts
+                            };
+                            ui_state.set_top_level_view(next_view);
                         }
 
                         if ui
                             .selectable_label(ui_state.show_settings_view, "Settings")
                             .clicked()
                         {
-                            ui_state.show_settings_view = !ui_state.show_settings_view;
-                            if ui_state.show_settings_view {
-                                ui_state.show_contacts_view = false;
-                                ui_state.show_diagnostics_view = false;
-                            }
+                            let next_view = if ui_state.show_settings_view {
+                                TopLevelView::TransferList
+                            } else {
+                                TopLevelView::Settings
+                            };
+                            ui_state.set_top_level_view(next_view);
                         }
 
                         if ui
                             .selectable_label(ui_state.show_diagnostics_view, "Diagnostics")
                             .clicked()
                         {
-                            ui_state.show_diagnostics_view = !ui_state.show_diagnostics_view;
-                            if ui_state.show_diagnostics_view {
-                                ui_state.show_contacts_view = false;
-                                ui_state.show_settings_view = false;
-                            }
+                            let next_view = if ui_state.show_diagnostics_view {
+                                TopLevelView::TransferList
+                            } else {
+                                TopLevelView::Diagnostics
+                            };
+                            ui_state.set_top_level_view(next_view);
                         }
                     });
                 });
@@ -441,22 +496,30 @@ pub fn ui_system(params: UiSystemParams, mut drag_and_drop_events: EventReader<F
                     &bridge,
                 );
             } else if ui_state.show_settings_view {
-                render_settings_view(
-                    ui,
-                    &mut ui_state,
-                    &mut profile_store,
-                    &mut settings_store,
-                    &mut updater,
-                    &bridge,
-                    dialog_busy,
-                );
+                egui::ScrollArea::vertical()
+                    .id_salt(("settings-scroll", ui_state.settings_scroll_nonce))
+                    .show(ui, |ui| {
+                        render_settings_view(
+                            ui,
+                            &mut ui_state,
+                            &mut profile_store,
+                            &mut settings_store,
+                            &mut updater,
+                            &bridge,
+                            dialog_busy,
+                        );
+                    });
             } else if ui_state.show_diagnostics_view {
-                render_diagnostics_view(ui, &ui_state, &transfers);
+                egui::ScrollArea::vertical()
+                    .id_salt(("diagnostics-scroll", ui_state.diagnostics_scroll_nonce))
+                    .show(ui, |ui| {
+                        render_diagnostics_view(ui, &ui_state, &transfers);
+                    });
             } else {
                 render_transfer_list_header(ui, transfers.transfers().len());
                 ui.add_space(4.0);
                 egui::ScrollArea::vertical()
-                    .id_salt("transfer-list-scroll")
+                    .id_salt(("transfer-list-scroll", ui_state.transfer_list_scroll_nonce))
                     .show(ui, |ui| {
                         if transfers.transfers().is_empty() {
                             render_empty_state(ui);
@@ -2320,6 +2383,39 @@ mod tests {
         assert_eq!(format_bytes(1_024), "1.0 KB");
         assert_eq!(format_bytes(1_048_576), "1.0 MB");
         assert_eq!(format_bytes(1_073_741_824), "1.0 GB");
+    }
+
+    #[test]
+    fn switching_top_level_views_resets_scroll_state_for_scrollable_views() {
+        let mut ui_state = UiState::default();
+
+        ui_state.set_top_level_view(TopLevelView::Settings);
+        assert!(ui_state.show_settings_view);
+        assert_eq!(ui_state.settings_scroll_nonce, 1);
+
+        ui_state.set_top_level_view(TopLevelView::TransferList);
+        assert_eq!(ui_state.transfer_list_scroll_nonce, 1);
+
+        ui_state.set_top_level_view(TopLevelView::Diagnostics);
+        assert!(ui_state.show_diagnostics_view);
+        assert_eq!(ui_state.diagnostics_scroll_nonce, 1);
+
+        ui_state.set_top_level_view(TopLevelView::Settings);
+        assert_eq!(ui_state.settings_scroll_nonce, 2);
+    }
+
+    #[test]
+    fn setting_same_top_level_view_does_not_rotate_scroll_ids() {
+        let mut ui_state = UiState::default();
+
+        ui_state.set_top_level_view(TopLevelView::Settings);
+        let settings_scroll_nonce = ui_state.settings_scroll_nonce;
+        ui_state.set_top_level_view(TopLevelView::Settings);
+
+        assert_eq!(ui_state.settings_scroll_nonce, settings_scroll_nonce);
+        assert!(ui_state.show_settings_view);
+        assert!(!ui_state.show_diagnostics_view);
+        assert!(!ui_state.show_contacts_view);
     }
 
     #[test]

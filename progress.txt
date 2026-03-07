@@ -1536,3 +1536,19 @@ What doesn't work:
 
 What I learned:
 - `PRD.jsonl` is currently not valid JSON Lines for `jq -s` because Task 45 has a trailing comma in its `spec` object at line 1058; I did not repair that here because the run constraint only allowed changing a single task's `passes` field, so this should be recorded for a manual PRD cleanup later
+
+# Sat, 07 Mar 2026 10:33:42 GMT
+
+- picked Task 44 (`Add vertical scrolling to top-level views`) as the highest-priority unblocked remaining feature because Task 42 still has a follow-sync verification blocker and Task 45 is a larger architectural branch, while the top-level overflow is a direct user-visible regression
+- wrapped the settings and diagnostics top-level views in dedicated vertical `egui::ScrollArea`s and keyed their ids with per-view scroll nonces
+- refactored top-level navigation state in `UiState` so switching back to the transfer list, settings, or diagnostics rotates the corresponding scroll id and resets scroll position
+- added focused UI tests covering scroll-id reset behavior when switching views and no-op behavior when reselecting the same view
+- ran feedback loops:
+- `cargo fmt --package p2panda-file-sharing-gui`
+- `cargo test -p p2panda-file-sharing-gui ui --lib -- --nocapture`
+- `cargo check -p p2panda-file-sharing-gui --lib`
+- `cargo test -p p2panda-file-sharing-gui --lib -- --nocapture`
+- marked Task 44 `passes: true` in `PRD.jsonl` because the transfer list, settings view, and diagnostics view now have top-level scroll containers with resettable ids and the crate feedback loops passed in this run
+
+What I learned:
+- `PRD.jsonl` is still not valid JSON Lines for `jq -s` because Task 45 has a trailing comma in its `spec` object near line 1058; I did not repair that here because the run constraint only allowed changing a single task's `passes` field
