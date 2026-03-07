@@ -73,9 +73,8 @@ where
     /// Manually starts sync session with given node.
     ///
     /// If there's no transport information for this node this action will fail.
-    // TODO: Consider making this public, for this we would need to decide if we want to receive
-    // the sync session events and status directly as a stream from the return type?
-    #[cfg(test)]
+    /// Applications can use this to proactively kick off a sync attempt after seeding transport
+    /// information for a peer, instead of waiting for membership-driven initiation.
     pub fn initiate_session(&self, node_id: crate::NodeId) {
         self.manager_ref
             .send_message(ToSyncManager::InitiateSync(self.topic, node_id))

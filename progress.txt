@@ -1591,3 +1591,21 @@ What I learned:
 
 What I learned:
 - `PRD.jsonl` still is not strict JSON Lines for raw `jq -s` because Task 45's `spec` object retains the pre-existing trailing comma at line 1058; I left that structural issue untouched and changed only Task 45's `passes` field per run constraints
+
+# Sat, 07 Mar 2026 11:21:41 GMT
+
+- picked Task 46 (`Replace profile polling with LogSync-based replication`) as the highest-priority remaining actionable task because Task 41 is external fork validation, Task 42 is still blocked by the known end-to-end profile-sync race, and Task 46 is the next critical-path dependency for Tasks 47, 48, 49, and 54
+- tried the Task 46 integration in two directions:
+  - first by wiring `file-sharing/src/profile_sync.rs` to the Task 45 operation-domain logs
+  - then by pivoting to a narrower LogSync path over the existing signed profile-operation log to reduce moving parts
+- kept only the verified infrastructure change from this run: `p2panda-net/src/sync/handle.rs` now exposes `SyncHandle::initiate_session(...)` publicly so app code can explicitly trigger a sync attempt after seeding peer transport/topic info instead of waiting for membership-driven initiation
+- ran feedback loops on the kept change:
+  - `cargo fmt --package p2panda-net`
+  - `cargo check -p p2panda-net --lib`
+  - `cargo test -p p2panda-net sync --lib -- --nocapture`
+- left Task 46 `passes` as `false`; I did not change `PRD.jsonl` because the actual app/runtime acceptance for Task 46 still did not pass in this run
+
+What doesn't work:
+- the app-side `ProfileSyncService` migration to LogSync is still blocked: both attempted integrations timed out waiting for the follower-side cached profile state to materialize, even after explicitly initiating sync sessions from the app layer
+- because that end-to-end catch-up/live-update path is still not deterministic and not passing, I reverted the unsafe runtime changes instead of leaving the app in a regressed state, and kept only the verified `p2panda-net` API building block from this run
+- `PRD.jsonl` remains malformed for `jq -s` because Task 45 still has the pre-existing trailing comma in its `spec` object at line 1058; I left it untouched again because there was no truthful `passes` transition to apply
