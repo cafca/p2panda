@@ -1624,3 +1624,22 @@ What doesn't work:
 - the app-side `ProfileSyncService` migration to LogSync is still blocked: both attempted integrations timed out waiting for the follower-side cached profile state to materialize, even after explicitly initiating sync sessions from the app layer
 - because that end-to-end catch-up/live-update path is still not deterministic and not passing, I reverted the unsafe runtime changes instead of leaving the app in a regressed state, and kept only the verified `p2panda-net` API building block from this run
 - `PRD.jsonl` remains malformed for `jq -s` because Task 45 still has the pre-existing trailing comma in its `spec` object at line 1058; I left it untouched again because there was no truthful `passes` transition to apply
+
+# Sat, 07 Mar 2026 11:57:41 GMT
+
+- picked Task 53 (`Expose provider-level download progress and fallback diagnostics`) as the highest-priority actionable feature because Task 41 is externally blocked on fork validation, Tasks 42 and 46 are still blocked by nondeterministic profile-sync acceptance, and Task 53 directly improves download troubleshooting on top of the already-passing transfer and diagnostics path
+- extended `file-sharing/src/download.rs` to process provider-level `DownloadProgressItem` variants for file blob downloads, emitting provider-attempt, provider-failure, and provider-complete updates while preserving existing byte-level progress events
+- added bridge/plugin/UI plumbing so provider updates become `NetworkEvent`s, are stored as bounded diagnostics history, and render in the Diagnostics view with actionable peer context via copyable provider IDs plus target labels
+- added focused verification for the new path:
+- `download::tests::provider_progress_items_emit_diagnostics_and_keep_file_progress`
+- `plugin::tests::all_network_event_variants_are_handled`
+- `ui::tests::provider_history_keeps_latest_entries`
+- `diagnostics::tests::download_provider_history_is_bounded`
+- ran feedback loops:
+- `cargo fmt --package p2panda-file-sharing-gui`
+- `cargo check -p p2panda-file-sharing-gui --lib`
+- `cargo test -p p2panda-file-sharing-gui --lib -- --nocapture`
+- marked Task 53 `passes: true` in `PRD.jsonl` because this run verified provider-attempt/failure handling, diagnostics visibility with peer context, intact byte-level download progress, and graceful handling of non-byte progress variants without crashes
+
+What I learned:
+- `PRD.jsonl` is still malformed for raw `jq -s` because Task 45 retains the pre-existing trailing comma in its `spec` object; I left that structural issue untouched and changed only Task 53's `passes` field per run constraints

@@ -22,8 +22,8 @@ use tracing::warn;
 
 use crate::diagnostics::{
     now_unix_ms, ConnectionHistoryEntry, DiagnosticErrorEntry, DiagnosticsSnapshot,
-    GossipTopicSnapshot, NodeIdentitySnapshot, PeerConnectionState, PeerDiscoveryMethod,
-    PeerSnapshot, CONNECTION_HISTORY_LIMIT, ERROR_LOG_LIMIT,
+    DownloadProviderStatus, GossipTopicSnapshot, NodeIdentitySnapshot, PeerConnectionState,
+    PeerDiscoveryMethod, PeerSnapshot, CONNECTION_HISTORY_LIMIT, ERROR_LOG_LIMIT,
 };
 use crate::download::{download_share_with_progress, DownloadEvent};
 use crate::node::{AppNode, NodeOptions};
@@ -122,6 +122,12 @@ pub enum NetworkEvent {
         transfer_id: u64,
         file_index: usize,
         bytes_downloaded: u64,
+    },
+    DownloadProviderUpdate {
+        transfer_id: u64,
+        provider_id: String,
+        target: String,
+        status: DownloadProviderStatus,
     },
     FileCompleted {
         transfer_id: u64,
@@ -990,6 +996,16 @@ fn emit_download_event(event_tx: &Sender<NetworkEvent>, transfer_id: u64, event:
             transfer_id,
             file_index,
             bytes_downloaded,
+        },
+        DownloadEvent::ProviderUpdate {
+            provider_id,
+            target,
+            status,
+        } => NetworkEvent::DownloadProviderUpdate {
+            transfer_id,
+            provider_id,
+            target,
+            status,
         },
         DownloadEvent::FileCompleted { file_index } => NetworkEvent::FileCompleted {
             transfer_id,

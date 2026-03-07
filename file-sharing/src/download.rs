@@ -11,6 +11,7 @@ use p2panda_core::PublicKey;
 use p2panda_net::addrs::NodeInfo;
 use p2panda_net::iroh_endpoint::{from_public_key, EndpointAddr};
 
+use crate::diagnostics::DownloadProviderStatus;
 use crate::manifest::verify_manifest;
 use crate::node::AppNode;
 use crate::share_code::{decode_share_code, ShareCode};
@@ -27,6 +28,11 @@ pub enum DownloadEvent {
         total_bytes: u64,
         file_count: usize,
         collection_hash: String,
+    },
+    ProviderUpdate {
+        provider_id: String,
+        target: String,
+        status: DownloadProviderStatus,
     },
     FileDownloadProgress {
         file_index: usize,
@@ -317,6 +323,28 @@ async fn download_blob_with_progress_from_providers(
     ))
 }
 
+#[derive(Debug, Clone, Copy)]
+enum DownloadProgressTarget<'a> {
+    File {
+        file_index: usize,
+        relative_path: &'a str,
+    },
+}
+
+impl DownloadProgressTarget<'_> {
+    fn file_index(self) -> Option<usize> {
+        match self {
+            Self::File { file_index, .. } => Some(file_index),
+        }
+    }
+
+    fn label(self) -> String {
+        match self {
+            Self::File { relative_path, .. } => format!("file {relative_path}"),
+        }
+    }
+}
+
 async fn retry_download<T, F, Fut>(label: &str, mut operation: F) -> Result<T>
 where
     F: FnMut() -> Fut,
@@ -342,6 +370,137 @@ where
         .with_context(|| format!("exhausted retries for {label}"))
 }
 
+async fn retry_download_progress<F, Fut, Emit>(
+    label: &str,
+    target: DownloadProgressTarget<'_>,
+    mut operation: F,
+    on_event: &mut Emit,
+) -> Result<()>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<DownloadProgress>>,
+    Emit: FnMut(DownloadEvent),
+{
+    let mut last_err = None;
+
+    for attempt in 1..=DOWNLOAD_ATTEMPTS {
+        match operation().await {
+            Ok(progress) => match drive_download_progress(progress, target, on_event).await {
+                Ok(()) => return Ok(()),
+                Err(err) if attempt < DOWNLOAD_ATTEMPTS => {
+                    last_err = Some(err);
+                    tokio::time::sleep(DOWNLOAD_RETRY_DELAY).await;
+                }
+                Err(err) => {
+                    last_err = Some(err);
+                    break;
+                }
+            },
+            Err(err) if attempt < DOWNLOAD_ATTEMPTS => {
+                last_err = Some(err);
+                tokio::time::sleep(DOWNLOAD_RETRY_DELAY).await;
+            }
+            Err(err) => {
+                last_err = Some(err);
+                break;
+            }
+        }
+    }
+
+    Err(last_err.unwrap_or_else(|| anyhow!("download failed for {label}")))
+        .with_context(|| format!("exhausted retries for {label}"))
+}
+
+async fn drive_download_progress<F>(
+    progress: DownloadProgress,
+    target: DownloadProgressTarget<'_>,
+    on_event: &mut F,
+) -> Result<()>
+where
+    F: FnMut(DownloadEvent),
+{
+    let target_label = target.label();
+    let mut active_provider_id = None::<String>;
+    let mut progress_stream = progress
+        .stream()
+        .await
+        .with_context(|| format!("failed to open progress stream for {target_label}"))?;
+
+    while let Some(item) = progress_stream.next().await {
+        handle_download_progress_item(
+            item,
+            target,
+            &target_label,
+            &mut active_provider_id,
+            on_event,
+        )?;
+    }
+
+    Ok(())
+}
+
+fn handle_download_progress_item<F>(
+    item: DownloadProgressItem,
+    target: DownloadProgressTarget<'_>,
+    target_label: &str,
+    active_provider_id: &mut Option<String>,
+    on_event: &mut F,
+) -> Result<()>
+where
+    F: FnMut(DownloadEvent),
+{
+    #[allow(unreachable_patterns)]
+    match item {
+        DownloadProgressItem::Progress(bytes_downloaded) => {
+            if let Some(file_index) = target.file_index() {
+                on_event(DownloadEvent::FileDownloadProgress {
+                    file_index,
+                    bytes_downloaded,
+                });
+            }
+        }
+        DownloadProgressItem::TryProvider { id, .. } => {
+            let provider_id = id.to_string();
+            *active_provider_id = Some(provider_id.clone());
+            on_event(DownloadEvent::ProviderUpdate {
+                provider_id,
+                target: target_label.to_owned(),
+                status: DownloadProviderStatus::Trying,
+            });
+        }
+        DownloadProgressItem::ProviderFailed { id, .. } => {
+            let provider_id = id.to_string();
+            if active_provider_id.as_deref() == Some(provider_id.as_str()) {
+                *active_provider_id = None;
+            }
+            on_event(DownloadEvent::ProviderUpdate {
+                provider_id,
+                target: target_label.to_owned(),
+                status: DownloadProviderStatus::Failed,
+            });
+        }
+        DownloadProgressItem::PartComplete { .. } => {
+            if let Some(provider_id) = active_provider_id.clone() {
+                on_event(DownloadEvent::ProviderUpdate {
+                    provider_id,
+                    target: target_label.to_owned(),
+                    status: DownloadProviderStatus::Completed,
+                });
+            }
+        }
+        DownloadProgressItem::Error(err) => {
+            return Err(anyhow!(err))
+                .with_context(|| format!("blob download failed for {target_label}"));
+        }
+        DownloadProgressItem::DownloadError => {
+            bail!("blob download failed for {target_label}");
+        }
+        _ => {}
+    }
+
+    Ok(())
+}
+
 async fn download_one_file<F>(
     node: &AppNode,
     file_index: usize,
@@ -360,9 +519,15 @@ where
     let skipped_download = present_now && previously_completed;
 
     if !present_now {
-        let progress = retry_download("file blob", || {
-            download_blob_with_progress_from_providers(node, file_hash, providers)
-        })
+        retry_download_progress(
+            "file blob",
+            DownloadProgressTarget::File {
+                file_index,
+                relative_path: &manifest_file.relative_path,
+            },
+            || download_blob_with_progress_from_providers(node, file_hash, providers),
+            on_event,
+        )
         .await
         .with_context(|| {
             format!(
@@ -370,32 +535,6 @@ where
                 manifest_file.relative_path
             )
         })?;
-        let mut progress_stream = progress
-            .stream()
-            .await
-            .context("failed to open blob download progress stream")?;
-
-        while let Some(item) = progress_stream.next().await {
-            match item {
-                DownloadProgressItem::Progress(bytes_downloaded) => {
-                    on_event(DownloadEvent::FileDownloadProgress {
-                        file_index,
-                        bytes_downloaded,
-                    });
-                }
-                DownloadProgressItem::Error(err) => {
-                    return Err(anyhow!(err)).with_context(|| {
-                        format!("blob download failed for {}", manifest_file.relative_path)
-                    });
-                }
-                DownloadProgressItem::DownloadError => {
-                    bail!("blob download failed for {}", manifest_file.relative_path);
-                }
-                DownloadProgressItem::TryProvider { .. }
-                | DownloadProgressItem::ProviderFailed { .. }
-                | DownloadProgressItem::PartComplete { .. } => {}
-            }
-        }
     } else if !skipped_download {
         on_event(DownloadEvent::FileDownloadProgress {
             file_index,
@@ -520,8 +659,12 @@ fn sanitize_relative_path(path: &str) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::sync::Arc;
 
     use anyhow::Result;
+    use iroh_blobs::protocol::GetRequest;
+    use p2panda_core::PrivateKey;
+    use p2panda_net::iroh_endpoint::from_public_key;
     use tempfile::tempdir;
 
     use super::*;
@@ -694,5 +837,107 @@ mod tests {
             sanitize_relative_path("nested/file.txt").unwrap(),
             PathBuf::from("nested/file.txt")
         );
+    }
+
+    #[test]
+    fn provider_progress_items_emit_diagnostics_and_keep_file_progress() -> Result<()> {
+        let provider_a = from_public_key(PrivateKey::new().public_key());
+        let provider_b = from_public_key(PrivateKey::new().public_key());
+        let request = Arc::new(GetRequest::blob(BlobHash::from_bytes([7; 32])));
+        let target = DownloadProgressTarget::File {
+            file_index: 2,
+            relative_path: "nested/photo.jpg",
+        };
+        let target_label = target.label();
+        let mut active_provider_id = None;
+        let mut events = Vec::new();
+
+        handle_download_progress_item(
+            DownloadProgressItem::TryProvider {
+                id: provider_a,
+                request: request.clone(),
+            },
+            target,
+            &target_label,
+            &mut active_provider_id,
+            &mut |event| events.push(event),
+        )?;
+        handle_download_progress_item(
+            DownloadProgressItem::Progress(64),
+            target,
+            &target_label,
+            &mut active_provider_id,
+            &mut |event| events.push(event),
+        )?;
+        handle_download_progress_item(
+            DownloadProgressItem::ProviderFailed {
+                id: provider_a,
+                request: request.clone(),
+            },
+            target,
+            &target_label,
+            &mut active_provider_id,
+            &mut |event| events.push(event),
+        )?;
+        handle_download_progress_item(
+            DownloadProgressItem::TryProvider {
+                id: provider_b,
+                request: request.clone(),
+            },
+            target,
+            &target_label,
+            &mut active_provider_id,
+            &mut |event| events.push(event),
+        )?;
+        handle_download_progress_item(
+            DownloadProgressItem::Progress(128),
+            target,
+            &target_label,
+            &mut active_provider_id,
+            &mut |event| events.push(event),
+        )?;
+        handle_download_progress_item(
+            DownloadProgressItem::PartComplete { request },
+            target,
+            &target_label,
+            &mut active_provider_id,
+            &mut |event| events.push(event),
+        )?;
+
+        assert_eq!(
+            events,
+            vec![
+                DownloadEvent::ProviderUpdate {
+                    provider_id: provider_a.to_string(),
+                    target: "file nested/photo.jpg".into(),
+                    status: DownloadProviderStatus::Trying,
+                },
+                DownloadEvent::FileDownloadProgress {
+                    file_index: 2,
+                    bytes_downloaded: 64,
+                },
+                DownloadEvent::ProviderUpdate {
+                    provider_id: provider_a.to_string(),
+                    target: "file nested/photo.jpg".into(),
+                    status: DownloadProviderStatus::Failed,
+                },
+                DownloadEvent::ProviderUpdate {
+                    provider_id: provider_b.to_string(),
+                    target: "file nested/photo.jpg".into(),
+                    status: DownloadProviderStatus::Trying,
+                },
+                DownloadEvent::FileDownloadProgress {
+                    file_index: 2,
+                    bytes_downloaded: 128,
+                },
+                DownloadEvent::ProviderUpdate {
+                    provider_id: provider_b.to_string(),
+                    target: "file nested/photo.jpg".into(),
+                    status: DownloadProviderStatus::Completed,
+                },
+            ]
+        );
+
+        Ok(())
     }
 }

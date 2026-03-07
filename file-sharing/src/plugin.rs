@@ -299,6 +299,15 @@ fn apply_network_event(
             }
             false
         }
+        NetworkEvent::DownloadProviderUpdate {
+            transfer_id,
+            provider_id,
+            target,
+            status,
+        } => {
+            ui_state.record_download_provider_event(transfer_id, provider_id, target, status);
+            false
+        }
         NetworkEvent::FileCompleted {
             transfer_id,
             file_index,
@@ -415,6 +424,7 @@ mod tests {
 
     use super::*;
     use crate::bridge::{NetworkCommand, NetworkEvent};
+    use crate::diagnostics::DownloadProviderStatus;
     use crate::settings::{AppSettings, RelayMode};
     use crate::state::{Direction, FileVerification, Transfer};
 
@@ -591,6 +601,14 @@ mod tests {
                     })
                     .await?;
                 events
+                    .send_async(NetworkEvent::DownloadProviderUpdate {
+                        transfer_id,
+                        provider_id: "peer-alpha".into(),
+                        target: "file file-0".into(),
+                        status: DownloadProviderStatus::Trying,
+                    })
+                    .await?;
+                events
                     .send_async(NetworkEvent::FileCompleted {
                         transfer_id,
                         file_index: 0,
@@ -642,6 +660,7 @@ mod tests {
 
         let world = app.world();
         let transfer = world.resource::<TransferRegistry>().get(99).unwrap();
+        let ui_state = world.resource::<UiState>();
         assert_eq!(transfer.share_code.as_deref(), Some("p2p-CODE"));
         assert_eq!(
             transfer.collection_hash.as_deref(),
@@ -656,6 +675,11 @@ mod tests {
         assert_eq!(transfer.downloaded_bytes, 5);
         assert!(transfer.outbound_bytes_per_sec.is_finite());
         assert!(transfer.outbound_bytes_per_sec >= 0.0);
+        assert_eq!(ui_state.download_provider_history.len(), 1);
+        assert_eq!(
+            ui_state.download_provider_history[0].provider_id,
+            "peer-alpha"
+        );
     }
 
     #[test]

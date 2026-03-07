@@ -1224,7 +1224,7 @@
     "Existing byte-level progress reporting remains intact",
     "Unrecognized progress variants do not crash download handling"
   ],
-  "passes": false
+  "passes": true
 }
 {
   "id": 54,

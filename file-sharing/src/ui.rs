@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::Hash;
 use std::path::PathBuf;
 
@@ -10,7 +10,9 @@ use bevy_egui::{egui, EguiContexts};
 use crate::bridge::{AsyncBridge, ContactDownloadSource, NetworkCommand};
 use crate::contacts::{ContactsStore, DiscoveredProfile, DiscoverySort};
 use crate::diagnostics::{
-    now_unix_ms, DiagnosticsSnapshot, PeerConnectionState, PeerDiscoveryMethod,
+    now_unix_ms, push_bounded_download_provider_history, DiagnosticsSnapshot,
+    DownloadProviderDiagnosticEntry, DownloadProviderStatus, PeerConnectionState,
+    PeerDiscoveryMethod, DOWNLOAD_PROVIDER_HISTORY_LIMIT,
 };
 use crate::profile::ProfileStore;
 use crate::settings::{RelayMode, SettingsStore};
@@ -78,6 +80,7 @@ pub struct UiState {
     pub diagnostics_snapshot: DiagnosticsSnapshot,
     pub diagnostics_total_bytes_received: u64,
     pub diagnostics_total_bytes_sent: u64,
+    pub download_provider_history: VecDeque<DownloadProviderDiagnosticEntry>,
     next_contact_refresh_unix_secs: u64,
     upload_byte_counted_transfers: HashSet<u64>,
     download_progress_watermark: HashMap<(u64, usize), u64>,
@@ -127,6 +130,7 @@ impl UiState {
             diagnostics_snapshot: DiagnosticsSnapshot::default(),
             diagnostics_total_bytes_received: 0,
             diagnostics_total_bytes_sent: 0,
+            download_provider_history: VecDeque::with_capacity(DOWNLOAD_PROVIDER_HISTORY_LIMIT),
             next_contact_refresh_unix_secs: 0,
             upload_byte_counted_transfers: HashSet::new(),
             download_progress_watermark: HashMap::new(),
@@ -188,6 +192,25 @@ impl UiState {
     pub fn prune_download_progress(&mut self, transfer_id: u64) {
         self.download_progress_watermark
             .retain(|(tracked_transfer_id, _), _| *tracked_transfer_id != transfer_id);
+    }
+
+    pub fn record_download_provider_event(
+        &mut self,
+        transfer_id: u64,
+        provider_id: String,
+        target: String,
+        status: DownloadProviderStatus,
+    ) {
+        push_bounded_download_provider_history(
+            &mut self.download_provider_history,
+            DownloadProviderDiagnosticEntry {
+                at_unix_ms: now_unix_ms(),
+                transfer_id,
+                provider_id,
+                target,
+                status,
+            },
+        );
     }
 
     fn top_level_view(&self) -> TopLevelView {
@@ -1629,6 +1652,39 @@ fn render_diagnostics_view(ui: &mut egui::Ui, ui_state: &UiState, transfers: &Tr
     }
 
     ui.separator();
+    ui.heading("Download providers");
+    if ui_state.download_provider_history.is_empty() {
+        ui.label("No recent provider attempts or fallbacks");
+    } else {
+        egui::ScrollArea::vertical()
+            .id_salt("diagnostics-download-providers")
+            .max_height(140.0)
+            .show(ui, |ui| {
+                for entry in ui_state.download_provider_history.iter().rev() {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.monospace(format!(
+                            "[{}] transfer #{} {}",
+                            format_ago(entry.at_unix_ms),
+                            entry.transfer_id,
+                            download_provider_status_label(entry.status)
+                        ));
+                        copyable_id_pill(
+                            ui,
+                            (
+                                "diagnostics-download-provider-id",
+                                entry.transfer_id,
+                                entry.at_unix_ms,
+                                &entry.provider_id,
+                            ),
+                            &entry.provider_id,
+                        );
+                        ui.small(format!("for {}", entry.target));
+                    });
+                }
+            });
+    }
+
+    ui.separator();
     ui.heading("Gossip state");
     if snapshot.gossip_topics.is_empty() {
         ui.label("No active gossip topics");
@@ -1656,6 +1712,14 @@ fn format_ago(at_unix_ms: u64) -> String {
         format!("{seconds}s ago")
     } else {
         format!("{}m ago", seconds / 60)
+    }
+}
+
+fn download_provider_status_label(status: DownloadProviderStatus) -> &'static str {
+    match status {
+        DownloadProviderStatus::Trying => "trying",
+        DownloadProviderStatus::Failed => "fallback after failure",
+        DownloadProviderStatus::Completed => "completed via",
     }
 }
 
@@ -2459,6 +2523,38 @@ mod tests {
     fn copyable_id_truncation_keeps_first_eight_chars() {
         assert_eq!(truncate_copyable_id("12345678"), "12345678");
         assert_eq!(truncate_copyable_id("1234567890abcdef"), "12345678...");
+    }
+
+    #[test]
+    fn provider_history_keeps_latest_entries() {
+        let mut state = UiState::default();
+        for transfer_id in 0..(DOWNLOAD_PROVIDER_HISTORY_LIMIT as u64 + 3) {
+            state.record_download_provider_event(
+                transfer_id,
+                format!("provider-{transfer_id}"),
+                "file example.txt".into(),
+                DownloadProviderStatus::Trying,
+            );
+        }
+
+        assert_eq!(
+            state.download_provider_history.len(),
+            DOWNLOAD_PROVIDER_HISTORY_LIMIT
+        );
+        assert_eq!(
+            state
+                .download_provider_history
+                .front()
+                .map(|entry| entry.transfer_id),
+            Some(3)
+        );
+        assert_eq!(
+            state
+                .download_provider_history
+                .back()
+                .map(|entry| entry.transfer_id),
+            Some(DOWNLOAD_PROVIDER_HISTORY_LIMIT as u64 + 2)
+        );
     }
 
     #[test]
