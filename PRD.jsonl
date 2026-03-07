@@ -1025,7 +1025,7 @@
     "Clicking copies the full ID and shows a green outline that fades back",
     "The component is used in at least: profile view, contacts list, and diagnostics"
   ],
-  "passes": false
+  "passes": true
 }
 {
   "id": 44,

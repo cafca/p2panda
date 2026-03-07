@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::hash::Hash;
 use std::path::PathBuf;
 
 use bevy::ecs::system::SystemParam;
@@ -722,7 +723,11 @@ fn render_followed_contacts_view(
                         remove_profile_id = Some(contact.profile_id.clone());
                     }
                 });
-                ui.small(truncate_hash(&contact.profile_id));
+                copyable_id_pill(
+                    ui,
+                    ("followed-contact-list-profile-id", &contact.profile_id),
+                    &contact.profile_id,
+                );
                 if let Some(display_name) = contact.display_name() {
                     ui.small(format!("Name: {display_name}"));
                 }
@@ -738,14 +743,18 @@ fn render_followed_contacts_view(
             if let Some(contact) = contacts_store.get(profile_id) {
                 columns[1].horizontal(|ui| {
                     ui.heading(contact.label());
-                    if ui.button("Copy ID").clicked() {
-                        copy_text(ui.ctx(), &contact.profile_id);
-                    }
                     if ui.button("Refresh").clicked() {
                         refresh_profile_id = Some(contact.profile_id.clone());
                     }
                 });
-                columns[1].monospace(&contact.profile_id);
+                columns[1].horizontal_wrapped(|ui| {
+                    ui.label("Profile ID");
+                    copyable_id_pill(
+                        ui,
+                        ("followed-contact-detail-profile-id", &contact.profile_id),
+                        &contact.profile_id,
+                    );
+                });
                 if let Some(display_name) = contact.display_name() {
                     columns[1].label(format!("Display name: {display_name}"));
                 }
@@ -766,10 +775,15 @@ fn render_followed_contacts_view(
                         columns[1].group(|ui| {
                             ui.label(&share.share_name);
                             ui.horizontal_wrapped(|ui| {
-                                ui.monospace(&share.share_code);
-                                if ui.button("Copy").clicked() {
-                                    copy_text(ui.ctx(), &share.share_code);
-                                }
+                                copyable_id_pill(
+                                    ui,
+                                    (
+                                        "followed-contact-share-code",
+                                        &contact.profile_id,
+                                        &share.share_code,
+                                    ),
+                                    &share.share_code,
+                                );
                                 if ui.button("Download").clicked() {
                                     download_request = Some((
                                         share.share_code.clone(),
@@ -893,7 +907,11 @@ fn render_discovery_view(
                 if ui.selectable_label(selected, profile.label()).clicked() {
                     ui_state.selected_discovered_profile_id = Some(profile.profile_id.clone());
                 }
-                ui.small(truncate_hash(&profile.profile_id));
+                copyable_id_pill(
+                    ui,
+                    ("discovered-profile-list-profile-id", &profile.profile_id),
+                    &profile.profile_id,
+                );
                 ui.small(format!("Seen via {} contact(s)", profile.mutual_count));
                 if profile.already_followed {
                     ui.small("Already followed");
@@ -916,14 +934,18 @@ fn render_discovery_view(
             {
                 columns[1].horizontal(|ui| {
                     ui.heading(profile.label());
-                    if ui.button("Copy ID").clicked() {
-                        copy_text(ui.ctx(), &profile.profile_id);
-                    }
                     if !profile.already_followed && ui.button("Follow").clicked() {
                         follow_request = Some(profile.profile_id.clone());
                     }
                 });
-                columns[1].monospace(&profile.profile_id);
+                columns[1].horizontal_wrapped(|ui| {
+                    ui.label("Profile ID");
+                    copyable_id_pill(
+                        ui,
+                        ("discovered-profile-detail-profile-id", &profile.profile_id),
+                        &profile.profile_id,
+                    );
+                });
                 if let Some(display_name) = profile.display_name() {
                     columns[1].label(format!("Display name: {display_name}"));
                 }
@@ -985,10 +1007,15 @@ fn render_discovered_profile_shares(
         ui.group(|ui| {
             ui.label(&share.share_name);
             ui.horizontal_wrapped(|ui| {
-                ui.monospace(&share.share_code);
-                if ui.button("Copy").clicked() {
-                    copy_text(ui.ctx(), &share.share_code);
-                }
+                copyable_id_pill(
+                    ui,
+                    (
+                        "discovered-profile-share-code",
+                        &profile.profile_id,
+                        &share.share_code,
+                    ),
+                    &share.share_code,
+                );
                 if ui.button("Download").clicked() {
                     *download_request = Some((
                         share.share_code.clone(),
@@ -1115,12 +1142,13 @@ fn render_settings_view(
 ) {
     ui.heading("Settings");
     ui.label("Profile");
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.label("Profile ID");
-        ui.monospace(&profile_store.profile().profile_id);
-        if ui.button("Copy ID").clicked() {
-            copy_text(ui.ctx(), &profile_store.profile().profile_id);
-        }
+        copyable_id_pill(
+            ui,
+            "settings-profile-id",
+            &profile_store.profile().profile_id,
+        );
     });
     ui.horizontal(|ui| {
         ui.label("Display name");
@@ -1386,7 +1414,14 @@ fn render_diagnostics_view(ui: &mut egui::Ui, ui_state: &UiState, transfers: &Tr
 
     let snapshot = &ui_state.diagnostics_snapshot;
     ui.heading("Node identity");
-    ui.monospace(format!("Node ID: {}", snapshot.node_identity.node_id));
+    ui.horizontal_wrapped(|ui| {
+        ui.label("Node ID");
+        copyable_id_pill(
+            ui,
+            "diagnostics-local-node-id",
+            &snapshot.node_identity.node_id,
+        );
+    });
     ui.label(format!(
         "Relay URL: {}",
         snapshot
@@ -1420,7 +1455,11 @@ fn render_diagnostics_view(ui: &mut egui::Ui, ui_state: &UiState, transfers: &Tr
                 ui.strong("RTT");
                 ui.end_row();
                 for peer in &snapshot.peers {
-                    ui.monospace(truncate_hash(&peer.node_id));
+                    copyable_id_pill(
+                        ui,
+                        ("diagnostics-peer-node-id", &peer.node_id),
+                        &peer.node_id,
+                    );
                     ui.label(match peer.state {
                         PeerConnectionState::Connected => "connected",
                         PeerConnectionState::Known => "known",
@@ -1532,12 +1571,14 @@ fn render_diagnostics_view(ui: &mut egui::Ui, ui_state: &UiState, transfers: &Tr
         ui.label("No active gossip topics");
     } else {
         for topic in &snapshot.gossip_topics {
-            ui.monospace(format!(
-                "{} peers={} topic={}",
-                truncate_hash(&topic.topic_id),
-                topic.peer_count,
-                topic.topic_id
-            ));
+            ui.horizontal_wrapped(|ui| {
+                copyable_id_pill(
+                    ui,
+                    ("diagnostics-gossip-topic-id", &topic.topic_id),
+                    &topic.topic_id,
+                );
+                ui.small(format!("{} peers", topic.peer_count));
+            });
         }
     }
 }
@@ -1680,15 +1721,9 @@ fn render_transfer_row(
 
             if matches!(transfer.direction, Direction::Upload) {
                 if let Some(code) = &transfer.share_code {
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         ui.label("Share code:");
-                        let mut share_code_text = code.clone();
-                        ui.add(
-                            egui::TextEdit::singleline(&mut share_code_text).desired_width(280.0),
-                        );
-                        if ui.button("Copy").clicked() {
-                            copy_text(ui.ctx(), code);
-                        }
+                        copyable_id_pill(ui, ("transfer-share-code", transfer.id), code);
                     });
                 }
             }
@@ -1759,6 +1794,111 @@ fn truncate_hash(hash: &str) -> String {
         return hash.to_owned();
     }
     format!("{}...{}", &hash[..PREFIX], &hash[hash.len() - SUFFIX..])
+}
+
+fn truncate_copyable_id(value: &str) -> String {
+    const VISIBLE_CHARS: usize = 8;
+
+    let mut truncated = String::new();
+    for ch in value.chars().take(VISIBLE_CHARS) {
+        truncated.push(ch);
+    }
+
+    if value.chars().count() > VISIBLE_CHARS {
+        truncated.push_str("...");
+    }
+
+    truncated
+}
+
+fn blend_color(base: egui::Color32, highlight: egui::Color32, weight: f32) -> egui::Color32 {
+    let weight = weight.clamp(0.0, 1.0);
+    let mix = |from: u8, to: u8| -> u8 {
+        ((from as f32 * (1.0 - weight)) + (to as f32 * weight)).round() as u8
+    };
+
+    egui::Color32::from_rgba_premultiplied(
+        mix(base.r(), highlight.r()),
+        mix(base.g(), highlight.g()),
+        mix(base.b(), highlight.b()),
+        mix(base.a(), highlight.a()),
+    )
+}
+
+fn copyable_id_pill(ui: &mut egui::Ui, id_source: impl Hash, full_id: &str) -> egui::Response {
+    const COPY_BUTTON_WIDTH: f32 = 42.0;
+    const COPY_FLASH_SECS: f64 = 2.0;
+
+    let widget_id = ui.make_persistent_id(("copyable-id-pill", id_source));
+    let hover_id = widget_id.with("hover");
+    let copied_at_id = widget_id.with("copied-at");
+    let now = ui.ctx().input(|input| input.time);
+    let copied_at = ui
+        .ctx()
+        .data(|data| data.get_temp::<f64>(copied_at_id))
+        .unwrap_or(f64::NEG_INFINITY);
+    let flash = ((COPY_FLASH_SECS - (now - copied_at)).max(0.0) / COPY_FLASH_SECS) as f32;
+    let was_hovered = ui
+        .ctx()
+        .data(|data| data.get_temp::<bool>(hover_id))
+        .unwrap_or(false);
+    let show_copy = was_hovered || flash > 0.0;
+    let outline_color = blend_color(
+        egui::Color32::from_rgb(76, 88, 103),
+        egui::Color32::from_rgb(107, 206, 168),
+        flash,
+    );
+
+    if flash > 0.0 {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(16));
+    }
+
+    let frame = egui::Frame::new()
+        .fill(egui::Color32::from_rgb(24, 29, 36))
+        .stroke(egui::Stroke::new(1.0 + flash, outline_color))
+        .corner_radius(egui::CornerRadius::same(16))
+        .inner_margin(egui::Margin::symmetric(10, 6))
+        .show(ui, |ui| {
+            ui.scope(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(truncate_copyable_id(full_id))
+                            .monospace()
+                            .color(egui::Color32::from_rgb(226, 232, 240)),
+                    );
+                    if show_copy {
+                        let response = ui.add_sized(
+                            [COPY_BUTTON_WIDTH, 20.0],
+                            egui::Button::new(
+                                egui::RichText::new("Copy")
+                                    .size(11.0)
+                                    .color(egui::Color32::from_rgb(154, 201, 242)),
+                            )
+                            .frame(false),
+                        );
+                        if response.clicked() {
+                            copy_text(ui.ctx(), full_id);
+                            ui.ctx()
+                                .data_mut(|data| data.insert_temp(copied_at_id, now));
+                        }
+                        response
+                    } else {
+                        ui.add_space(COPY_BUTTON_WIDTH);
+                        ui.label("")
+                    }
+                })
+                .response
+            })
+            .inner
+        });
+
+    let hovered = frame.response.hovered() || frame.inner.hovered();
+    ui.ctx()
+        .data_mut(|data| data.insert_temp(hover_id, hovered));
+
+    frame.response.on_hover_text(full_id)
 }
 
 fn status_label(transfer: &Transfer, globally_paused: bool) -> &'static str {
@@ -2217,6 +2357,12 @@ mod tests {
     fn hash_truncation_keeps_prefix_and_suffix() {
         let hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
         assert_eq!(truncate_hash(hash), "0123456789...6789abcdef");
+    }
+
+    #[test]
+    fn copyable_id_truncation_keeps_first_eight_chars() {
+        assert_eq!(truncate_copyable_id("12345678"), "12345678");
+        assert_eq!(truncate_copyable_id("1234567890abcdef"), "12345678...");
     }
 
     #[test]

@@ -1520,3 +1520,19 @@ What doesn't work:
 - Task 42 still remains `passes: false`; the decisive ignored end-to-end test `syncs_contact_profile_and_tracks_display_name_updates` still times out waiting for the initial profile cache sync when the owner-side `ProfileSyncService` is already running before the follower joins
 - the new hardening does keep the narrower checks green again (`cargo check`, non-ignored `profile_sync` tests, `contacts` lib tests, and the `discovery` integration test), but it still does not close the full service-to-service late-join gap required to truthfully mark Task 42 as passing
 - because Task 42 was already `passes: false` in `PRD.jsonl`, I left that field unchanged and made no other PRD edits
+
+# Sat, 07 Mar 2026 10:20:30 GMT
+
+- picked Task 43 (`Reusable copyable ID component`) as the highest-priority actionable feature for this run because Task 41 is external/fork-blocked, Task 42 is still stuck behind the known end-to-end profile-sync race, and Task 43 unblocks the remaining top-level UI cleanup work
+- added a reusable `copyable_id_pill(...)` in `file-sharing/src/ui.rs` with 8-character truncation, hover-revealed copy action, and a green outline flash that fades back over roughly 2 seconds after copy
+- replaced the old ad-hoc copy UI with the pill across the required surfaces: profile/settings view, followed contacts list and detail, discovery list and detail, published share codes, upload share codes, diagnostics node ID, diagnostics peer node IDs, and diagnostics gossip topic IDs
+- added a focused UI helper test covering the 8-character truncation behavior
+- ran feedback loops:
+- `cargo fmt --package p2panda-file-sharing-gui`
+- `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-file-sharing-gui --lib`
+- `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui ui --lib -- --nocapture`
+- `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui --lib -- --nocapture`
+- marked Task 43 `passes: true` in `PRD.jsonl` because the reusable component is implemented, integrated in the required views, and the crate/type/test feedback loops passed in this run
+
+What I learned:
+- `PRD.jsonl` is currently not valid JSON Lines for `jq -s` because Task 45 has a trailing comma in its `spec` object at line 1058; I did not repair that here because the run constraint only allowed changing a single task's `passes` field, so this should be recorded for a manual PRD cleanup later
