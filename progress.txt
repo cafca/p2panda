@@ -39,6 +39,20 @@ What doesn't work:
 What doesn't work:
 - `cargo check -p p2panda-file-sharing-gui` could not complete in this environment because fetching the new crates.io dependencies for Bevy/bevy_egui repeatedly timed out while updating the crates index
 
+# Sat, 07 Mar 2026 10:42:26 GMT
+
+- picked Task 50 (`Add manifest header extensions and hybrid timestamps`) as the highest-priority unblocked feature because it strengthens the signed manifest format that later sharing and sync work builds on, without depending on the unfinished operation-store refactor chain
+- added typed manifest header extensions in `file-sharing/src/manifest.rs` so lightweight manifest metadata (`manifest_version`, name, file count, total size) is available directly from the signed header
+- replaced manifest signing's plain wall-clock timestamp generation with `p2panda_net::timestamp::HybridTimestamp`, and tied the core header timestamp to that ordering metadata
+- tightened manifest verification so it rejects malformed/semantically inconsistent extension data in addition to the existing signature/body validation
+- added manifest unit coverage for typed header metadata inspection, malformed extension payload rejection, and metadata/body mismatch rejection
+- ran `cargo fmt --package p2panda-file-sharing-gui`
+- ran `CARGO_BUILD_JOBS=1 cargo test -p p2panda-file-sharing-gui --lib manifest -- --nocapture`
+- ran `CARGO_BUILD_JOBS=1 cargo check -p p2panda-file-sharing-gui --lib`
+
+What doesn't work:
+- `PRD.jsonl` is currently not valid JSON Lines for `jq -s` because task 45 has a trailing comma in its `spec` object before the closing brace; I left that untouched and only used a read-only workaround to inspect tasks
+
 # 2026-03-04 16:49
 
 - checked the actual `codex-p2panda` docker sandbox instead of the desktop host to see whether `.cargo/config.toml` applies there

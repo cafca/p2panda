@@ -1162,7 +1162,7 @@
     "New manifests use HybridTimestamp-based ordering metadata",
     "Validation rejects malformed extension payloads"
   ],
-  "passes": false
+  "passes": true
 }
 {
   "id": 51,
