@@ -1007,7 +1007,7 @@
     "Once synced, the contact's self-chosen display name is displayed and kept up to date",
     "If the profile owner changes their display name, the follower sees the update after the next sync"
   ],
-  "passes": false
+  "passes": true
 }
 {
   "id": 43,

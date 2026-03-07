@@ -1678,3 +1678,17 @@ What I learned:
 
 What I learned:
 - `PRD.jsonl` is still malformed for raw `jq -s` because Tasks 45, 47, and 48 have pre-existing trailing commas in their `spec` objects; I left those structural issues untouched and changed only Task 52's `passes` field per run constraints
+
+# Sat, 07 Mar 2026 12:17:29 GMT
+
+- picked Task 42 (`Remove nickname from follow flow — display name owned by profile`) as the highest-priority actionable unfinished task because Task 41 is externally blocked on fork/PR validation, Tasks 47/48/49 are larger follow-on refactors, and Task 42 was already implemented enough to verify end-to-end honestly in one focused run
+- verified the existing implementation against the acceptance criteria instead of changing behavior: the contacts UI only asks for a profile ID, `Contact` and `ContactFollowRecord` no longer carry nickname fields, labels fall back to the first 8 chars of the profile ID until sync completes, and following a contact triggers `RefreshLocalProfileSync` plus `SyncContactProfile`
+- confirmed the network sync path writes fetched contact profile state into `contact-record-cache/{profile_id}.json` and updates the displayed contact name after catch-up and live LogSync updates
+- ran feedback loops:
+- `cargo check -p p2panda-file-sharing-gui --lib`
+- `cargo test -p p2panda-file-sharing-gui contacts --lib -- --nocapture`
+- `cargo test -p p2panda-file-sharing-gui profile_sync --lib -- --nocapture`
+- marked Task 42 `passes: true` in `PRD.jsonl` because this run verified the nickname-free follow UI/model, placeholder label behavior before sync, fetched profile records on follow, and display-name updates after subsequent remote changes
+
+What I learned:
+- `PRD.jsonl` is still malformed for raw `jq -s` because Tasks 45, 47, and 48 retain pre-existing trailing commas in their `spec` objects; I left those structural issues untouched and changed only Task 42's `passes` field per run constraints
