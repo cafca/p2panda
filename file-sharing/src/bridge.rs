@@ -17,6 +17,7 @@ use p2panda_net::addrs::{NodeTransportInfo, TransportAddress};
 use p2panda_net::discovery::{DiscoveryEvent, SessionRole};
 use p2panda_net::gossip::GossipEvent;
 use p2panda_net::iroh_endpoint::from_public_key;
+use p2panda_net::supervisor::SupervisorEvent;
 use tracing::warn;
 
 use crate::diagnostics::{
@@ -371,6 +372,7 @@ struct RuntimeInner {
 struct RuntimeDiagnostics {
     discovery_events: tokio::sync::broadcast::Receiver<DiscoveryEvent>,
     gossip_events: tokio::sync::broadcast::Receiver<GossipEvent>,
+    supervisor_events: tokio::sync::broadcast::Receiver<SupervisorEvent>,
     peer_last_seen_unix_ms: HashMap<String, u64>,
     topic_peers: HashMap<String, HashSet<String>>,
     connection_history: VecDeque<ConnectionHistoryEntry>,
@@ -388,6 +390,7 @@ impl RuntimeState {
         let node = AppNode::with_data_dir(data_dir, node_options).await?;
         let discovery_events = node.discovery.events().await?;
         let gossip_events = node.gossip.events().await?;
+        let supervisor_events = node.supervisor_events().await?;
         let mut store = StateStore::load(&node.data_dir)?;
         let mut profile_store = ProfileStore::load_or_create(&node.data_dir)?;
         let profile_id = profile_store.profile().profile_id.clone();
@@ -410,6 +413,7 @@ impl RuntimeState {
                 diagnostics: RuntimeDiagnostics {
                     discovery_events,
                     gossip_events,
+                    supervisor_events,
                     peer_last_seen_unix_ms: HashMap::new(),
                     topic_peers: HashMap::new(),
                     connection_history: VecDeque::with_capacity(CONNECTION_HISTORY_LIMIT),
@@ -1220,6 +1224,7 @@ async fn collect_diagnostics_snapshot(state: &RuntimeState) -> Result<Diagnostic
         error_log,
     ) = {
         let mut runtime = state.inner.lock().await;
+        drain_supervisor_events(&mut runtime.diagnostics);
         drain_discovery_events(&mut runtime.diagnostics);
         drain_gossip_events(&mut runtime.diagnostics);
 
@@ -1461,6 +1466,54 @@ fn drain_discovery_events(diagnostics: &mut RuntimeDiagnostics) {
                 push_bounded_error(
                     &mut diagnostics.error_log,
                     format!("diagnostics dropped {skipped} discovery events"),
+                );
+            }
+        }
+    }
+}
+
+fn drain_supervisor_events(diagnostics: &mut RuntimeDiagnostics) {
+    loop {
+        match diagnostics.supervisor_events.try_recv() {
+            Ok(event) => {
+                let at_unix_ms = now_unix_ms();
+                match event {
+                    SupervisorEvent::ChildStarted { .. }
+                    | SupervisorEvent::ChildTerminated { .. } => {}
+                    SupervisorEvent::ChildFailed { label, error, .. } => {
+                        let message = format!("{label} actor failed: {error}");
+                        push_bounded_history(
+                            &mut diagnostics.connection_history,
+                            ConnectionHistoryEntry {
+                                at_unix_ms,
+                                peer_node_id: None,
+                                event: "network-failed".into(),
+                                detail: message.clone(),
+                                establish_ms: None,
+                            },
+                        );
+                        push_bounded_error(&mut diagnostics.error_log, message);
+                    }
+                    SupervisorEvent::ChildRestarted { label, restarts } => {
+                        push_bounded_history(
+                            &mut diagnostics.connection_history,
+                            ConnectionHistoryEntry {
+                                at_unix_ms,
+                                peer_node_id: None,
+                                event: "network-restarted".into(),
+                                detail: format!("{label} actor restarted (attempt #{restarts})"),
+                                establish_ms: None,
+                            },
+                        );
+                    }
+                }
+            }
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
+            Err(tokio::sync::broadcast::error::TryRecvError::Closed) => break,
+            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(skipped)) => {
+                push_bounded_error(
+                    &mut diagnostics.error_log,
+                    format!("diagnostics dropped {skipped} supervisor events"),
                 );
             }
         }
@@ -1797,7 +1850,7 @@ fn split_share_hashes(
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use anyhow::{Context, Result};
     use tempfile::tempdir;
@@ -2325,5 +2378,44 @@ mod tests {
             .is_empty());
 
         Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn diagnostics_capture_supervisor_failures_and_restarts() -> Result<()> {
+        let data_dir = tempdir()?;
+        let state = RuntimeState::new(
+            data_dir.path().to_path_buf(),
+            NodeOptions {
+                mdns_enabled: false,
+                ..Default::default()
+            },
+        )
+        .await?;
+
+        state.node.discovery.crash_for_test().await?;
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            let snapshot = collect_diagnostics_snapshot(&state).await?;
+            let saw_failure = snapshot.connection_history.iter().any(|entry| {
+                entry.event == "network-failed" && entry.detail.contains("Discovery actor failed")
+            });
+            let saw_restart = snapshot.connection_history.iter().any(|entry| {
+                entry.event == "network-restarted"
+                    && entry.detail.contains("Discovery actor restarted")
+            });
+            let saw_error = snapshot
+                .error_log
+                .iter()
+                .any(|entry| entry.message.contains("Discovery actor failed"));
+
+            if saw_failure && saw_restart && saw_error {
+                return Ok(());
+            }
+
+            sleep(Duration::from_millis(25)).await;
+        }
+
+        panic!("timed out waiting for supervisor diagnostics after discovery crash");
     }
 }

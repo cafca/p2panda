@@ -12,6 +12,10 @@ pub trait ChildActor
 where
     Self: Send + 'static,
 {
+    fn label(&self) -> &'static str {
+        std::any::type_name_of_val(self)
+    }
+
     fn on_start(
         &self,
         supervisor: ActorCell,

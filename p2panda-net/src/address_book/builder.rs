@@ -38,13 +38,12 @@ impl Builder {
             let store = p2panda_discovery::address_book::memory::MemoryStore::new(rng);
             Box::new(store)
         });
-
         let (actor_ref, _) = {
             let thread_pool = ThreadLocalActorSpawner::new();
-            let args = (store,);
+            let args = (store.clone_box(),);
             AddressBookActor::spawn(None, args, thread_pool).await?
         };
 
-        Ok(AddressBook::new(Some(actor_ref)))
+        Ok(AddressBook::new(Some(actor_ref), None))
     }
 }

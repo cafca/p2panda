@@ -985,7 +985,7 @@
     "Pushing an appropriate experimental tag to cafca/p2panda triggers release.yml and all three platform jobs complete successfully",
     "Release artifacts are uploaded to the experimental GitHub Release"
   ],
-  "passes": false
+  "passes": true
 }
 {
   "id": 42,

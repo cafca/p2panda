@@ -9,7 +9,9 @@ use p2panda_core::identity::PRIVATE_KEY_LEN;
 use p2panda_core::PrivateKey;
 use p2panda_net::iroh_endpoint::RelayUrl;
 use p2panda_net::iroh_mdns::MdnsDiscoveryMode;
-use p2panda_net::{AddressBook, Discovery, Endpoint, Gossip, MdnsDiscovery, TopicId};
+use p2panda_net::supervisor::SupervisorEvent;
+use p2panda_net::{AddressBook, Discovery, Endpoint, Gossip, MdnsDiscovery, Supervisor, TopicId};
+use tokio::sync::broadcast;
 
 const APP_NAME: &str = "p2panda-file-sharing";
 const NODE_KEY_FILE: &str = "node.key";
@@ -42,6 +44,7 @@ pub struct AppNode {
     pub data_dir: PathBuf,
     _fs_store: FsStore,
     _mdns: Option<MdnsDiscovery>,
+    _supervisor: Supervisor,
 }
 
 impl AppNode {
@@ -60,7 +63,8 @@ impl AppNode {
         })?;
 
         let private_key = load_or_create_private_key(&data_dir)?;
-        let address_book = AddressBook::builder().spawn().await?;
+        let supervisor = Supervisor::builder().spawn().await?;
+        let address_book = AddressBook::builder().spawn_linked(&supervisor).await?;
 
         let mut endpoint_builder = Endpoint::builder(address_book.clone()).private_key(private_key);
 
@@ -72,13 +76,13 @@ impl AppNode {
             endpoint_builder = endpoint_builder.insecure_skip_relay_cert_verify(true);
         }
 
-        let endpoint = endpoint_builder.spawn().await?;
+        let endpoint = endpoint_builder.spawn_linked(&supervisor).await?;
 
         let mdns = if opts.mdns_enabled {
             Some(
                 MdnsDiscovery::builder(address_book.clone(), endpoint.clone())
                     .mode(MdnsDiscoveryMode::Active)
-                    .spawn()
+                    .spawn_linked(&supervisor)
                     .await?,
             )
         } else {
@@ -86,11 +90,11 @@ impl AppNode {
         };
 
         let discovery = Discovery::builder(address_book.clone(), endpoint.clone())
-            .spawn()
+            .spawn_linked(&supervisor)
             .await?;
 
         let gossip = Gossip::builder(address_book.clone(), endpoint.clone())
-            .spawn()
+            .spawn_linked(&supervisor)
             .await?;
 
         let blobs_dir = data_dir.join(BLOBS_DIR);
@@ -112,6 +116,7 @@ impl AppNode {
             data_dir,
             _fs_store: fs_store,
             _mdns: mdns,
+            _supervisor: supervisor,
         })
     }
 
@@ -121,6 +126,10 @@ impl AppNode {
 
     pub async fn join_topic(&self, topic: TopicId) -> Result<p2panda_net::gossip::GossipHandle> {
         Ok(self.gossip.stream(topic).await?)
+    }
+
+    pub async fn supervisor_events(&self) -> Result<broadcast::Receiver<SupervisorEvent>> {
+        Ok(self._supervisor.events().await?)
     }
 }
 
@@ -172,7 +181,7 @@ mod tests {
 
     use p2panda_core::Hash;
     use tempfile::tempdir;
-    use tokio::time::{timeout, Duration};
+    use tokio::time::{sleep, timeout, Duration, Instant};
 
     #[tokio::test]
     async fn reuses_private_key_for_same_data_dir() -> Result<()> {
@@ -229,6 +238,105 @@ mod tests {
         .await?;
 
         assert!(node._mdns.is_none());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn supervised_discovery_restarts_after_failure() -> Result<()> {
+        let temp_dir = tempdir()?;
+        let node = AppNode::with_data_dir(
+            temp_dir.path(),
+            NodeOptions {
+                mdns_enabled: false,
+                ..Default::default()
+            },
+        )
+        .await?;
+        let mut events = node.supervisor_events().await?;
+
+        node.discovery.crash_for_test().await?;
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut saw_failure = false;
+        let mut saw_restart = false;
+        while Instant::now() < deadline && (!saw_failure || !saw_restart) {
+            match timeout(Duration::from_millis(250), events.recv()).await {
+                Ok(Ok(SupervisorEvent::ChildFailed { label, .. })) if label == "Discovery" => {
+                    saw_failure = true;
+                }
+                Ok(Ok(SupervisorEvent::ChildRestarted { label, .. })) if label == "Discovery" => {
+                    saw_restart = true;
+                }
+                Ok(Ok(_)) => {}
+                Ok(Err(_)) => break,
+                Err(_) => {}
+            }
+        }
+
+        assert!(saw_failure, "expected Discovery failure event");
+        assert!(saw_restart, "expected Discovery restart event");
+
+        timeout(Duration::from_secs(5), async {
+            loop {
+                if node.discovery.metrics().await.is_ok() {
+                    return;
+                }
+                sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .context("discovery actor did not recover after supervised restart")?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn supervised_gossip_restarts_after_failure() -> Result<()> {
+        let temp_dir = tempdir()?;
+        let node = AppNode::with_data_dir(
+            temp_dir.path(),
+            NodeOptions {
+                mdns_enabled: false,
+                ..Default::default()
+            },
+        )
+        .await?;
+        let mut events = node.supervisor_events().await?;
+
+        node.gossip.crash_for_test().await?;
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut saw_failure = false;
+        let mut saw_restart = false;
+        while Instant::now() < deadline && (!saw_failure || !saw_restart) {
+            match timeout(Duration::from_millis(250), events.recv()).await {
+                Ok(Ok(SupervisorEvent::ChildFailed { label, .. })) if label == "Gossip" => {
+                    saw_failure = true;
+                }
+                Ok(Ok(SupervisorEvent::ChildRestarted { label, .. })) if label == "Gossip" => {
+                    saw_restart = true;
+                }
+                Ok(Ok(_)) => {}
+                Ok(Err(_)) => break,
+                Err(_) => {}
+            }
+        }
+
+        assert!(saw_failure, "expected Gossip failure event");
+        assert!(saw_restart, "expected Gossip restart event");
+
+        let topic: TopicId = Hash::new(b"supervised-gossip-recovery").into();
+        timeout(Duration::from_secs(5), async {
+            loop {
+                if node.join_topic(topic).await.is_ok() {
+                    return;
+                }
+                sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .context("gossip actor did not recover after supervised restart")?;
 
         Ok(())
     }

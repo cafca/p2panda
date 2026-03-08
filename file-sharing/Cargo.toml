@@ -11,7 +11,7 @@ path = "src/main.rs"
 # p2panda
 p2panda-blobs = { path = "../p2panda-blobs", features = ["fs-store"] }
 p2panda-core = { path = "../p2panda-core" }
-p2panda-net = { path = "../p2panda-net" }
+p2panda-net = { path = "../p2panda-net", features = ["supervisor"] }
 p2panda-store = { path = "../p2panda-store", features = ["sqlite"] }
 p2panda-stream = { path = "../p2panda-stream" }
 p2panda-sync = { path = "../p2panda-sync" }

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use p2panda_discovery::address_book::{BoxedAddressBookStore, BoxedError};
 use ractor::{ActorRef, call, cast};
 use thiserror::Error;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
 use crate::address_book::Builder;
 use crate::address_book::actor::ToAddressBookActor;
@@ -62,6 +62,7 @@ use crate::{NodeId, TopicId};
 ///    random-walk strategy, exploring the network.
 #[derive(Clone)]
 pub struct AddressBook {
+    pub(super) bootstrap_store: Arc<Mutex<Option<BoxedAddressBookStore<NodeId, NodeInfo>>>>,
     pub(super) inner: Arc<RwLock<Inner>>,
 }
 
@@ -70,8 +71,12 @@ pub(super) struct Inner {
 }
 
 impl AddressBook {
-    pub(crate) fn new(actor_ref: Option<ActorRef<ToAddressBookActor>>) -> Self {
+    pub(crate) fn new(
+        actor_ref: Option<ActorRef<ToAddressBookActor>>,
+        bootstrap_store: Option<BoxedAddressBookStore<NodeId, NodeInfo>>,
+    ) -> Self {
         Self {
+            bootstrap_store: Arc::new(Mutex::new(bootstrap_store)),
             inner: Arc::new(RwLock::new(Inner { actor_ref })),
         }
     }
@@ -276,12 +281,21 @@ impl AddressBook {
         &self,
     ) -> Result<BoxedAddressBookStore<NodeId, NodeInfo>, AddressBookError> {
         let inner = self.inner.read().await;
-        let result = call!(
-            inner.actor_ref.as_ref().expect("actor spawned in builder"),
-            ToAddressBookActor::Store
-        )
-        .map_err(Box::new)?;
-        Ok(result)
+        if let Some(actor_ref) = inner.actor_ref.as_ref() {
+            let result = call!(actor_ref, ToAddressBookActor::Store).map_err(Box::new)?;
+            return Ok(result);
+        }
+        drop(inner);
+
+        let bootstrap_store = self.bootstrap_store.lock().await;
+        bootstrap_store
+            .as_ref()
+            .map(|store| store.clone_box())
+            .ok_or_else(|| {
+                AddressBookError::Store(Box::new(std::io::Error::other(
+                    "address book store unavailable before actor startup",
+                )))
+            })
     }
 }
 

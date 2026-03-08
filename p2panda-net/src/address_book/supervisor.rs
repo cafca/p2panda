@@ -2,6 +2,7 @@
 
 use ractor::thread_local::{ThreadLocalActor, ThreadLocalActorSpawner};
 use ractor::{ActorCell, SpawnErr};
+use rand::SeedableRng;
 
 use crate::address_book::actor::AddressBookActor;
 use crate::address_book::{AddressBook, AddressBookError, Builder};
@@ -12,13 +13,22 @@ impl Builder {
         self,
         supervisor: &Supervisor,
     ) -> Result<AddressBook, AddressBookError> {
-        let address_book = AddressBook::new(None);
+        let store = self.store.unwrap_or_else(|| {
+            let rng = rand_chacha::ChaCha20Rng::from_os_rng();
+            let store = p2panda_discovery::address_book::memory::MemoryStore::new(rng);
+            Box::new(store)
+        });
+        let address_book = AddressBook::new(None, Some(store));
         supervisor.start_child_actor(address_book.clone()).await?;
         Ok(address_book)
     }
 }
 
 impl ChildActor for AddressBook {
+    fn label(&self) -> &'static str {
+        "AddressBook"
+    }
+
     fn on_start(
         &self,
         supervisor: ActorCell,

@@ -66,6 +66,17 @@ impl Discovery {
         .map_err(Box::new)?;
         Ok(result)
     }
+
+    #[cfg(any(test, feature = "test_utils"))]
+    pub async fn crash_for_test(&self) -> Result<(), DiscoveryError> {
+        let inner = self.inner.read().await;
+        ractor::cast!(
+            inner.actor_ref.as_ref().expect("actor spawned in builder"),
+            ToDiscoveryManager::PanicForTest
+        )
+        .map_err(Box::new)?;
+        Ok(())
+    }
 }
 
 impl Drop for Inner {

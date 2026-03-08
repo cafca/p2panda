@@ -74,6 +74,9 @@ pub enum ToGossipManager {
 
     /// Subscribe to system events.
     Events(RpcReplyPort<broadcast::Receiver<GossipEvent>>),
+
+    #[cfg(any(test, feature = "test_utils"))]
+    PanicForTest,
 }
 
 /// Mapping of topic to the associated sender channels for getting messages into and out of the
@@ -100,6 +103,8 @@ pub struct GossipManagerState {
     events_tx: broadcast::Sender<GossipEvent>,
 }
 
+pub type GossipManagerArgs = (GossipConfig, AddressBook, Endpoint);
+
 impl GossipManagerState {
     fn drop_topic_state(&mut self, actor_id: &ActorId, topic: &TopicId) {
         self.sessions.sessions_by_actor_id.remove(actor_id);
@@ -118,7 +123,7 @@ impl ThreadLocalActor for GossipManager {
 
     type Msg = ToGossipManager;
 
-    type Arguments = (GossipConfig, AddressBook, Endpoint);
+    type Arguments = GossipManagerArgs;
 
     async fn pre_start(
         &self,
@@ -378,6 +383,10 @@ impl ThreadLocalActor for GossipManager {
             }
             ToGossipManager::Events(reply) => {
                 let _ = reply.send(state.events_tx.subscribe());
+            }
+            #[cfg(any(test, feature = "test_utils"))]
+            ToGossipManager::PanicForTest => {
+                panic!("gossip manager crash requested by test");
             }
         }
 
