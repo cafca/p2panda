@@ -1126,11 +1126,10 @@ fn follow_contact_from_ui(
     profile_id: String,
     bridge: &AsyncBridge,
 ) -> anyhow::Result<()> {
-    contacts_store.follow_contact(profile_id.clone())?;
-    if let Err(err) = profile_store.follow_contact(profile_id.clone()) {
-        let _ = contacts_store.remove_contact(&profile_id);
-        return Err(err);
+    if !profile_store.follow_contact(profile_id.clone())? {
+        anyhow::bail!("contact is already followed");
     }
+    reconcile_contacts_projection_from_profile(contacts_store, profile_store)?;
     let _ = bridge.send(NetworkCommand::RefreshLocalProfileSync);
     let _ = bridge.send(NetworkCommand::SyncContactProfile {
         profile_id: profile_id.clone(),
@@ -1144,11 +1143,21 @@ fn remove_contact_from_ui(
     profile_id: &str,
     bridge: &AsyncBridge,
 ) -> anyhow::Result<()> {
-    if !contacts_store.remove_contact(profile_id)? {
+    if !profile_store.unfollow_contact(profile_id.to_owned())? {
         anyhow::bail!("unknown contact {profile_id}");
     }
-    profile_store.unfollow_contact(profile_id.to_owned())?;
+    reconcile_contacts_projection_from_profile(contacts_store, profile_store)?;
     let _ = bridge.send(NetworkCommand::RefreshLocalProfileSync);
+    Ok(())
+}
+
+fn reconcile_contacts_projection_from_profile(
+    contacts_store: &mut ContactsStore,
+    profile_store: &ProfileStore,
+) -> anyhow::Result<()> {
+    let records = profile_store.records()?;
+    contacts_store
+        .reconcile_followed_contacts_from_records(&profile_store.profile().profile_id, &records)?;
     Ok(())
 }
 
@@ -2738,6 +2747,46 @@ mod tests {
             .any(|record| {
                 record.followed_profile_id == discovered_profile_id && record.active
             }));
+
+        Ok(())
+    }
+
+    #[test]
+    fn remove_contact_action_rebuilds_contacts_from_profile_graph() -> Result<()> {
+        let data_dir = tempdir()?;
+        let local_key = PrivateKey::new();
+        let contact_key = PrivateKey::new();
+        write_node_key(data_dir.path(), &local_key)?;
+
+        let mut contacts = ContactsStore::load(data_dir.path())?;
+        let mut profile_store = ProfileStore::load_or_create(data_dir.path())?;
+        let contact_profile_id = contact_key.public_key().to_string();
+
+        profile_store.follow_contact(contact_profile_id.clone())?;
+        reconcile_contacts_projection_from_profile(&mut contacts, &profile_store)?;
+        assert!(contacts.get(&contact_profile_id).is_some());
+
+        let bridge = spawn_test_bridge(move |_, command, _| {
+            Box::pin(async move {
+                match command {
+                    NetworkCommand::RefreshLocalProfileSync => Ok(()),
+                    other => panic!("unexpected command: {other:?}"),
+                }
+            })
+        });
+
+        remove_contact_from_ui(
+            &mut contacts,
+            &mut profile_store,
+            &contact_profile_id,
+            &bridge,
+        )?;
+
+        assert!(contacts.get(&contact_profile_id).is_none());
+        assert!(profile_store
+            .contact_follow_records()?
+            .iter()
+            .any(|record| { record.followed_profile_id == contact_profile_id && !record.active }));
 
         Ok(())
     }

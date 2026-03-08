@@ -221,6 +221,21 @@ impl ContactsStore {
         Ok(changed)
     }
 
+    pub fn reconcile_followed_contacts_from_records(
+        &mut self,
+        profile_id: &str,
+        records: &[ProfileRecord],
+    ) -> Result<bool> {
+        let follows = active_follow_records_for_profile(profile_id, records)
+            .into_iter()
+            .map(|record| ReducedContactFollowState {
+                followed_profile_id: record.followed_profile_id,
+                recorded_at: record.recorded_at,
+            })
+            .collect::<Vec<_>>();
+        self.reconcile_followed_contacts(&follows)
+    }
+
     pub fn refresh_contact(&mut self, profile_id: &str) -> Result<()> {
         let now = now_unix_secs();
         let cache_path = self.cache_path(profile_id);
@@ -917,6 +932,38 @@ mod tests {
                 .map(|contact| contact.followed_at),
             Some(30)
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn reconcile_followed_contacts_from_records_rebuilds_projection() -> Result<()> {
+        let dir = tempdir()?;
+        let local_key = PrivateKey::new();
+        write_node_key(dir.path(), &local_key)?;
+
+        let mut profile = ProfileStore::load_or_create(dir.path())?;
+        let local_profile_id = profile.profile().profile_id.clone();
+        let kept_contact_id = PrivateKey::new().public_key().to_string();
+        let removed_contact_id = PrivateKey::new().public_key().to_string();
+
+        profile.follow_contact(kept_contact_id.clone())?;
+        profile.follow_contact(removed_contact_id.clone())?;
+        profile.unfollow_contact(removed_contact_id.clone())?;
+
+        let records = profile.records()?;
+        let mut contacts = ContactsStore::load(dir.path())?;
+        contacts.follow_contact(removed_contact_id.clone())?;
+
+        assert!(contacts.reconcile_followed_contacts_from_records(&local_profile_id, &records)?);
+
+        let reloaded = ContactsStore::load(dir.path())?;
+        let profile_ids = reloaded
+            .contacts()
+            .iter()
+            .map(|contact| contact.profile_id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(profile_ids, vec![kept_contact_id.as_str()]);
 
         Ok(())
     }

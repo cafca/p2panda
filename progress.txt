@@ -67,3 +67,18 @@ Added workflow permissions for GH PAT so Task 41 can continue.
 - `cargo test -p p2panda-file-sharing-gui bridge::tests::diagnostics_capture_supervisor_failures_and_restarts --lib -- --nocapture`
 - `cargo test -p p2panda-net supervisor::tests --features supervisor,test_utils --lib -- --nocapture`
 - marked Task 51 `passes: true` in `PRD.jsonl` because this run confirmed supervised discovery and gossip actor restarts, diagnostics emission for failure/restart events, and deterministic supervisor recovery coverage in `p2panda-net`
+
+# Sun, 08 Mar 2026 18:21:32 GMT
+
+- picked Task 48 (`Model contact graph as operations with cross-device sync`) as the highest-priority remaining feature because Task 54 depends on it and the current follow/remove UI still treated `contacts.json` as something to mutate directly instead of a projection from append-only follow operations
+- changed the follow/unfollow UI path so it appends the `ProfileRecord::ContactFollow` operation first, then rebuilds `contacts.json` from profile-record history via a new `ContactsStore::reconcile_followed_contacts_from_records` helper; this removes the old direct-source-of-truth behavior and fixes the inconsistent unfollow case where local contacts could change before the operation append succeeded
+- added focused regression coverage for rebuilding the contacts projection from profile records and for the UI remove-contact path using the new projection-first flow
+- feedback loops passed in this run:
+- `./scripts/verify-in-sandbox.sh -- cargo fmt --package p2panda-file-sharing-gui`
+- `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-file-sharing-gui --lib`
+- `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui contacts::tests::reconcile_followed_contacts_from_records_rebuilds_projection --lib -- --nocapture`
+- `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui ui::tests::discovery_follow_action_updates_local_contacts_and_profile_graph --lib -- --nocapture`
+- `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui ui::tests::remove_contact_action_rebuilds_contacts_from_profile_graph --lib -- --nocapture`
+- `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui profile_sync::tests::refresh_local_profile_rebuilds_contacts_from_follow_operation_history --lib -- --nocapture`
+- `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui --lib -- --nocapture`
+- left Task 48 `passes: false` in `PRD.jsonl` because the cross-device convergence acceptance criterion is still blocked by the current sync/bootstrap model treating `profile_id` as a directly dialable `PublicKey`; that still prevents a real multi-author profile identity for the same user across devices
