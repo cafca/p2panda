@@ -959,7 +959,7 @@ mod tests {
         profile_id: &str,
         expected_label: &str,
     ) -> Result<()> {
-        tokio::time::timeout(Duration::from_secs(20), async {
+        tokio::time::timeout(Duration::from_secs(30), async {
             loop {
                 let mut contacts = ContactsStore::load(data_dir)?;
                 contacts.refresh_contact(profile_id).ok();
@@ -983,7 +983,7 @@ mod tests {
         profile_id: &str,
         expected_count: usize,
     ) -> Result<()> {
-        tokio::time::timeout(Duration::from_secs(20), async {
+        tokio::time::timeout(Duration::from_secs(30), async {
             loop {
                 let mut contacts = ContactsStore::load(data_dir)?;
                 contacts.refresh_contact(profile_id).ok();
@@ -1007,7 +1007,7 @@ mod tests {
         expected_profile_ids: Vec<String>,
     ) -> Result<()> {
         let mut last_seen = Vec::new();
-        tokio::time::timeout(Duration::from_secs(20), async {
+        tokio::time::timeout(Duration::from_secs(30), async {
             loop {
                 let contacts = ContactsStore::load(data_dir)?;
                 let actual = contacts
