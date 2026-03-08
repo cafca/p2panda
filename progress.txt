@@ -94,3 +94,21 @@ Added workflow permissions for GH PAT so Task 41 can continue.
 - `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui profile_sync::tests --lib -- --nocapture`
 - `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui persist::tests --lib -- --nocapture`
 - marked Task 54 `passes: true` in `PRD.jsonl` because this run verified that the current direct dependency set matches actual app imports, the refactor-introduced sync-model crates remain explicitly declared, build/test checks still pass, and the kept dependency rationale is now documented to avoid future drift
+
+# Sun, 08 Mar 2026 18:50:34 GMT
+
+- picked Task 48 (`Model contact graph as operations with cross-device sync`) as the highest-priority remaining feature because it was the only unfinished PRD item and was blocking final completion of the operation-first sync model
+- completed the missing multi-device contact-sync slice by:
+- preserving/adopting an explicit shared `profile_id` in `ProfileStore` instead of forcing it back to the local node key, plus adding `set_profile_id` so multiple devices can intentionally participate in the same profile log
+- making local profile record appends author-aware (`seq_num`/`backlink` per local author) so synced same-profile operations can coexist safely without corrupting future local appends
+- subscribing to the local profile LogSync topic, persisting remote same-profile domain operations into a dedicated `local-profile-sync-cache.json`, and rebuilding `contacts.json` from combined operation history instead of treating the JSON projection as the source of truth
+- registering same-profile topic peers as candidate profile authors before initiating LogSync sessions so two devices on the same shared profile can exchange follow/unfollow operations over the network
+- increasing profile/domain operation timestamps to millisecond resolution so sequential cross-device follow/unfollow updates reduce deterministically instead of falling back to stale author ordering within the same second
+- feedback loops passed in this run:
+- `cargo check -p p2panda-file-sharing-gui --lib`
+- `cargo test -p p2panda-file-sharing-gui profile::tests::shared_profile_id_can_be_adopted_and_persisted --lib -- --nocapture`
+- `cargo test -p p2panda-file-sharing-gui profile::tests::follow_records_roundtrip_and_track_latest_active_state --lib -- --nocapture`
+- `cargo test -p p2panda-file-sharing-gui profile_sync::tests::refresh_local_profile_rebuilds_contacts_from_follow_operation_history --lib -- --nocapture`
+- `cargo test -p p2panda-file-sharing-gui profile_sync::tests::same_profile_devices_converge_contact_graph_via_log_sync --lib -- --nocapture`
+- `cargo test -p p2panda-file-sharing-gui --lib -- --nocapture`
+- marked Task 48 `passes: true` in `PRD.jsonl` because this run verified append-only follow/unfollow records, same-profile two-device convergence over LogSync, and contact projection rebuild from operation history

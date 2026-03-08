@@ -20,6 +20,7 @@ use crate::profile::{load_profile_records_from_path, profile_records_path, Profi
 
 const OPERATION_DOMAIN_TOPIC_NAMESPACE: &[u8] = b"p2panda-file-sharing/operation-domain/v1";
 const REDUCED_PROFILE_STATE_VERSION: u8 = 1;
+const DOMAIN_OPERATION_CACHE_VERSION: u8 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -184,6 +185,21 @@ struct PersistedReducedProfileState {
     #[serde(default = "reduced_profile_state_version")]
     version: u8,
     state: ReducedProfileState,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct PersistedDomainOperations {
+    #[serde(default = "domain_operation_cache_version")]
+    version: u8,
+    #[serde(default)]
+    operations: Vec<StoredRawDomainOperation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct StoredRawDomainOperation {
+    header: Header<DomainExtensions>,
+    #[serde(with = "serde_bytes")]
+    body: Vec<u8>,
 }
 
 #[derive(Clone, Default, Debug)]
@@ -717,11 +733,15 @@ fn now_unix_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
-        .as_secs()
+        .as_millis() as u64
 }
 
 const fn reduced_profile_state_version() -> u8 {
     REDUCED_PROFILE_STATE_VERSION
+}
+
+const fn domain_operation_cache_version() -> u8 {
+    DOMAIN_OPERATION_CACHE_VERSION
 }
 
 pub fn write_reduced_profile_state_to_path(
@@ -768,6 +788,86 @@ pub fn load_reduced_profile_state_from_path(path: impl AsRef<Path>) -> Result<Re
     let persisted: PersistedReducedProfileState = serde_json::from_slice(&bytes)
         .with_context(|| format!("failed to parse reduced profile cache {}", path.display()))?;
     Ok(persisted.state)
+}
+
+pub fn load_raw_domain_operations_from_path(
+    path: impl AsRef<Path>,
+) -> Result<Vec<Operation<DomainExtensions>>> {
+    let path = path.as_ref();
+    let bytes = fs::read(path)
+        .with_context(|| format!("failed to read domain operation cache {}", path.display()))?;
+    let persisted: PersistedDomainOperations = serde_json::from_slice(&bytes)
+        .with_context(|| format!("failed to parse domain operation cache {}", path.display()))?;
+    persisted
+        .operations
+        .into_iter()
+        .map(|operation| {
+            let validated = Operation {
+                hash: operation.header.hash(),
+                header: operation.header,
+                body: Some(Body::from(operation.body)),
+            };
+            p2panda_core::validate_operation(&validated)
+                .context("cached domain operation validation failed")?;
+            Ok(validated)
+        })
+        .collect()
+}
+
+pub fn write_raw_domain_operations_to_path(
+    path: impl AsRef<Path>,
+    operations: impl IntoIterator<Item = Operation<DomainExtensions>>,
+) -> Result<()> {
+    let operations = operations
+        .into_iter()
+        .map(|operation| {
+            let body = operation
+                .body
+                .context("domain operation is missing a body while persisting cache")?;
+            Ok(StoredRawDomainOperation {
+                header: operation.header,
+                body: body.to_bytes(),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    let persisted = PersistedDomainOperations {
+        version: DOMAIN_OPERATION_CACHE_VERSION,
+        operations,
+    };
+    write_json_atomic(path.as_ref(), &persisted, "domain operation cache")
+}
+
+fn write_json_atomic<T: Serialize>(path: &Path, value: &T, label: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create parent directory for {} at {}",
+                label,
+                parent.display()
+            )
+        })?;
+    }
+
+    let bytes =
+        serde_json::to_vec_pretty(value).with_context(|| format!("failed to serialize {label}"))?;
+    let tmp_path = path.with_extension("json.tmp");
+    fs::write(&tmp_path, bytes).with_context(|| {
+        format!(
+            "failed to write temporary {} file {}",
+            label,
+            tmp_path.display()
+        )
+    })?;
+    fs::rename(&tmp_path, path).with_context(|| {
+        format!(
+            "failed to atomically move temporary {} file {} to {}",
+            label,
+            tmp_path.display(),
+            path.display()
+        )
+    })?;
+    Ok(())
 }
 
 #[cfg(test)]

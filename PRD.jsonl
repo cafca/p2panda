@@ -1122,7 +1122,7 @@
     "Two devices for the same user converge to the same contact list after synchronization",
     "Contact list state can be rebuilt from operation history"
   ],
-  "passes": false
+  "passes": true
 }
 {
   "id": 49,

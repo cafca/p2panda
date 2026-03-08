@@ -16,6 +16,7 @@ use p2panda_sync::protocols::TopicLogSyncEvent;
 use crate::contacts::{contact_records_cache_path, ContactsStore};
 use crate::node::AppNode;
 use crate::operation_domain::{
+    load_raw_domain_operations_from_path, write_raw_domain_operations_to_path,
     write_reduced_profile_state_to_path, DomainExtensions, DomainLogId, DomainOperation,
     FileSharingOperationDomain, FileSharingTopicMap,
 };
@@ -27,6 +28,7 @@ use crate::profile::{
 const CONTACT_PROFILE_BOOTSTRAP_SETTLE_MILLIS: u64 = 750;
 const CONTACT_PROFILE_SYNC_RETRY_ATTEMPTS: usize = 6;
 const CONTACT_PROFILE_SYNC_RETRY_INTERVAL_MILLIS: u64 = 1_000;
+const LOCAL_PROFILE_SYNC_CACHE_FILE_NAME: &str = "local-profile-sync-cache.json";
 
 type DomainStore = MemoryStore<DomainLogId, DomainExtensions>;
 type DomainSync = LogSync<DomainStore, DomainLogId, DomainExtensions, FileSharingTopicMap>;
@@ -47,12 +49,14 @@ pub(crate) struct ProfileSyncService {
     domain: FileSharingOperationDomain<DomainStore>,
     log_sync: DomainSync,
     local_handle: DomainSyncHandle,
+    local_topic: TopicId,
     address_book: p2panda_net::AddressBook,
     relay_url: Option<RelayUrl>,
     local_profile_id: String,
     local_private_key: PrivateKey,
     local_record_count: usize,
     contact_streams: HashMap<String, ContactProfileSync>,
+    _local_task: tokio::task::JoinHandle<()>,
 }
 
 impl ProfileSyncService {
@@ -66,6 +70,11 @@ impl ProfileSyncService {
             &mut domain,
             &local_private_key,
             profile_records_path(&node.data_dir),
+        )
+        .await?;
+        load_local_profile_sync_cache(
+            &mut domain,
+            local_profile_sync_cache_path(&node.data_dir),
         )
         .await?;
 
@@ -90,23 +99,39 @@ impl ProfileSyncService {
             .stream(topic, true)
             .await
             .context("failed to join local profile sync topic")?;
+        let local_subscription = local_handle
+            .subscribe()
+            .await
+            .context("failed to subscribe to local profile sync topic")?;
+        let local_task = spawn_local_profile_task(
+            local_subscription,
+            store.clone(),
+            topic_map.clone(),
+            node.data_dir.clone(),
+            local_profile_id.clone(),
+            local_private_key.public_key(),
+        );
 
         reconcile_local_contacts_projection(&node.data_dir, &domain, &local_profile_id).await?;
 
-        Ok(Self {
+        let service = Self {
             data_dir: node.data_dir.clone(),
             store,
             topic_map,
             domain,
             log_sync,
             local_handle,
+            local_topic: topic,
             address_book: node.address_book.clone(),
             relay_url: node.relay_url.clone(),
             local_profile_id,
             local_private_key,
             local_record_count,
             contact_streams: HashMap::new(),
-        })
+            _local_task: local_task,
+        };
+        let _ = service.sync_local_profile_peers().await;
+        Ok(service)
     }
 
     pub(crate) async fn refresh_local_profile(&mut self) -> Result<()> {
@@ -143,12 +168,14 @@ impl ProfileSyncService {
         self.local_record_count = records.len();
         reconcile_local_contacts_projection(&self.data_dir, &self.domain, &self.local_profile_id)
             .await?;
+        let _ = self.sync_local_profile_peers().await;
         Ok(())
     }
 
     pub(crate) async fn sync_followed_contacts_from_disk(&mut self) -> Result<usize> {
         reconcile_local_contacts_projection(&self.data_dir, &self.domain, &self.local_profile_id)
             .await?;
+        let _ = self.sync_local_profile_peers().await;
         let contacts = ContactsStore::load(&self.data_dir)
             .context("failed to load contacts for profile sync startup")?;
         let profile_ids = contacts
@@ -164,6 +191,37 @@ impl ProfileSyncService {
             }
         }
         Ok(started)
+    }
+
+    pub(crate) async fn sync_local_profile_peers(&self) -> Result<usize> {
+        let node_infos = self
+            .address_book
+            .node_infos_by_topics([self.local_topic])
+            .await
+            .context("failed to query local profile topic peers")?;
+        let peer_ids = node_infos
+            .into_iter()
+            .map(|node_info| node_info.node_id)
+            .filter(|node_id| *node_id != self.local_private_key.public_key())
+            .collect::<Vec<_>>();
+        if peer_ids.is_empty() {
+            return Ok(0);
+        }
+
+        if self.relay_url.is_some() {
+            tokio::time::sleep(Duration::from_millis(
+                CONTACT_PROFILE_BOOTSTRAP_SETTLE_MILLIS,
+            ))
+            .await;
+        }
+        for peer_id in &peer_ids {
+            self.topic_map
+                .register_profile_author(&self.local_profile_id, *peer_id)
+                .await;
+            self.local_handle.initiate_session(*peer_id);
+        }
+
+        Ok(peer_ids.len())
     }
 
     pub(crate) async fn sync_contact_profile(&mut self, profile_id: &str) -> Result<bool> {
@@ -391,6 +449,75 @@ fn spawn_contact_profile_task(
     })
 }
 
+fn spawn_local_profile_task(
+    mut subscription: DomainSyncSubscription,
+    store: DomainStore,
+    topic_map: FileSharingTopicMap,
+    data_dir: PathBuf,
+    profile_id: String,
+    local_author: PublicKey,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut domain = FileSharingOperationDomain::new(store, topic_map.clone());
+
+        while let Some(message) = subscription.next().await {
+            let Ok(message) = message else {
+                continue;
+            };
+
+            match message.event {
+                TopicLogSyncEvent::Operation(operation) => {
+                    if let Err(err) = domain.ingest_remote_operation(*operation).await {
+                        tracing::warn!(
+                            local_profile_id = %profile_id,
+                            "failed to ingest synced local profile operation: {err:#}"
+                        );
+                        continue;
+                    }
+                    if let Err(err) = persist_local_profile_sync_state(
+                        &domain,
+                        &data_dir,
+                        &profile_id,
+                        local_author,
+                    )
+                    .await
+                    {
+                        tracing::warn!(
+                            local_profile_id = %profile_id,
+                            "failed to persist synced local profile state: {err:#}"
+                        );
+                    }
+                }
+                TopicLogSyncEvent::SyncFinished(_) | TopicLogSyncEvent::LiveModeStarted => {
+                    if let Err(err) = persist_local_profile_sync_state(
+                        &domain,
+                        &data_dir,
+                        &profile_id,
+                        local_author,
+                    )
+                    .await
+                    {
+                        tracing::warn!(
+                            local_profile_id = %profile_id,
+                            "failed to persist synced local profile state after sync milestone: {err:#}"
+                        );
+                    }
+                }
+                TopicLogSyncEvent::Failed { error } => {
+                    tracing::warn!(
+                        local_profile_id = %profile_id,
+                        "LogSync local profile replication failed: {error}"
+                    );
+                }
+                TopicLogSyncEvent::SyncStarted(_)
+                | TopicLogSyncEvent::SyncStatus(_)
+                | TopicLogSyncEvent::LiveModeFinished(_)
+                | TopicLogSyncEvent::Success => {}
+            }
+        }
+    })
+}
+
 async fn persist_contact_cache(
     domain: &FileSharingOperationDomain<DomainStore>,
     cache_path: &Path,
@@ -400,6 +527,34 @@ async fn persist_contact_cache(
         return Ok(());
     };
     write_reduced_profile_state_to_path(cache_path, &state)?;
+    Ok(())
+}
+
+async fn persist_local_profile_sync_state(
+    domain: &FileSharingOperationDomain<DomainStore>,
+    data_dir: &Path,
+    profile_id: &str,
+    local_author: PublicKey,
+) -> Result<()> {
+    let operations = domain
+        .operations_for_profile(profile_id)
+        .await?
+        .into_iter()
+        .filter(|entry| entry.author != local_author)
+        .map(|entry| {
+            let body = Body::from(
+                encode_cbor(&entry.operation)
+                    .context("failed to encode synced local profile operation body")?,
+            );
+            Ok(Operation {
+                hash: entry.header.hash(),
+                header: entry.header,
+                body: Some(body),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    write_raw_domain_operations_to_path(local_profile_sync_cache_path(data_dir), operations)?;
+    reconcile_local_contacts_projection(data_dir, domain, profile_id).await?;
     Ok(())
 }
 
@@ -415,6 +570,30 @@ async fn reconcile_local_contacts_projection(
         .reconcile_followed_contacts(&follows)
         .context("failed to persist contacts projection from local follow operations")?;
     Ok(())
+}
+
+async fn load_local_profile_sync_cache(
+    domain: &mut FileSharingOperationDomain<DomainStore>,
+    cache_path: PathBuf,
+) -> Result<()> {
+    if !cache_path.exists() {
+        return Ok(());
+    }
+
+    let operations = load_raw_domain_operations_from_path(&cache_path).with_context(|| {
+        format!(
+            "failed to load cached synced local profile operations from {}",
+            cache_path.display()
+        )
+    })?;
+    for operation in operations {
+        domain.ingest_remote_operation(operation).await?;
+    }
+    Ok(())
+}
+
+fn local_profile_sync_cache_path(data_dir: &Path) -> PathBuf {
+    data_dir.join(LOCAL_PROFILE_SYNC_CACHE_FILE_NAME)
 }
 
 async fn wait_for_topic_registration(
@@ -696,6 +875,85 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test(flavor = "multi_thread")]
+    async fn same_profile_devices_converge_contact_graph_via_log_sync() -> Result<()> {
+        setup_logging();
+
+        let first_dir = tempdir()?;
+        let second_dir = tempdir()?;
+        let (_relay_map, relay_url, _relay_server) = run_relay_server().await?;
+
+        let node_options = NodeOptions {
+            relay_url: Some(relay_url.clone()),
+            mdns_enabled: false,
+            insecure_skip_relay_cert_verify: true,
+        };
+        let first = AppNode::with_data_dir(first_dir.path(), node_options.clone()).await?;
+        let second = AppNode::with_data_dir(second_dir.path(), node_options.clone()).await?;
+        first
+            .address_book
+            .insert_node_info(relay_bootstrap_node_info(second.node_id(), relay_url.clone()))
+            .await?;
+        second
+            .address_book
+            .insert_node_info(relay_bootstrap_node_info(first.node_id(), relay_url.clone()))
+            .await?;
+
+        let shared_profile_id = {
+            let first_profile = ProfileStore::load_or_create(first_dir.path())?;
+            first_profile.profile().profile_id.clone()
+        };
+        {
+            let mut second_profile = ProfileStore::load_or_create(second_dir.path())?;
+            second_profile.set_profile_id(shared_profile_id.clone())?;
+        }
+
+        let mut first_sync = ProfileSyncService::new(&first, shared_profile_id.clone()).await?;
+        let mut second_sync = ProfileSyncService::new(&second, shared_profile_id.clone()).await?;
+
+        wait_for_topic_registration(
+            &first_sync.address_book,
+            first_sync.local_topic,
+            second.node_id(),
+            &shared_profile_id,
+        )
+        .await?;
+        wait_for_topic_registration(
+            &second_sync.address_book,
+            second_sync.local_topic,
+            first.node_id(),
+            &shared_profile_id,
+        )
+        .await?;
+        first_sync.sync_local_profile_peers().await?;
+        second_sync.sync_local_profile_peers().await?;
+
+        let followed_contact_id = PrivateKey::new().public_key().to_string();
+        {
+            let mut first_profile = ProfileStore::load_or_create(first_dir.path())?;
+            assert!(first_profile.follow_contact(followed_contact_id.clone())?);
+        }
+        first_sync.refresh_local_profile().await?;
+        first_sync.sync_local_profile_peers().await?;
+        second_sync.sync_local_profile_peers().await?;
+        wait_for_local_followed_contacts(
+            second_dir.path(),
+            vec![followed_contact_id.clone()],
+        )
+        .await?;
+
+        {
+            let mut second_profile = ProfileStore::load_or_create(second_dir.path())?;
+            assert!(second_profile.unfollow_contact(followed_contact_id.clone())?);
+        }
+        second_sync.refresh_local_profile().await?;
+        second_sync.sync_local_profile_peers().await?;
+        first_sync.sync_local_profile_peers().await?;
+        wait_for_local_followed_contacts(first_dir.path(), Vec::new()).await?;
+
+        Ok(())
+    }
+
     async fn wait_for_contact_label(
         data_dir: &Path,
         profile_id: &str,
@@ -741,6 +999,36 @@ mod tests {
         })
         .await
         .context("timed out waiting for synced contact share count")??;
+        Ok(())
+    }
+
+    async fn wait_for_local_followed_contacts(
+        data_dir: &Path,
+        expected_profile_ids: Vec<String>,
+    ) -> Result<()> {
+        let mut last_seen = Vec::new();
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                let contacts = ContactsStore::load(data_dir)?;
+                let actual = contacts
+                    .contacts()
+                    .iter()
+                    .map(|contact| contact.profile_id.clone())
+                    .collect::<Vec<_>>();
+                last_seen = actual.clone();
+                if actual == expected_profile_ids {
+                    return Ok::<(), anyhow::Error>(());
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .with_context(|| {
+            format!(
+                "timed out waiting for synced local contact projection; last seen = {:?}",
+                last_seen
+            )
+        })??;
         Ok(())
     }
 

@@ -196,7 +196,7 @@ impl ProfileStore {
             private_key,
         };
 
-        store.normalize_profile_id(public_key)?;
+        store.validate_profile_id()?;
         store.ensure_profile_metadata_record()?;
 
         Ok(store)
@@ -208,6 +208,22 @@ impl ProfileStore {
 
     pub fn load_warning(&self) -> Option<&str> {
         self.load_warning.as_deref()
+    }
+
+    pub fn set_profile_id(&mut self, profile_id: impl Into<String>) -> Result<bool> {
+        let profile_id = normalize_profile_id(profile_id.into())?;
+        if self.profile.profile_id == profile_id {
+            return Ok(false);
+        }
+
+        self.profile.profile_id = profile_id;
+        if self.profile.display_name.trim().is_empty() {
+            self.profile.display_name = default_display_name(&self.profile.profile_id);
+        }
+        self.profile.updated_at = now_unix_secs();
+        self.save_profile()?;
+        self.ensure_profile_metadata_record()?;
+        Ok(true)
     }
 
     pub fn update_display_name(&mut self, display_name: impl Into<String>) -> Result<bool> {
@@ -349,17 +365,14 @@ impl ProfileStore {
         Ok(appended)
     }
 
-    fn normalize_profile_id(&mut self, public_key: PublicKey) -> Result<()> {
-        let expected_profile_id = public_key.to_string();
-        if self.profile.profile_id == expected_profile_id {
-            return Ok(());
-        }
-
-        self.profile.profile_id = expected_profile_id;
+    fn validate_profile_id(&mut self) -> Result<()> {
+        self.profile.profile_id = normalize_profile_id(self.profile.profile_id.clone())?;
         if self.profile.display_name.trim().is_empty() {
             self.profile.display_name = default_display_name(&self.profile.profile_id);
         }
-        self.profile.updated_at = now_unix_secs();
+        if !self.path.exists() {
+            self.profile.updated_at = now_unix_secs();
+        }
         self.save_profile()?;
         Ok(())
     }
@@ -443,8 +456,16 @@ impl ProfileStore {
         let previous_hash = self
             .records
             .operations
-            .last()
+            .iter()
+            .rev()
+            .find(|operation| operation.header.public_key == self.private_key.public_key())
             .map(|operation| operation.header.hash());
+        let seq_num = self
+            .records
+            .operations
+            .iter()
+            .filter(|operation| operation.header.public_key == self.private_key.public_key())
+            .count() as u64;
         let timestamp = now_unix_secs();
         let mut header = Header {
             version: 1,
@@ -453,7 +474,7 @@ impl ProfileStore {
             payload_size: body.size(),
             payload_hash: Some(body.hash()),
             timestamp,
-            seq_num: self.records.operations.len() as u64,
+            seq_num,
             backlink: previous_hash,
             previous: previous_hash.into_iter().collect(),
             extensions: (),
@@ -788,7 +809,7 @@ fn now_unix_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
-        .as_secs()
+        .as_millis() as u64
 }
 
 const fn profile_version() -> u8 {
@@ -989,6 +1010,25 @@ mod tests {
         let active =
             active_follow_records_for_profile(&store.profile().profile_id, &store.records()?);
         assert!(active.is_empty());
+
+        Ok(())
+    }
+
+    #[test]
+    fn shared_profile_id_can_be_adopted_and_persisted() -> Result<()> {
+        let dir = tempdir()?;
+        let private_key = PrivateKey::new();
+        let shared_profile_id = PrivateKey::new().public_key().to_string();
+        write_node_key(dir.path(), &private_key)?;
+
+        let mut store = ProfileStore::load_or_create(dir.path())?;
+        assert!(store.set_profile_id(shared_profile_id.clone())?);
+        assert_eq!(store.profile().profile_id, shared_profile_id);
+
+        let reloaded = ProfileStore::load_or_create(dir.path())?;
+        assert_eq!(reloaded.profile().profile_id, shared_profile_id);
+        assert_eq!(reloaded.profile().display_name, store.profile().display_name);
+        assert_ne!(reloaded.profile().profile_id, private_key.public_key().to_string());
 
         Ok(())
     }
