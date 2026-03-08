@@ -1249,5 +1249,5 @@
     "Refactor-introduced direct dependencies are explicitly declared",
     "Build/test verification passes after dependency reconciliation"
   ],
-  "passes": false
+  "passes": true
 }

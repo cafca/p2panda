@@ -82,3 +82,15 @@ Added workflow permissions for GH PAT so Task 41 can continue.
 - `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui profile_sync::tests::refresh_local_profile_rebuilds_contacts_from_follow_operation_history --lib -- --nocapture`
 - `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui --lib -- --nocapture`
 - left Task 48 `passes: false` in `PRD.jsonl` because the cross-device convergence acceptance criterion is still blocked by the current sync/bootstrap model treating `profile_id` as a directly dialable `PublicKey`; that still prevents a real multi-author profile identity for the same user across devices
+
+# Sun, 08 Mar 2026 18:26:37 GMT
+
+- picked Task 54 (`Reconcile direct Cargo dependencies after sync-model refactor`) as the highest-priority actionable unfinished task because Task 48 still has the unresolved multi-author profile-identity blocker, while Task 54 could be completed by auditing the current direct imports and reconciling the manifest against actual app usage
+- audited `file-sharing` direct imports of `p2panda-blobs`, `p2panda-core`, `p2panda-net`, `p2panda-store`, `p2panda-stream`, `p2panda-sync`, and `iroh-blobs`; the audit found no removable direct `p2panda-*` dependencies in the current codebase, so the cleanup work for this run was to document and lock in the explicit dependency rationale rather than deleting still-used crates
+- added `file-sharing/DEPENDENCY_AUDIT.md` with the file-level import map for each kept direct dependency and annotated `file-sharing/Cargo.toml` so the sync-model crates (`p2panda-store`, `p2panda-stream`, `p2panda-sync`) and direct `iroh-blobs` usage are documented at the manifest itself
+- feedback loops passed in this run:
+- `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-file-sharing-gui --lib`
+- `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui operation_domain::tests --lib -- --nocapture`
+- `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui profile_sync::tests --lib -- --nocapture`
+- `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui persist::tests --lib -- --nocapture`
+- marked Task 54 `passes: true` in `PRD.jsonl` because this run verified that the current direct dependency set matches actual app imports, the refactor-introduced sync-model crates remain explicitly declared, build/test checks still pass, and the kept dependency rationale is now documented to avoid future drift

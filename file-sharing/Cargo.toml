@@ -8,10 +8,13 @@ name = "p2panda-file-sharing-gui"
 path = "src/main.rs"
 
 [dependencies]
-# p2panda
+# Direct p2panda imports kept explicit.
+# See DEPENDENCY_AUDIT.md for the file-level rationale behind each kept crate.
 p2panda-blobs = { path = "../p2panda-blobs", features = ["fs-store"] }
 p2panda-core = { path = "../p2panda-core" }
 p2panda-net = { path = "../p2panda-net", features = ["supervisor"] }
+# The sync-model refactor imports these crates directly from app code instead of relying on
+# p2panda-net transitives.
 p2panda-store = { path = "../p2panda-store", features = ["sqlite"] }
 p2panda-stream = { path = "../p2panda-stream" }
 p2panda-sync = { path = "../p2panda-sync" }
@@ -48,6 +51,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Error handling
 anyhow = "1"
+# HashSeq and blob-format APIs are imported directly in share/download flows.
 iroh-blobs = "0.98.0"
 flate2 = "1"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
