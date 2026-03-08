@@ -15,6 +15,7 @@ async fn pausing_one_share_does_not_affect_another_and_resumed_share_downloads()
     let (_relay_map, relay_url, _relay_server) = run_relay_server().await?;
     let opts = NodeOptions {
         relay_url: Some(relay_url.clone()),
+        mdns_enabled: false,
         insecure_skip_relay_cert_verify: true,
     };
 
@@ -77,6 +78,7 @@ async fn global_pause_respects_individual_flags_and_toggle_during_pause() -> Res
     let (_relay_map, relay_url, _relay_server) = run_relay_server().await?;
     let opts = NodeOptions {
         relay_url: Some(relay_url.clone()),
+        mdns_enabled: false,
         insecure_skip_relay_cert_verify: true,
     };
 
@@ -266,6 +268,7 @@ async fn paused_download_resumes_without_re_downloading_completed_files() -> Res
     let (_relay_map, relay_url, _relay_server) = run_relay_server().await?;
     let opts = NodeOptions {
         relay_url: Some(relay_url.clone()),
+        mdns_enabled: false,
         insecure_skip_relay_cert_verify: true,
     };
 

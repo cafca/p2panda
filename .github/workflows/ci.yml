@@ -62,7 +62,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Run clippy
-        run: cargo clippy --workspace -- -D warnings
+        run: cargo clippy --workspace --locked -- -D warnings
 
   test-file-sharing:
     runs-on: ubuntu-latest
@@ -92,7 +92,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Run file-sharing lib tests
-        run: cargo test -p p2panda-file-sharing-gui --lib -- --nocapture
+        run: cargo test -p p2panda-file-sharing-gui --lib --locked -- --nocapture
 
   audit:
     runs-on: ubuntu-latest

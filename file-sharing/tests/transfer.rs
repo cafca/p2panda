@@ -108,6 +108,7 @@ async fn relay_based_transfer() -> Result<()> {
 
         let opts = NodeOptions {
             relay_url: Some(relay_url.clone()),
+            mdns_enabled: false,
             insecure_skip_relay_cert_verify: true,
         };
         let node_a = AppNode::with_data_dir(node_a_dir.path(), opts.clone()).await?;
@@ -220,6 +221,7 @@ async fn removed_share_is_not_downloadable() -> Result<()> {
         let bridge = AsyncBridge::spawn_with_data_dir(
             NodeOptions {
                 relay_url: Some(relay_url.clone()),
+                mdns_enabled: false,
                 insecure_skip_relay_cert_verify: true,
             },
             bridge_data_dir.path().to_path_buf(),
@@ -248,6 +250,7 @@ async fn removed_share_is_not_downloadable() -> Result<()> {
             node_b_dir.path(),
             NodeOptions {
                 relay_url: Some(relay_url.clone()),
+                mdns_enabled: false,
                 insecure_skip_relay_cert_verify: true,
             },
         )
@@ -295,6 +298,7 @@ async fn removing_one_share_does_not_break_another_share_with_shared_file_blob()
         let bridge = AsyncBridge::spawn_with_data_dir(
             NodeOptions {
                 relay_url: Some(relay_url.clone()),
+                mdns_enabled: false,
                 insecure_skip_relay_cert_verify: true,
             },
             bridge_data_dir.path().to_path_buf(),
@@ -319,6 +323,7 @@ async fn removing_one_share_does_not_break_another_share_with_shared_file_blob()
             node_b_dir.path(),
             NodeOptions {
                 relay_url: Some(relay_url.clone()),
+                mdns_enabled: false,
                 insecure_skip_relay_cert_verify: true,
             },
         )

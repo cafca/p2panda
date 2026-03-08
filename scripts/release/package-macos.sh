@@ -12,7 +12,7 @@ cd "$ROOT_DIR"
 rm -rf "$DIST_DIR/macos"
 mkdir -p "$DIST_DIR/macos"
 
-cargo build --release -p "$BIN_NAME"
+cargo build --release --locked -p "$BIN_NAME"
 
 TARGET_DIR="$(cargo metadata --format-version 1 --no-deps 2>/dev/null | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')"
 TARGET_DIR="${TARGET_DIR:-$ROOT_DIR/target}"

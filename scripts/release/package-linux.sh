@@ -12,7 +12,7 @@ cd "$ROOT_DIR"
 rm -rf "$DIST_DIR/linux" "$DIST_DIR/linux-tar"
 mkdir -p "$DIST_DIR/linux"
 
-cargo build --release -p "$BIN_NAME"
+cargo build --release --locked -p "$BIN_NAME"
 
 TARGET_DIR="$(cargo metadata --format-version 1 --no-deps 2>/dev/null | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')"
 TARGET_DIR="${TARGET_DIR:-$ROOT_DIR/target}"
@@ -36,7 +36,7 @@ tar -czf \
   -C "$DIST_DIR/linux-tar" \
   "p2panda-file-sharing-${VERSION}-linux-${ARCH}"
 
-cargo appimage -p "$BIN_NAME"
+cargo appimage --locked -p "$BIN_NAME"
 APPIMAGE_SOURCE="$(find "$TARGET_DIR" -type f -name '*.AppImage' | sort | tail -n 1)"
 
 if [[ -z "$APPIMAGE_SOURCE" ]]; then

@@ -72,11 +72,8 @@ impl ProfileSyncService {
             profile_records_path(&node.data_dir),
         )
         .await?;
-        load_local_profile_sync_cache(
-            &mut domain,
-            local_profile_sync_cache_path(&node.data_dir),
-        )
-        .await?;
+        load_local_profile_sync_cache(&mut domain, local_profile_sync_cache_path(&node.data_dir))
+            .await?;
 
         let topic = topic_map
             .register_profile_author(&local_profile_id, local_private_key.public_key())
@@ -892,11 +889,17 @@ mod tests {
         let second = AppNode::with_data_dir(second_dir.path(), node_options.clone()).await?;
         first
             .address_book
-            .insert_node_info(relay_bootstrap_node_info(second.node_id(), relay_url.clone()))
+            .insert_node_info(relay_bootstrap_node_info(
+                second.node_id(),
+                relay_url.clone(),
+            ))
             .await?;
         second
             .address_book
-            .insert_node_info(relay_bootstrap_node_info(first.node_id(), relay_url.clone()))
+            .insert_node_info(relay_bootstrap_node_info(
+                first.node_id(),
+                relay_url.clone(),
+            ))
             .await?;
 
         let shared_profile_id = {
@@ -936,11 +939,8 @@ mod tests {
         first_sync.refresh_local_profile().await?;
         first_sync.sync_local_profile_peers().await?;
         second_sync.sync_local_profile_peers().await?;
-        wait_for_local_followed_contacts(
-            second_dir.path(),
-            vec![followed_contact_id.clone()],
-        )
-        .await?;
+        wait_for_local_followed_contacts(second_dir.path(), vec![followed_contact_id.clone()])
+            .await?;
 
         {
             let mut second_profile = ProfileStore::load_or_create(second_dir.path())?;

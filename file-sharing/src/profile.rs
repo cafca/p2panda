@@ -1027,8 +1027,14 @@ mod tests {
 
         let reloaded = ProfileStore::load_or_create(dir.path())?;
         assert_eq!(reloaded.profile().profile_id, shared_profile_id);
-        assert_eq!(reloaded.profile().display_name, store.profile().display_name);
-        assert_ne!(reloaded.profile().profile_id, private_key.public_key().to_string());
+        assert_eq!(
+            reloaded.profile().display_name,
+            store.profile().display_name
+        );
+        assert_ne!(
+            reloaded.profile().profile_id,
+            private_key.public_key().to_string()
+        );
 
         Ok(())
     }

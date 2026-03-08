@@ -17,7 +17,7 @@ if (Test-Path (Join-Path $DistDir "windows")) {
 }
 New-Item -ItemType Directory -Force -Path (Join-Path $DistDir "windows") | Out-Null
 
-cargo build --release -p $BinName
+cargo build --release --locked -p $BinName
 
 $MetaJson = cargo metadata --format-version 1 --no-deps 2>$null | ConvertFrom-Json
 $TargetDir = if ($MetaJson -and $MetaJson.target_directory) { $MetaJson.target_directory } else { Join-Path $RootDir "target" }
