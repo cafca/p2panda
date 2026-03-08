@@ -154,3 +154,7 @@ BLOCKED until tasks 47, 48, 49 are complete. Cleanup pass to align direct deps w
 - picked Task 41 (`Validate GitHub CI on fork (cafca/p2panda)`) as the highest-priority actionable remaining task because Task 48 is still blocked by the profile-identity model and Task 54 depends on unfinished sync-model work
 - local verification passed for the current branch tip after fixing CI blockers: `./scripts/verify-in-sandbox.sh -- cargo fmt --all --check`, `./scripts/verify-in-sandbox.sh -- cargo clippy --workspace --locked -- -D warnings`, `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui --lib --locked -- --nocapture`, and `./scripts/verify-in-sandbox.sh -- cargo audit`; pushed `6baecb2` plus a trigger commit `085cbac`, marked PR `cafca/p2panda#1` ready, and observed fresh CI run `22826760066`
 - Task 41 remains `passes: false`: the new PR run showed workflow-level failures (`moonrepo/setup-rust@v1` post-job cleanup breaks on GitHub runners, and `cargo ... --locked` fails because the workspace does not commit a root `Cargo.lock`); I fixed `.github/workflows/ci.yml` locally in commit `63b1f9a`, but push is blocked because the configured HTTPS token lacks `workflow` scope (`remote rejected ... refusing to allow a Personal Access Token to create or update workflow .github/workflows/ci.yml`) and SSH push to `git@github.com:cafca/p2panda.git` is unavailable (`port 22: Connection refused`)
+
+# Sun, 08 Mar 2026 18:12:51 GMT
+
+Added workflow permissions for GH PAT so Task 41 can continue.
