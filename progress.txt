@@ -4,6 +4,7 @@
 - GH auth is configured in the sandbox as `cafca` via PAT. Use `gh` CLI for push/PR/CI operations.
 - Keep this file under 300 lines.
 - Verification commands: `./scripts/verify-in-sandbox.sh -- cargo check/test/clippy ...`
+- AlWays record below what was done, why, and what didn't work.
 
 
 
