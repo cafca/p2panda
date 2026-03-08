@@ -1,7 +1,5 @@
 use std::fs;
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::{bail, ensure, Context, Result};
 use iroh_blobs::hashseq::HashSeq;
@@ -9,15 +7,11 @@ use iroh_blobs::{BlobFormat, HashAndFormat};
 use p2panda_blobs::Hash as BlobHash;
 use p2panda_net::gossip::GossipHandle;
 use p2panda_net::TopicId;
-use tokio::task::JoinHandle;
 use tracing::warn;
 
 use crate::manifest::{serialize_manifest, sign_manifest, ManifestData, ManifestFile};
 use crate::node::AppNode;
-use crate::protocol::CollectionAnnouncement;
 use crate::share_code::encode_share_code;
-
-const REANNOUNCE_INTERVAL: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SharedFile {
@@ -35,8 +29,7 @@ pub struct ShareSession {
     pub files: Vec<SharedFile>,
     pub owner_profile_id: Option<String>,
     topic_id: TopicId,
-    gossip_handle: Arc<GossipHandle>,
-    reannounce_task: JoinHandle<()>,
+    _gossip_handle: GossipHandle,
 }
 
 impl ShareSession {
@@ -46,20 +39,6 @@ impl ShareSession {
 
     pub fn file_count(&self) -> usize {
         self.files.len()
-    }
-
-    pub async fn publish_announcement(&self) -> Result<()> {
-        self.gossip_handle
-            .publish(CollectionAnnouncement::new(self.collection_hash).encode())
-            .await
-            .context("failed to publish collection announcement")?;
-        Ok(())
-    }
-}
-
-impl Drop for ShareSession {
-    fn drop(&mut self) {
-        self.reannounce_task.abort();
     }
 }
 
@@ -116,11 +95,10 @@ pub async fn share_directory(node: &AppNode, directory: impl AsRef<Path>) -> Res
     pin_shared_blobs(node, collection_hash, manifest_hash, &imported_files).await?;
 
     let topic_id: TopicId = crate::share_code::derive_topic(*collection_hash.as_bytes());
-    let gossip_handle = Arc::new(
-        node.join_topic(topic_id)
-            .await
-            .context("failed to join gossip topic for share")?,
-    );
+    let gossip_handle = node
+        .join_topic(topic_id)
+        .await
+        .context("failed to join gossip topic for share")?;
 
     let share_code = encode_share_code(
         collection_hash,
@@ -137,32 +115,10 @@ pub async fn share_directory(node: &AppNode, directory: impl AsRef<Path>) -> Res
         files: imported_files,
         owner_profile_id: None,
         topic_id,
-        reannounce_task: spawn_reannouncement(Arc::clone(&gossip_handle), collection_hash),
-        gossip_handle,
+        _gossip_handle: gossip_handle,
     };
 
-    session.publish_announcement().await?;
-
     Ok(session)
-}
-
-fn spawn_reannouncement(
-    gossip_handle: Arc<GossipHandle>,
-    collection_hash: BlobHash,
-) -> JoinHandle<()> {
-    let announcement = CollectionAnnouncement::new(collection_hash).encode();
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(REANNOUNCE_INTERVAL);
-        interval.tick().await;
-
-        loop {
-            interval.tick().await;
-            if let Err(err) = gossip_handle.publish(announcement.clone()).await {
-                warn!("failed to re-announce shared collection: {err}");
-                break;
-            }
-        }
-    })
 }
 
 fn sign_manifest_from_node(
@@ -348,18 +304,11 @@ async fn pin_shared_blobs(
 
 #[cfg(test)]
 mod tests {
-    use std::io::Write;
-    use std::time::Duration;
-
     use anyhow::Result;
-    use futures_util::StreamExt;
-    use p2panda_net::addrs::NodeInfo;
     use tempfile::tempdir;
-    use tokio::time::timeout;
 
     use super::*;
     use crate::node::NodeOptions;
-    use crate::protocol::CollectionAnnouncement;
     use crate::share_code::decode_share_code;
 
     #[tokio::test(flavor = "multi_thread")]
@@ -395,48 +344,6 @@ mod tests {
             HashSeq::new(collection_bytes).context("stored collection is not a hash sequence")?;
         assert_eq!(links.len(), share.files.len() + 1);
         assert_eq!(links.get(0), Some(share.manifest_hash));
-
-        Ok(())
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn sharing_directory_publishes_collection_announcement() -> Result<()> {
-        let node_a_dir = tempdir()?;
-        let node_b_dir = tempdir()?;
-        let source_dir = tempdir()?;
-        let source_root = source_dir.path().join("share-me");
-        fs::create_dir_all(&source_root)?;
-        let mut file = fs::File::create(source_root.join("payload.txt"))?;
-        writeln!(file, "hello gossip")?;
-
-        let node_a = AppNode::with_data_dir(node_a_dir.path(), NodeOptions::default()).await?;
-        let node_b = AppNode::with_data_dir(node_b_dir.path(), NodeOptions::default()).await?;
-
-        let endpoint_addr = node_a.endpoint.endpoint().await?.addr();
-        node_b
-            .address_book
-            .insert_node_info(NodeInfo::from(endpoint_addr).bootstrap())
-            .await?;
-
-        let share = share_directory(&node_a, &source_root).await?;
-        let subscriber_handle = node_b.join_topic(share.topic_id()).await?;
-        let mut subscription = subscriber_handle.subscribe();
-
-        share.publish_announcement().await?;
-
-        let announcement = timeout(Duration::from_secs(10), async {
-            while let Some(Ok(bytes)) = subscription.next().await {
-                if let Ok(announcement) = CollectionAnnouncement::decode(&bytes) {
-                    return Some(announcement);
-                }
-            }
-            None
-        })
-        .await
-        .context("timed out waiting for collection announcement")?
-        .context("subscription ended before receiving collection announcement")?;
-
-        assert_eq!(announcement.collection_hash, share.collection_hash);
 
         Ok(())
     }

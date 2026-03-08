@@ -300,15 +300,26 @@ fn domain_operation_from_profile_record(record: &ProfileRecord) -> DomainOperati
             created_at: record.created_at,
             updated_at: record.updated_at,
         },
-        ProfileRecord::ShareOwnership(record) => DomainOperation::SharePublished {
-            profile_id: record.profile_id.clone(),
-            collection_hash: record.collection_hash.clone(),
-            share_code: record.share_code.clone(),
-            source_dir: record.source_dir.clone(),
-            recorded_at: record.recorded_at,
-            source_contact_profile_id: record.source_contact_profile_id.clone(),
-            source_contact_display_name: record.source_contact_display_name.clone(),
-        },
+        ProfileRecord::ShareOwnership(record) => {
+            if record.active {
+                DomainOperation::SharePublished {
+                    profile_id: record.profile_id.clone(),
+                    collection_hash: record.collection_hash.clone(),
+                    share_code: record.share_code.clone(),
+                    source_dir: record.source_dir.clone(),
+                    recorded_at: record.recorded_at,
+                    source_contact_profile_id: record.source_contact_profile_id.clone(),
+                    source_contact_display_name: record.source_contact_display_name.clone(),
+                }
+            } else {
+                DomainOperation::ShareRemoved {
+                    profile_id: record.profile_id.clone(),
+                    collection_hash: record.collection_hash.clone(),
+                    share_code: record.share_code.clone(),
+                    recorded_at: record.recorded_at,
+                }
+            }
+        }
         ProfileRecord::ContactFollow(record) => DomainOperation::ContactFollowChanged {
             profile_id: record.profile_id.clone(),
             followed_profile_id: record.followed_profile_id.clone(),
@@ -421,6 +432,8 @@ fn normalize_profile_id(profile_id: &str) -> Result<PublicKey> {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use anyhow::Result;
     use iroh::test_utils::run_relay_server;
     use p2panda_net::test_utils::setup_logging;
@@ -429,7 +442,9 @@ mod tests {
     use super::*;
     use crate::contacts::ContactsStore;
     use crate::node::NodeOptions;
+    use crate::persist::ShareRecord;
     use crate::profile::ProfileStore;
+    use crate::share::share_directory;
 
     #[tokio::test(flavor = "multi_thread")]
     async fn syncs_contact_profile_via_log_sync_with_catch_up_and_live_updates() -> Result<()> {
@@ -547,6 +562,71 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test(flavor = "multi_thread")]
+    async fn syncs_contact_share_state_via_log_sync_catch_up_and_live_removal() -> Result<()> {
+        setup_logging();
+
+        let sharer_dir = tempdir()?;
+        let follower_dir = tempdir()?;
+        let source_dir = tempdir()?;
+        let (_relay_map, relay_url, _relay_server) = run_relay_server().await?;
+
+        let source_root = source_dir.path().join("shared");
+        fs::create_dir_all(&source_root)?;
+        fs::write(source_root.join("hello.txt"), b"hello share sync")?;
+
+        let node_options = NodeOptions {
+            relay_url: Some(relay_url.clone()),
+            mdns_enabled: false,
+            insecure_skip_relay_cert_verify: true,
+        };
+        let sharer = AppNode::with_data_dir(sharer_dir.path(), node_options.clone()).await?;
+        let share = share_directory(&sharer, &source_root).await?;
+        let sharer_profile_id = {
+            let mut sharer_profile = ProfileStore::load_or_create(sharer_dir.path())?;
+            let mut share_record = ShareRecord::from(&share);
+            share_record.owner_profile_id = Some(sharer_profile.profile().profile_id.clone());
+            sharer_profile.ensure_share_ownership_record(&share_record)?;
+            sharer_profile.profile().profile_id.clone()
+        };
+        let mut sharer_sync = ProfileSyncService::new(&sharer, sharer_profile_id.clone()).await?;
+        sharer_sync.refresh_local_profile().await?;
+
+        let follower = AppNode::with_data_dir(follower_dir.path(), node_options.clone()).await?;
+        follower
+            .address_book
+            .insert_node_info(relay_bootstrap_node_info(
+                sharer.node_id(),
+                relay_url.clone(),
+            ))
+            .await?;
+
+        let follower_profile = ProfileStore::load_or_create(follower_dir.path())?;
+        let follower_profile_id = follower_profile.profile().profile_id.clone();
+        drop(follower_profile);
+
+        let mut follower_contacts = ContactsStore::load(follower_dir.path())?;
+        follower_contacts.follow_contact(sharer_profile_id.clone())?;
+
+        let mut follower_sync =
+            ProfileSyncService::new(&follower, follower_profile_id.clone()).await?;
+        follower_sync
+            .sync_contact_profile(&sharer_profile_id)
+            .await?;
+        wait_for_contact_share_count(follower_dir.path(), &sharer_profile_id, 1).await?;
+
+        {
+            let mut sharer_profile = ProfileStore::load_or_create(sharer_dir.path())?;
+            let mut share_record = ShareRecord::from(&share);
+            share_record.owner_profile_id = Some(sharer_profile.profile().profile_id.clone());
+            assert!(sharer_profile.remove_share_ownership_record(&share_record)?);
+        }
+        sharer_sync.refresh_local_profile().await?;
+        wait_for_contact_share_count(follower_dir.path(), &sharer_profile_id, 0).await?;
+
+        Ok(())
+    }
+
     async fn wait_for_contact_label(
         data_dir: &Path,
         profile_id: &str,
@@ -568,6 +648,30 @@ mod tests {
         })
         .await
         .context("timed out waiting for synced contact label")??;
+        Ok(())
+    }
+
+    async fn wait_for_contact_share_count(
+        data_dir: &Path,
+        profile_id: &str,
+        expected_count: usize,
+    ) -> Result<()> {
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                let mut contacts = ContactsStore::load(data_dir)?;
+                contacts.refresh_contact(profile_id).ok();
+                if contacts
+                    .get(profile_id)
+                    .map(|contact| contact.cached_shares.len())
+                    == Some(expected_count)
+                {
+                    return Ok::<(), anyhow::Error>(());
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .context("timed out waiting for synced contact share count")??;
         Ok(())
     }
 

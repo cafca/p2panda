@@ -521,16 +521,25 @@ fn share_records_for_profile(
     profile_id: &str,
     records: &[ProfileRecord],
 ) -> Vec<ShareOwnershipRecord> {
-    records
-        .iter()
-        .filter_map(|record| match record {
-            ProfileRecord::ShareOwnership(record) if record.profile_id == profile_id => {
-                Some(record.clone())
-            }
-            ProfileRecord::Metadata(_)
-            | ProfileRecord::ShareOwnership(_)
-            | ProfileRecord::ContactFollow(_) => None,
-        })
+    let mut latest_records =
+        std::collections::HashMap::<(String, String), ShareOwnershipRecord>::new();
+
+    for record in records {
+        let ProfileRecord::ShareOwnership(record) = record else {
+            continue;
+        };
+        if record.profile_id != profile_id {
+            continue;
+        }
+        latest_records.insert(
+            (record.collection_hash.clone(), record.share_code.clone()),
+            record.clone(),
+        );
+    }
+
+    latest_records
+        .into_values()
+        .filter(|record| record.active)
         .collect()
 }
 
@@ -689,6 +698,42 @@ mod tests {
         assert_eq!(contact.cached_shares[0].share_code, "p2p-CONTACT");
         assert_eq!(contact.cached_shares[0].share_name, "contact-share");
         assert!(contact.last_error.is_none());
+
+        Ok(())
+    }
+
+    #[test]
+    fn refresh_ignores_inactive_share_tombstones_in_profile_records() -> Result<()> {
+        let sharer_dir = tempdir()?;
+        let follower_dir = tempdir()?;
+        let sharer_key = PrivateKey::new();
+        let follower_key = PrivateKey::new();
+        write_node_key(sharer_dir.path(), &sharer_key)?;
+        write_node_key(follower_dir.path(), &follower_key)?;
+
+        let mut sharer_store = ProfileStore::load_or_create(sharer_dir.path())?;
+        let share = sample_share_record(&sharer_store.profile().profile_id);
+        sharer_store.ensure_share_ownership_record(&share)?;
+        sharer_store.remove_share_ownership_record(&share)?;
+
+        let cache_path =
+            contact_records_cache_path(follower_dir.path(), &sharer_store.profile().profile_id);
+        fs::create_dir_all(cache_path.parent().unwrap())?;
+        fs::copy(
+            crate::profile::profile_records_path(sharer_dir.path()),
+            &cache_path,
+        )?;
+
+        let mut contacts = ContactsStore::load(follower_dir.path())?;
+        contacts.follow_contact(sharer_store.profile().profile_id.clone())?;
+        contacts.refresh_contact(&sharer_store.profile().profile_id)?;
+
+        let contact = contacts.get(&sharer_store.profile().profile_id).unwrap();
+        assert_eq!(
+            contact.display_name(),
+            Some(sharer_store.profile().display_name.as_str())
+        );
+        assert!(contact.cached_shares.is_empty());
 
         Ok(())
     }

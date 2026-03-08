@@ -1102,7 +1102,7 @@
     "Share state changes propagate as incremental log updates rather than full periodic rebroadcasts",
     "Removing a share propagates and is reflected remotely without manual refresh loops"
   ],
-  "passes": false
+  "passes": true
 }
 {
   "id": 48,

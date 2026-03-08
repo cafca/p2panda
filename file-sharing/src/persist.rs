@@ -9,7 +9,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::download::{download_share, DownloadSession};
 use crate::node::AppNode;
-use crate::protocol::CollectionAnnouncement;
 use crate::share::ShareSession;
 use crate::share_code::derive_topic;
 
@@ -332,16 +331,6 @@ pub async fn resume_share_record(node: &AppNode, record: &ShareRecord) -> Result
         .await
         .with_context(|| format!("failed to join topic for {}", record.share_code))?;
 
-    handle
-        .publish(CollectionAnnouncement::new(collection_hash).encode())
-        .await
-        .with_context(|| {
-            format!(
-                "failed to re-announce collection {}",
-                record.collection_hash
-            )
-        })?;
-
     Ok(RecoveredShare {
         record: record.clone(),
         topic_id,
@@ -391,18 +380,14 @@ fn write_atomic(path: &Path, state: &PersistedState) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Write;
     use std::time::Duration;
 
     use anyhow::Result;
-    use futures_util::StreamExt;
     use p2panda_net::addrs::NodeInfo;
     use tempfile::tempdir;
-    use tokio::time::timeout;
 
     use super::*;
     use crate::node::NodeOptions;
-    use crate::protocol::CollectionAnnouncement;
     use crate::share::share_directory;
 
     #[test]
@@ -533,72 +518,6 @@ mod tests {
             let actual = std::fs::read(output_dir.path().join("share-me").join(relative_path))?;
             assert_eq!(actual, expected, "mismatch for {relative_path}");
         }
-
-        Ok(())
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn restart_reannounces_shares() -> Result<()> {
-        let node_a_dir = tempdir()?;
-        let node_b_dir = tempdir()?;
-        let source_dir = tempdir()?;
-
-        let source_root = source_dir.path().join("share-me");
-        std::fs::create_dir_all(&source_root)?;
-        let mut file = std::fs::File::create(source_root.join("payload.txt"))?;
-        writeln!(file, "hello recovery")?;
-
-        let node_a = AppNode::with_data_dir(node_a_dir.path(), NodeOptions::default()).await?;
-        let node_b = AppNode::with_data_dir(node_b_dir.path(), NodeOptions::default()).await?;
-
-        node_b
-            .address_book
-            .insert_node_info(NodeInfo::from(node_a.endpoint.endpoint().await?.addr()).bootstrap())
-            .await?;
-
-        let share = share_directory(&node_a, &source_root).await?;
-        let collection_hash = share.collection_hash;
-        let mut store = StateStore::load(node_a_dir.path())?;
-        store.add_share(ShareRecord::from(&share))?;
-
-        drop(share);
-        drop(node_a);
-        tokio::time::sleep(Duration::from_millis(250)).await;
-
-        let restarted = AppNode::with_data_dir(node_a_dir.path(), NodeOptions::default()).await?;
-        node_b
-            .address_book
-            .insert_node_info(
-                NodeInfo::from(restarted.endpoint.endpoint().await?.addr()).bootstrap(),
-            )
-            .await?;
-
-        let topic_id = derive_topic(*collection_hash.as_bytes());
-        let subscriber = node_b.join_topic(topic_id).await?;
-        let mut subscription = subscriber.subscribe();
-
-        let state = load_state(node_a_dir.path())?;
-        let recovered = resume_shares(&restarted, &state).await?;
-        assert_eq!(recovered.len(), 1);
-
-        let announcement = timeout(Duration::from_secs(10), async {
-            while let Some(Ok(bytes)) = subscription.next().await {
-                if let Ok(announcement) = CollectionAnnouncement::decode(&bytes) {
-                    return Some(announcement);
-                }
-            }
-            None
-        })
-        .await
-        .context("timed out waiting for re-announcement")?
-        .context("subscription ended before receiving re-announcement")?;
-
-        assert_eq!(
-            announcement.collection_hash,
-            state.active_shares[0].collection_hash()?
-        );
-
-        drop(recovered);
 
         Ok(())
     }

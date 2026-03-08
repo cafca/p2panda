@@ -595,17 +595,28 @@ where
                     report.profile_operations += 1;
                 }
                 ProfileRecord::ShareOwnership(record) => {
-                    self.append_share_published(
-                        private_key,
-                        &record.profile_id,
-                        record.collection_hash,
-                        record.share_code,
-                        record.source_dir,
-                        record.recorded_at,
-                        record.source_contact_profile_id,
-                        record.source_contact_display_name,
-                    )
-                    .await?;
+                    if record.active {
+                        self.append_share_published(
+                            private_key,
+                            &record.profile_id,
+                            record.collection_hash,
+                            record.share_code,
+                            record.source_dir,
+                            record.recorded_at,
+                            record.source_contact_profile_id,
+                            record.source_contact_display_name,
+                        )
+                        .await?;
+                    } else {
+                        self.append_share_removed(
+                            private_key,
+                            &record.profile_id,
+                            record.collection_hash,
+                            record.share_code,
+                            record.recorded_at,
+                        )
+                        .await?;
+                    }
                     report.share_operations += 1;
                 }
                 ProfileRecord::ContactFollow(record) => {

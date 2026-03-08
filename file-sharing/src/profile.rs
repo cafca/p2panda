@@ -82,6 +82,7 @@ pub struct ShareOwnershipRecord {
     pub recorded_at: u64,
     pub source_contact_profile_id: Option<String>,
     pub source_contact_display_name: Option<String>,
+    pub active: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,6 +120,8 @@ enum ProfileRecordBody {
         source_contact_profile_id: Option<String>,
         #[serde(default)]
         source_contact_display_name: Option<String>,
+        #[serde(default = "share_record_active_default")]
+        active: bool,
     },
     ContactFollow {
         profile_id: String,
@@ -274,24 +277,15 @@ impl ProfileStore {
             .as_deref()
             .unwrap_or(&self.profile.profile_id);
 
-        if self.has_share_ownership_record(
-            owner_profile_id,
-            &share.collection_hash,
-            &share.share_code,
-        )? {
-            return Ok(false);
-        }
-
-        self.append_record(ProfileRecordBody::ShareOwnership {
-            profile_id: owner_profile_id.to_owned(),
-            collection_hash: share.collection_hash.clone(),
-            share_code: share.share_code.clone(),
-            source_dir: share.source_dir.clone(),
-            recorded_at: now_unix_secs(),
-            source_contact_profile_id: None,
-            source_contact_display_name: None,
-        })?;
-        Ok(true)
+        self.set_share_ownership_state(
+            owner_profile_id.to_owned(),
+            share.collection_hash.clone(),
+            share.share_code.clone(),
+            share.source_dir.clone(),
+            None,
+            None,
+            true,
+        )
     }
 
     pub fn ensure_downloaded_share_record(
@@ -303,22 +297,32 @@ impl ProfileStore {
         source_contact_profile_id: Option<String>,
         source_contact_display_name: Option<String>,
     ) -> Result<bool> {
-        let share_code = share_code.into();
-        let collection_hash = collection_hash.into();
-        if self.has_share_ownership_record(profile_id, &collection_hash, &share_code)? {
-            return Ok(false);
-        }
-
-        self.append_record(ProfileRecordBody::ShareOwnership {
-            profile_id: profile_id.to_owned(),
-            collection_hash,
-            share_code,
-            source_dir: source_dir.into(),
-            recorded_at: now_unix_secs(),
+        self.set_share_ownership_state(
+            profile_id.to_owned(),
+            collection_hash.into(),
+            share_code.into(),
+            source_dir.into(),
             source_contact_profile_id,
             source_contact_display_name,
-        })?;
-        Ok(true)
+            true,
+        )
+    }
+
+    pub fn remove_share_ownership_record(&mut self, share: &ShareRecord) -> Result<bool> {
+        let owner_profile_id = share
+            .owner_profile_id
+            .as_deref()
+            .unwrap_or(&self.profile.profile_id);
+
+        self.set_share_ownership_state(
+            owner_profile_id.to_owned(),
+            share.collection_hash.clone(),
+            share.share_code.clone(),
+            share.source_dir.clone(),
+            None,
+            None,
+            false,
+        )
     }
 
     pub fn ensure_share_ownership_records<'a>(
@@ -368,17 +372,40 @@ impl ProfileStore {
         Ok(())
     }
 
-    fn has_share_ownership_record(
-        &self,
-        profile_id: &str,
-        collection_hash: &str,
-        share_code: &str,
+    fn set_share_ownership_state(
+        &mut self,
+        profile_id: String,
+        collection_hash: String,
+        share_code: String,
+        source_dir: PathBuf,
+        source_contact_profile_id: Option<String>,
+        source_contact_display_name: Option<String>,
+        active: bool,
     ) -> Result<bool> {
-        Ok(self.share_ownership_records()?.into_iter().any(|record| {
-            record.profile_id == profile_id
-                && record.collection_hash == collection_hash
-                && record.share_code == share_code
-        }))
+        let share_records = self.share_ownership_records()?;
+        let latest = latest_share_ownership_record(
+            &profile_id,
+            &collection_hash,
+            &share_code,
+            &share_records,
+        );
+        if let Some(latest) = latest {
+            if latest.active == active {
+                return Ok(false);
+            }
+        }
+
+        self.append_record(ProfileRecordBody::ShareOwnership {
+            profile_id,
+            collection_hash,
+            share_code,
+            source_dir,
+            recorded_at: now_unix_secs(),
+            source_contact_profile_id,
+            source_contact_display_name,
+            active,
+        })?;
+        Ok(true)
     }
 
     fn set_contact_follow_state(
@@ -563,6 +590,7 @@ fn decode_stored_operation(operation: &StoredOperation) -> Result<ProfileRecord>
             recorded_at,
             source_contact_profile_id,
             source_contact_display_name,
+            active,
         } => ProfileRecord::ShareOwnership(ShareOwnershipRecord {
             author,
             profile_id,
@@ -572,6 +600,7 @@ fn decode_stored_operation(operation: &StoredOperation) -> Result<ProfileRecord>
             recorded_at,
             source_contact_profile_id,
             source_contact_display_name,
+            active,
         }),
         ProfileRecordBody::ContactFollow {
             profile_id,
@@ -693,6 +722,19 @@ fn latest_contact_follow_record<'a>(
     })
 }
 
+fn latest_share_ownership_record<'a>(
+    profile_id: &str,
+    collection_hash: &str,
+    share_code: &str,
+    records: &'a [ShareOwnershipRecord],
+) -> Option<&'a ShareOwnershipRecord> {
+    records.iter().rev().find(|record| {
+        record.profile_id == profile_id
+            && record.collection_hash == collection_hash
+            && record.share_code == share_code
+    })
+}
+
 fn normalize_profile_id(profile_id: String) -> Result<String> {
     let profile_id = profile_id.trim().to_owned();
     if profile_id.is_empty() {
@@ -753,6 +795,10 @@ const fn profile_version() -> u8 {
 
 const fn profile_records_version() -> u8 {
     PROFILE_RECORDS_VERSION
+}
+
+const fn share_record_active_default() -> bool {
+    true
 }
 
 #[cfg(test)]
@@ -866,6 +912,7 @@ mod tests {
         assert_eq!(ownerships[0].profile_id, store.profile().profile_id);
         assert_eq!(ownerships[0].share_code, "p2p-SHARE");
         assert_eq!(ownerships[0].author, private_key.public_key());
+        assert!(ownerships[0].active);
         assert!(ownerships[0].source_contact_profile_id.is_none());
 
         Ok(())
@@ -892,9 +939,31 @@ mod tests {
         assert!(ownerships.iter().any(|record| {
             record.profile_id == local_profile_id
                 && record.share_code == "p2p-DOWNLOAD"
+                && record.active
                 && record.source_contact_profile_id.as_deref() == Some("contact-profile")
                 && record.source_contact_display_name.as_deref() == Some("Alice")
         }));
+
+        Ok(())
+    }
+
+    #[test]
+    fn share_removal_records_append_tombstone_and_allow_republish() -> Result<()> {
+        let dir = tempdir()?;
+        let private_key = PrivateKey::new();
+        write_node_key(dir.path(), &private_key)?;
+
+        let mut store = ProfileStore::load_or_create(dir.path())?;
+        let share = sample_share_record(&store.profile().profile_id);
+        assert!(store.ensure_share_ownership_record(&share)?);
+        assert!(store.remove_share_ownership_record(&share)?);
+        assert!(store.ensure_share_ownership_record(&share)?);
+
+        let ownerships = store.share_ownership_records()?;
+        assert_eq!(ownerships.len(), 3);
+        assert!(ownerships[0].active);
+        assert!(!ownerships[1].active);
+        assert!(ownerships[2].active);
 
         Ok(())
     }

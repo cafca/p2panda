@@ -108,3 +108,24 @@ BLOCKED until tasks 47, 48, 49 are complete. Cleanup pass to align direct deps w
 - `p2panda-net/src/sync/handle.rs` exposes `SyncHandle::initiate_session()` for explicit sync triggers.
 - All 94 lib tests pass. Integration tests pass but are slow to link in sandbox (OOM risk).
 - `.cargo/config.toml` sets target-dir to `/tmp/p2panda-build` and configures gcc+mold linker for Linux targets.
+
+# Sun, 08 Mar 2026 17:21:20 GMT
+
+- picked Task 47 (`Replace periodic share announcements with LogSync share records`) as the highest-priority actionable unfinished task because Task 41 remains external fork validation, Task 47 is on the critical path to Task 54, and the existing share flow still depended on periodic gossip re-announcements plus lacked a durable removal path for synced share state
+- replaced timer-driven share announcements with LogSync-backed share state by:
+- adding a backward-compatible `active` tombstone flag to persisted share ownership records so share removals survive restart and republishing a share after removal is valid
+- mapping inactive local share records to `DomainOperation::ShareRemoved`, reducing legacy contact caches to latest active shares only, and publishing share removals through `ProfileSyncService`
+- wiring bridge-level share removal to append a local tombstone and refresh local LogSync publication, so remote contact caches drop deleted shares without manual network refresh commands
+- removing initial/repeated `CollectionAnnouncement` broadcasts from live sharing and startup share recovery while keeping topic joins alive for actual transfers
+- added focused verification for:
+- share tombstones in `profile-records.json` and republish-after-removal behavior
+- contact cache reduction that ignores inactive share tombstones
+- LogSync catch-up of current active shares plus live share removal propagation to a follower over relay-backed sync
+- ran feedback loops:
+- `cargo fmt --package p2panda-file-sharing-gui`
+- `cargo check -p p2panda-file-sharing-gui --lib`
+- `cargo test -p p2panda-file-sharing-gui profile::tests --lib -- --nocapture`
+- `cargo test -p p2panda-file-sharing-gui contacts::tests --lib -- --nocapture`
+- `cargo test -p p2panda-file-sharing-gui profile_sync::tests --lib -- --nocapture`
+- `cargo test -p p2panda-file-sharing-gui --lib -- --nocapture`
+- marked Task 47 `passes: true` in `PRD.jsonl` because this run verified offline share catch-up via LogSync, live share removal propagation into remote cached share state, and the removal of periodic gossip re-announcement behavior from live and recovered shares

@@ -1698,6 +1698,15 @@ async fn remove_share_and_purge(state: &RuntimeState, transfer_id: u64) -> Resul
         return Ok(());
     };
 
+    let removed_profile_record = {
+        let mut profile_store = state.profile_store.lock().await;
+        profile_store.remove_share_ownership_record(&removed.record)?
+    };
+    if removed_profile_record {
+        let mut profile_sync = state.profile_sync.lock().await;
+        profile_sync.refresh_local_profile().await?;
+    }
+
     if removed.hashes.is_empty() {
         removed.hashes = share_hashes_for_record(&state.node, &removed.record).await;
     }
