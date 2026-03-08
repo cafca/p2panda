@@ -1143,7 +1143,7 @@
     "At least one query path benefits from indexed/ranged retrieval rather than full-file load",
     "Migration from legacy JSON data is validated on sample persisted state"
   ],
-  "passes": false
+  "passes": true
 }
 {
   "id": 50,
