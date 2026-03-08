@@ -148,6 +148,12 @@ pub struct ReducedProfileState {
     pub followed_profile_ids: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReducedContactFollowState {
+    pub followed_profile_id: String,
+    pub recorded_at: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MigrationReport {
     pub profile_operations: usize,
@@ -523,6 +529,60 @@ where
             shares,
             followed_profile_ids,
         }))
+    }
+
+    pub async fn read_followed_contact_state(
+        &self,
+        profile_id: &str,
+    ) -> Result<Vec<ReducedContactFollowState>> {
+        let mut operations = self.operations_for_profile(profile_id).await?;
+        operations.retain(|entry| {
+            matches!(
+                entry.operation,
+                DomainOperation::ContactFollowChanged { .. }
+            )
+        });
+        operations.sort_by(|left, right| {
+            left.header
+                .timestamp
+                .cmp(&right.header.timestamp)
+                .then_with(|| left.log_id.kind.rank().cmp(&right.log_id.kind.rank()))
+                .then_with(|| left.author.to_string().cmp(&right.author.to_string()))
+                .then_with(|| left.header.seq_num.cmp(&right.header.seq_num))
+        });
+
+        let mut follows = HashMap::<String, ReducedContactFollowState>::new();
+        for entry in operations {
+            let DomainOperation::ContactFollowChanged {
+                followed_profile_id,
+                recorded_at,
+                active,
+                ..
+            } = entry.operation
+            else {
+                continue;
+            };
+
+            if active {
+                follows.insert(
+                    followed_profile_id.clone(),
+                    ReducedContactFollowState {
+                        followed_profile_id,
+                        recorded_at,
+                    },
+                );
+            } else {
+                follows.remove(&followed_profile_id);
+            }
+        }
+
+        let mut follows = follows.into_values().collect::<Vec<_>>();
+        follows.sort_by(|left, right| {
+            left.recorded_at
+                .cmp(&right.recorded_at)
+                .then_with(|| left.followed_profile_id.cmp(&right.followed_profile_id))
+        });
+        Ok(follows)
     }
 
     pub async fn operations_for_profile(
@@ -907,6 +967,57 @@ mod tests {
         assert_eq!(profile_log.len(), 2);
         assert_eq!(share_log.len(), 1);
         assert_eq!(contact_log.len(), 1);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn followed_contact_reducer_tracks_latest_active_records() -> Result<()> {
+        let private_key = PrivateKey::new();
+        let profile_id = private_key.public_key().to_string();
+        let first_followed_profile_id = PrivateKey::new().public_key().to_string();
+        let second_followed_profile_id = PrivateKey::new().public_key().to_string();
+
+        let mut domain = FileSharingOperationDomain::new(
+            MemoryStore::<DomainLogId, DomainExtensions>::new(),
+            FileSharingTopicMap::default(),
+        );
+
+        domain
+            .append_contact_follow_changed(
+                &private_key,
+                &profile_id,
+                &first_followed_profile_id,
+                10,
+                true,
+            )
+            .await?;
+        domain
+            .append_contact_follow_changed(
+                &private_key,
+                &profile_id,
+                &second_followed_profile_id,
+                20,
+                true,
+            )
+            .await?;
+        domain
+            .append_contact_follow_changed(
+                &private_key,
+                &profile_id,
+                &first_followed_profile_id,
+                30,
+                false,
+            )
+            .await?;
+
+        assert_eq!(
+            domain.read_followed_contact_state(&profile_id).await?,
+            vec![ReducedContactFollowState {
+                followed_profile_id: second_followed_profile_id,
+                recorded_at: 20,
+            }]
+        );
 
         Ok(())
     }

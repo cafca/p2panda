@@ -7,7 +7,8 @@ use p2panda_core::PublicKey;
 use serde::{Deserialize, Serialize};
 
 use crate::operation_domain::{
-    load_reduced_profile_state_from_path, ReducedProfileState, ReducedShareState,
+    load_reduced_profile_state_from_path, ReducedContactFollowState, ReducedProfileState,
+    ReducedShareState,
 };
 use crate::profile::{
     active_follow_records_for_profile, load_profile_records_from_path, ProfileMetadataRecord,
@@ -173,6 +174,47 @@ impl ContactsStore {
             .followed_contacts
             .retain(|contact| contact.profile_id != profile_id);
         let changed = self.state.followed_contacts.len() != before;
+        if changed {
+            self.save()?;
+        }
+        Ok(changed)
+    }
+
+    pub fn reconcile_followed_contacts(
+        &mut self,
+        follows: &[ReducedContactFollowState],
+    ) -> Result<bool> {
+        let previous = self.state.followed_contacts.clone();
+        let mut existing_contacts = self
+            .state
+            .followed_contacts
+            .drain(..)
+            .map(|contact| (contact.profile_id.clone(), contact))
+            .collect::<std::collections::HashMap<_, _>>();
+
+        let mut next_contacts = Vec::with_capacity(follows.len());
+        for follow in follows {
+            let mut contact = existing_contacts
+                .remove(&follow.followed_profile_id)
+                .unwrap_or(Contact {
+                    profile_id: follow.followed_profile_id.clone(),
+                    followed_at: follow.recorded_at,
+                    cached_display_name: None,
+                    cached_shares: Vec::new(),
+                    last_refreshed_at: None,
+                    last_error: None,
+                });
+            contact.followed_at = follow.recorded_at;
+            next_contacts.push(contact);
+        }
+
+        next_contacts.sort_by(|left, right| {
+            left.followed_at
+                .cmp(&right.followed_at)
+                .then_with(|| left.profile_id.cmp(&right.profile_id))
+        });
+        let changed = next_contacts != previous;
+        self.state.followed_contacts = next_contacts;
         if changed {
             self.save()?;
         }
@@ -808,6 +850,73 @@ mod tests {
         assert!(store.remove_contact(&profile_id)?);
         assert!(store.get(&profile_id).is_none());
         assert_eq!(fs::read(&downloaded_file)?, b"keep me");
+
+        Ok(())
+    }
+
+    #[test]
+    fn reconcile_followed_contacts_rebuilds_projection_from_operation_state() -> Result<()> {
+        let dir = tempdir()?;
+        let first_profile_id = PrivateKey::new().public_key().to_string();
+        let second_profile_id = PrivateKey::new().public_key().to_string();
+        let third_profile_id = PrivateKey::new().public_key().to_string();
+        let mut contacts = ContactsStore::load(dir.path())?;
+
+        contacts.follow_contact(first_profile_id.clone())?;
+        contacts.follow_contact(second_profile_id.clone())?;
+        {
+            let cache_path = contact_records_cache_path(dir.path(), &second_profile_id);
+            write_reduced_profile_state_to_path(
+                &cache_path,
+                &ReducedProfileState {
+                    profile_id: second_profile_id.clone(),
+                    display_name: Some("Kept Contact".to_owned()),
+                    shares: Vec::new(),
+                    followed_profile_ids: Vec::new(),
+                },
+            )?;
+        }
+        contacts.refresh_contact(&second_profile_id)?;
+
+        assert!(contacts.reconcile_followed_contacts(&[
+            ReducedContactFollowState {
+                followed_profile_id: second_profile_id.clone(),
+                recorded_at: 20,
+            },
+            ReducedContactFollowState {
+                followed_profile_id: third_profile_id.clone(),
+                recorded_at: 30,
+            },
+        ])?);
+
+        let reloaded = ContactsStore::load(dir.path())?;
+        let profile_ids = reloaded
+            .contacts()
+            .iter()
+            .map(|contact| contact.profile_id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            profile_ids,
+            vec![second_profile_id.as_str(), third_profile_id.as_str()]
+        );
+        assert_eq!(
+            reloaded
+                .get(&second_profile_id)
+                .and_then(|contact| contact.display_name()),
+            Some("Kept Contact")
+        );
+        assert_eq!(
+            reloaded
+                .get(&second_profile_id)
+                .map(|contact| contact.followed_at),
+            Some(20)
+        );
+        assert_eq!(
+            reloaded
+                .get(&third_profile_id)
+                .map(|contact| contact.followed_at),
+            Some(30)
+        );
 
         Ok(())
     }

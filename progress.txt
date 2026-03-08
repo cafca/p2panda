@@ -129,3 +129,9 @@ BLOCKED until tasks 47, 48, 49 are complete. Cleanup pass to align direct deps w
 - `cargo test -p p2panda-file-sharing-gui profile_sync::tests --lib -- --nocapture`
 - `cargo test -p p2panda-file-sharing-gui --lib -- --nocapture`
 - marked Task 47 `passes: true` in `PRD.jsonl` because this run verified offline share catch-up via LogSync, live share removal propagation into remote cached share state, and the removal of periodic gossip re-announcement behavior from live and recovered shares
+
+# Sun, 08 Mar 2026 17:30:25 GMT
+
+- picked Task 48 (`Model contact graph as operations with cross-device sync`) as the highest-priority remaining product task because Task 41 is external fork validation, Task 54 is still blocked on 48/49, and the contact list was still effectively sourced from `contacts.json` instead of being rebuilt from contact operation history
+- made `contacts.json` a persisted projection of contact follow operations by adding an operation-domain reducer for latest active follows, reconciling the local contacts store from that reduced state on ProfileSync startup/refresh, and covering the projection path with operation-domain, contacts, and profile-sync tests
+- feedback loops passed for the implemented slice: `cargo check -p p2panda-file-sharing-gui --lib`, `cargo test -p p2panda-file-sharing-gui contacts::tests --lib -- --nocapture`, `cargo test -p p2panda-file-sharing-gui operation_domain::tests --lib -- --nocapture`, `cargo test -p p2panda-file-sharing-gui profile_sync::tests --lib -- --nocapture`; Task 48 stays `passes: false` because true same-user multi-device convergence is still blocked by profile sync/routing assuming `profile_id` is a directly dialable public key rather than a multi-author profile identifier

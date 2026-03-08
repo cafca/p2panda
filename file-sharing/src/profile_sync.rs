@@ -91,6 +91,8 @@ impl ProfileSyncService {
             .await
             .context("failed to join local profile sync topic")?;
 
+        reconcile_local_contacts_projection(&node.data_dir, &domain, &local_profile_id).await?;
+
         Ok(Self {
             data_dir: node.data_dir.clone(),
             store,
@@ -139,10 +141,14 @@ impl ProfileSyncService {
         }
 
         self.local_record_count = records.len();
+        reconcile_local_contacts_projection(&self.data_dir, &self.domain, &self.local_profile_id)
+            .await?;
         Ok(())
     }
 
     pub(crate) async fn sync_followed_contacts_from_disk(&mut self) -> Result<usize> {
+        reconcile_local_contacts_projection(&self.data_dir, &self.domain, &self.local_profile_id)
+            .await?;
         let contacts = ContactsStore::load(&self.data_dir)
             .context("failed to load contacts for profile sync startup")?;
         let profile_ids = contacts
@@ -397,6 +403,20 @@ async fn persist_contact_cache(
     Ok(())
 }
 
+async fn reconcile_local_contacts_projection(
+    data_dir: &Path,
+    domain: &FileSharingOperationDomain<DomainStore>,
+    profile_id: &str,
+) -> Result<()> {
+    let follows = domain.read_followed_contact_state(profile_id).await?;
+    let mut contacts = ContactsStore::load(data_dir)
+        .context("failed to load contacts while reconciling local follow projection")?;
+    contacts
+        .reconcile_followed_contacts(&follows)
+        .context("failed to persist contacts projection from local follow operations")?;
+    Ok(())
+}
+
 async fn wait_for_topic_registration(
     address_book: &p2panda_net::AddressBook,
     topic: TopicId,
@@ -477,8 +497,9 @@ mod tests {
             ))
             .await?;
 
-        let follower_profile = ProfileStore::load_or_create(follower_dir.path())?;
+        let mut follower_profile = ProfileStore::load_or_create(follower_dir.path())?;
         let follower_profile_id = follower_profile.profile().profile_id.clone();
+        follower_profile.follow_contact(sharer_profile_id.clone())?;
         drop(follower_profile);
 
         let mut follower_contacts = ContactsStore::load(follower_dir.path())?;
@@ -563,6 +584,53 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn refresh_local_profile_rebuilds_contacts_from_follow_operation_history() -> Result<()> {
+        let dir = tempdir()?;
+        let node = AppNode::with_data_dir(
+            dir.path(),
+            NodeOptions {
+                mdns_enabled: false,
+                ..Default::default()
+            },
+        )
+        .await?;
+        let mut profile = ProfileStore::load_or_create(dir.path())?;
+        let profile_id = profile.profile().profile_id.clone();
+        let stale_contact_id = PrivateKey::new().public_key().to_string();
+        let kept_contact_id = PrivateKey::new().public_key().to_string();
+        let removed_contact_id = PrivateKey::new().public_key().to_string();
+
+        {
+            let mut contacts = ContactsStore::load(dir.path())?;
+            contacts.follow_contact(stale_contact_id.clone())?;
+        }
+
+        profile.follow_contact(kept_contact_id.clone())?;
+        profile.follow_contact(removed_contact_id.clone())?;
+        profile.unfollow_contact(removed_contact_id.clone())?;
+        drop(profile);
+
+        let mut sync = ProfileSyncService::new(&node, profile_id.clone()).await?;
+        sync.refresh_local_profile().await?;
+
+        let contacts = ContactsStore::load(dir.path())?;
+        let profile_ids = contacts
+            .contacts()
+            .iter()
+            .map(|contact| contact.profile_id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(profile_ids, vec![kept_contact_id.as_str()]);
+
+        let reduced = FileSharingOperationDomain::new(sync.store.clone(), sync.topic_map.clone())
+            .read_profile_state(&profile_id)
+            .await?
+            .expect("local profile state to exist");
+        assert_eq!(reduced.followed_profile_ids, vec![kept_contact_id]);
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn syncs_contact_share_state_via_log_sync_catch_up_and_live_removal() -> Result<()> {
         setup_logging();
 
@@ -601,8 +669,9 @@ mod tests {
             ))
             .await?;
 
-        let follower_profile = ProfileStore::load_or_create(follower_dir.path())?;
+        let mut follower_profile = ProfileStore::load_or_create(follower_dir.path())?;
         let follower_profile_id = follower_profile.profile().profile_id.clone();
+        follower_profile.follow_contact(sharer_profile_id.clone())?;
         drop(follower_profile);
 
         let mut follower_contacts = ContactsStore::load(follower_dir.path())?;
