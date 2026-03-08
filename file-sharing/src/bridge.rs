@@ -496,7 +496,7 @@ async fn default_handle_command(
             }
             {
                 let mut profile_sync = state.profile_sync.lock().await;
-                let _ = profile_sync.refresh_local_profile().await?;
+                profile_sync.refresh_local_profile().await?;
             }
             let mut runtime = state.inner.lock().await;
             runtime.store.add_share(share_record)?;
@@ -657,7 +657,7 @@ async fn persist_contact_download_ownership(
     drop(profile_store);
 
     let mut profile_sync = state.profile_sync.lock().await;
-    let _ = profile_sync.refresh_local_profile().await?;
+    profile_sync.refresh_local_profile().await?;
     Ok(())
 }
 

@@ -101,6 +101,17 @@ pub enum ProfileRecord {
     ContactFollow(ContactFollowRecord),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ShareOwnershipUpdate {
+    profile_id: String,
+    collection_hash: String,
+    share_code: String,
+    source_dir: PathBuf,
+    source_contact_profile_id: Option<String>,
+    source_contact_display_name: Option<String>,
+    active: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum ProfileRecordBody {
@@ -277,15 +288,15 @@ impl ProfileStore {
             .as_deref()
             .unwrap_or(&self.profile.profile_id);
 
-        self.set_share_ownership_state(
-            owner_profile_id.to_owned(),
-            share.collection_hash.clone(),
-            share.share_code.clone(),
-            share.source_dir.clone(),
-            None,
-            None,
-            true,
-        )
+        self.set_share_ownership_state(ShareOwnershipUpdate {
+            profile_id: owner_profile_id.to_owned(),
+            collection_hash: share.collection_hash.clone(),
+            share_code: share.share_code.clone(),
+            source_dir: share.source_dir.clone(),
+            source_contact_profile_id: None,
+            source_contact_display_name: None,
+            active: true,
+        })
     }
 
     pub fn ensure_downloaded_share_record(
@@ -297,15 +308,15 @@ impl ProfileStore {
         source_contact_profile_id: Option<String>,
         source_contact_display_name: Option<String>,
     ) -> Result<bool> {
-        self.set_share_ownership_state(
-            profile_id.to_owned(),
-            collection_hash.into(),
-            share_code.into(),
-            source_dir.into(),
+        self.set_share_ownership_state(ShareOwnershipUpdate {
+            profile_id: profile_id.to_owned(),
+            collection_hash: collection_hash.into(),
+            share_code: share_code.into(),
+            source_dir: source_dir.into(),
             source_contact_profile_id,
             source_contact_display_name,
-            true,
-        )
+            active: true,
+        })
     }
 
     pub fn remove_share_ownership_record(&mut self, share: &ShareRecord) -> Result<bool> {
@@ -314,15 +325,15 @@ impl ProfileStore {
             .as_deref()
             .unwrap_or(&self.profile.profile_id);
 
-        self.set_share_ownership_state(
-            owner_profile_id.to_owned(),
-            share.collection_hash.clone(),
-            share.share_code.clone(),
-            share.source_dir.clone(),
-            None,
-            None,
-            false,
-        )
+        self.set_share_ownership_state(ShareOwnershipUpdate {
+            profile_id: owner_profile_id.to_owned(),
+            collection_hash: share.collection_hash.clone(),
+            share_code: share.share_code.clone(),
+            source_dir: share.source_dir.clone(),
+            source_contact_profile_id: None,
+            source_contact_display_name: None,
+            active: false,
+        })
     }
 
     pub fn ensure_share_ownership_records<'a>(
@@ -372,38 +383,29 @@ impl ProfileStore {
         Ok(())
     }
 
-    fn set_share_ownership_state(
-        &mut self,
-        profile_id: String,
-        collection_hash: String,
-        share_code: String,
-        source_dir: PathBuf,
-        source_contact_profile_id: Option<String>,
-        source_contact_display_name: Option<String>,
-        active: bool,
-    ) -> Result<bool> {
+    fn set_share_ownership_state(&mut self, update: ShareOwnershipUpdate) -> Result<bool> {
         let share_records = self.share_ownership_records()?;
         let latest = latest_share_ownership_record(
-            &profile_id,
-            &collection_hash,
-            &share_code,
+            &update.profile_id,
+            &update.collection_hash,
+            &update.share_code,
             &share_records,
         );
         if let Some(latest) = latest {
-            if latest.active == active {
+            if latest.active == update.active {
                 return Ok(false);
             }
         }
 
         self.append_record(ProfileRecordBody::ShareOwnership {
-            profile_id,
-            collection_hash,
-            share_code,
-            source_dir,
+            profile_id: update.profile_id,
+            collection_hash: update.collection_hash,
+            share_code: update.share_code,
+            source_dir: update.source_dir,
             recorded_at: now_unix_secs(),
-            source_contact_profile_id,
-            source_contact_display_name,
-            active,
+            source_contact_profile_id: update.source_contact_profile_id,
+            source_contact_display_name: update.source_contact_display_name,
+            active: update.active,
         })?;
         Ok(true)
     }

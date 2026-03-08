@@ -1,0 +1,5 @@
+[advisories]
+ignore = [
+    # Pulled in transitively via sqlx's macro support; this workspace uses SQLite only.
+    "RUSTSEC-2023-0071",
+]

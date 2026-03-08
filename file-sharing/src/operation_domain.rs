@@ -154,6 +154,16 @@ pub struct ReducedContactFollowState {
     pub recorded_at: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SharePublication {
+    pub collection_hash: String,
+    pub share_code: String,
+    pub source_dir: PathBuf,
+    pub recorded_at: u64,
+    pub source_contact_profile_id: Option<String>,
+    pub source_contact_display_name: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MigrationReport {
     pub profile_operations: usize,
@@ -383,23 +393,18 @@ where
         &mut self,
         private_key: &PrivateKey,
         profile_id: &str,
-        collection_hash: impl Into<String>,
-        share_code: impl Into<String>,
-        source_dir: impl Into<PathBuf>,
-        recorded_at: u64,
-        source_contact_profile_id: Option<String>,
-        source_contact_display_name: Option<String>,
+        share: SharePublication,
     ) -> Result<Header<DomainExtensions>> {
         self.append_operation(
             private_key,
             DomainOperation::SharePublished {
                 profile_id: profile_id.to_owned(),
-                collection_hash: collection_hash.into(),
-                share_code: share_code.into(),
-                source_dir: source_dir.into(),
-                recorded_at,
-                source_contact_profile_id,
-                source_contact_display_name,
+                collection_hash: share.collection_hash,
+                share_code: share.share_code,
+                source_dir: share.source_dir,
+                recorded_at: share.recorded_at,
+                source_contact_profile_id: share.source_contact_profile_id,
+                source_contact_display_name: share.source_contact_display_name,
             },
         )
         .await
@@ -659,12 +664,14 @@ where
                         self.append_share_published(
                             private_key,
                             &record.profile_id,
-                            record.collection_hash,
-                            record.share_code,
-                            record.source_dir,
-                            record.recorded_at,
-                            record.source_contact_profile_id,
-                            record.source_contact_display_name,
+                            SharePublication {
+                                collection_hash: record.collection_hash,
+                                share_code: record.share_code,
+                                source_dir: record.source_dir,
+                                recorded_at: record.recorded_at,
+                                source_contact_profile_id: record.source_contact_profile_id,
+                                source_contact_display_name: record.source_contact_display_name,
+                            },
                         )
                         .await?;
                     } else {
@@ -818,24 +825,28 @@ mod tests {
             .append_share_published(
                 &private_key,
                 &profile_id,
-                BlobHash::new(b"share-a").to_string(),
-                "p2p-A",
-                PathBuf::from("/tmp/share-a"),
-                30,
-                None,
-                None,
+                SharePublication {
+                    collection_hash: BlobHash::new(b"share-a").to_string(),
+                    share_code: "p2p-A".into(),
+                    source_dir: PathBuf::from("/tmp/share-a"),
+                    recorded_at: 30,
+                    source_contact_profile_id: None,
+                    source_contact_display_name: None,
+                },
             )
             .await?;
         domain
             .append_share_published(
                 &private_key,
                 &profile_id,
-                BlobHash::new(b"share-b").to_string(),
-                "p2p-B",
-                PathBuf::from("/tmp/share-b"),
-                31,
-                None,
-                None,
+                SharePublication {
+                    collection_hash: BlobHash::new(b"share-b").to_string(),
+                    share_code: "p2p-B".into(),
+                    source_dir: PathBuf::from("/tmp/share-b"),
+                    recorded_at: 31,
+                    source_contact_profile_id: None,
+                    source_contact_display_name: None,
+                },
             )
             .await?;
         domain
