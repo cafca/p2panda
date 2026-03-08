@@ -55,3 +55,14 @@
 # Sun, 08 Mar 2026 18:12:51 GMT
 
 Added workflow permissions for GH PAT so Task 41 can continue.
+
+# Sun, 08 Mar 2026 18:16:07 GMT
+
+- picked Task 51 (`Add Supervisor-managed lifecycle for network actors`) as the highest-priority actionable unfinished task because Task 48 is still blocked by the current profile-identity model, Task 54 depends on 48, and Task 51 already had implementation evidence that only needed fresh acceptance verification
+- re-verified the supervisor-managed actor lifecycle already wired into the file-sharing node and diagnostics path without expanding scope beyond this single feature
+- feedback loops passed in this run:
+- `cargo check -p p2panda-file-sharing-gui --lib`
+- `cargo test -p p2panda-file-sharing-gui node::tests --lib -- --nocapture`
+- `cargo test -p p2panda-file-sharing-gui bridge::tests::diagnostics_capture_supervisor_failures_and_restarts --lib -- --nocapture`
+- `cargo test -p p2panda-net supervisor::tests --features supervisor,test_utils --lib -- --nocapture`
+- marked Task 51 `passes: true` in `PRD.jsonl` because this run confirmed supervised discovery and gossip actor restarts, diagnostics emission for failure/restart events, and deterministic supervisor recovery coverage in `p2panda-net`

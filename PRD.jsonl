@@ -1183,7 +1183,7 @@
     "Normal shutdown does not leak background tasks",
     "Failure-recovery behavior is verified by automated or deterministic integration tests"
   ],
-  "passes": false
+  "passes": true
 }
 {
   "id": 52,
