@@ -1054,7 +1054,7 @@
   "spec": {
     "operation_schema": "Define operation types for profile updates, share lifecycle events, and contact graph changes, including sequencing/backlink behavior needed for causal history.",
     "log_layout": "Establish a stable log identity strategy (for example per profile + domain) and document how logs are partitioned so multiple devices can contribute safely.",
-    "topic_mapping": "Implement TopicMap wiring so each joined topic resolves to the correct set of logs for replication, rather than using implicit topic-to-data conventions.",
+    "topic_mapping": "Implement TopicMap wiring so each joined topic resolves to the correct set of logs for replication, rather than using implicit topic-to-data conventions."
   },
   "acceptance": [
     "Profile, share, and contact state can be represented and persisted as p2panda operations with verifiable ordering",
@@ -1095,7 +1095,7 @@
   ],
   "spec": {
     "share_operations": "Represent share create/update/remove and availability changes as operations in the owner's share log.",
-    "sync_behavior": "Joiners should obtain active share state via LogSync catch-up and continue receiving live changes without periodic full rebroadcast.",
+    "sync_behavior": "Joiners should obtain active share state via LogSync catch-up and continue receiving live changes without periodic full rebroadcast."
   },
   "acceptance": [
     "A peer that was offline can discover current active shares immediately after joining relevant topics",
@@ -1115,7 +1115,7 @@
   "spec": {
     "contact_ops": "Introduce follow/unfollow (and optional metadata updates) as operation records in a dedicated contact log.",
     "state_reduction": "Define deterministic reduction rules from contact operation history to current contact list state.",
-    "device_sync": "Synchronize contact logs via LogSync so new follows/removals made on one device appear on another.",
+    "device_sync": "Synchronize contact logs via LogSync so new follows/removals made on one device appear on another."
   },
   "acceptance": [
     "Follow/unfollow actions are recorded as operations rather than only local JSON rows",
