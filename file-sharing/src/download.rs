@@ -5,21 +5,30 @@ use std::time::Duration;
 
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use futures_util::StreamExt;
-use iroh_blobs::hashseq::HashSeq;
 use p2panda_blobs::{DownloadProgress, DownloadProgressItem, Hash as BlobHash};
 use p2panda_core::PublicKey;
 use p2panda_net::addrs::NodeInfo;
 use p2panda_net::iroh_endpoint::{from_public_key, EndpointAddr};
+use p2panda_net::sync::SyncSubscription;
+use p2panda_net::LogSync;
+use p2panda_store::MemoryStore;
+use p2panda_sync::protocols::TopicLogSyncEvent;
 
 use crate::diagnostics::DownloadProviderStatus;
 use crate::manifest::verify_manifest;
 use crate::node::AppNode;
+use crate::operation_domain::{
+    DomainExtensions, DomainLogId, FileSharingOperationDomain, FileSharingTopicMap,
+    ReducedShareState,
+};
 use crate::share_code::{decode_share_code, ShareCode};
 
 const DOWNLOAD_ATTEMPTS: usize = 5;
 const DOWNLOAD_RETRY_DELAY: Duration = Duration::from_millis(250);
 const DOWNLOAD_BLOB_PIN_PREFIX: &str = "downloaded/";
 const COMPLETED_BLOBS_DIR: &str = "completed_blobs";
+const SHARE_METADATA_SYNC_TIMEOUT: Duration = Duration::from_secs(10);
+const SHARE_METADATA_BOOTSTRAP_SETTLE_DELAY: Duration = Duration::from_millis(750);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DownloadEvent {
@@ -60,7 +69,7 @@ pub struct DownloadedFile {
 pub struct DownloadSession {
     pub share_code: ShareCode,
     pub collection_hash: BlobHash,
-    pub manifest_hash: BlobHash,
+    pub manifest_bytes: Vec<u8>,
     pub output_root: PathBuf,
     pub directory_name: String,
     pub total_bytes: u64,
@@ -91,48 +100,24 @@ where
     bootstrap_sharer(node, &share_code)
         .await
         .context("failed to bootstrap sharer from share code")?;
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    if share_code.relay_url.is_some() {
+        tokio::time::sleep(SHARE_METADATA_BOOTSTRAP_SETTLE_DELAY).await;
+    }
+    let reduced_share = sync_share_metadata(node, &share_code)
+        .await
+        .context("failed to synchronize share metadata over LogSync")?;
     let providers = download_providers(node, sharer_node_id).await?;
 
     let collection_hash = share_code.collection_hash();
-    retry_download("collection blob", || {
-        download_collection(node, collection_hash, &providers)
-    })
-    .await
-    .context("failed to download collection blob")?;
-
-    let collection_bytes = node
-        .blobs
-        .get_bytes(collection_hash)
-        .await
-        .context("failed to read downloaded collection blob")?;
-    let mut collection = HashSeq::new(collection_bytes)
-        .ok_or_else(|| anyhow!("collection blob is not a valid hash sequence"))?;
-    let manifest_hash = collection
-        .pop_front()
-        .ok_or_else(|| anyhow!("collection hash sequence does not contain a manifest hash"))?;
-
-    retry_download("manifest blob", || {
-        download_blob_from_providers(node, manifest_hash, &providers)
-    })
-    .await
-    .context("failed to download manifest blob")?;
-
-    let manifest_bytes = node
-        .blobs
-        .get_bytes(manifest_hash)
-        .await
-        .context("failed to read downloaded manifest blob")?;
+    ensure!(
+        BlobHash::new(&reduced_share.manifest_bytes) == collection_hash,
+        "share manifest hash does not match share code collection hash"
+    );
+    let manifest_bytes = reduced_share.manifest_bytes.clone();
     let verified_manifest = verify_manifest(&manifest_bytes)?;
     ensure!(
         verified_manifest.public_key == share_code.node_id()?,
         "manifest signer does not match share code node id"
-    );
-    ensure!(
-        verified_manifest.data.files.len() == collection.len(),
-        "manifest file count ({}) does not match collection payload count ({})",
-        verified_manifest.data.files.len(),
-        collection.len()
     );
 
     let output_root = output_directory.as_ref().join(&verified_manifest.data.name);
@@ -161,27 +146,7 @@ where
     let mut downloaded_files = Vec::with_capacity(verified_manifest.data.files.len());
     let mut file_errors = Vec::new();
 
-    for (file_index, (manifest_file, expected_hash)) in verified_manifest
-        .data
-        .files
-        .iter()
-        .zip(collection.into_iter())
-        .enumerate()
-    {
-        let file_hash = BlobHash::from_bytes(manifest_file.hash);
-        if file_hash != expected_hash {
-            let error = format!(
-                "verification failed for {}: manifest hash mismatch",
-                manifest_file.relative_path
-            );
-            on_event(DownloadEvent::FileError {
-                file_index,
-                error_message: error.clone(),
-            });
-            file_errors.push(error);
-            continue;
-        }
-
+    for (file_index, manifest_file) in verified_manifest.data.files.iter().enumerate() {
         match download_one_file(
             node,
             file_index,
@@ -217,7 +182,7 @@ where
     Ok(DownloadSession {
         share_code,
         collection_hash,
-        manifest_hash,
+        manifest_bytes,
         output_root,
         directory_name: verified_manifest.data.name,
         total_bytes,
@@ -262,65 +227,131 @@ async fn download_providers(node: &AppNode, sharer_node_id: PublicKey) -> Result
     Ok(providers)
 }
 
-async fn download_collection(
-    node: &AppNode,
-    collection_hash: BlobHash,
-    providers: &[PublicKey],
-) -> Result<()> {
-    let endpoint = node
-        .endpoint
-        .endpoint()
-        .await
-        .map_err(|err| anyhow!(err))
-        .context("failed to access iroh endpoint for collection download")?;
-
-    node.blobs
-        .store()
-        .downloader(&endpoint)
-        .download(
-            iroh_blobs::HashAndFormat::hash_seq(collection_hash),
-            providers
-                .iter()
-                .copied()
-                .map(from_public_key)
-                .collect::<Vec<_>>(),
-        )
-        .await
-        .map_err(|err| anyhow!(err))
-        .context("hashseq collection download failed")?;
-
-    Ok(())
-}
-
-async fn download_blob_from_providers(
-    node: &AppNode,
-    hash: BlobHash,
-    providers: &[PublicKey],
-) -> Result<()> {
-    let progress = download_blob_with_progress_from_providers(node, hash, providers).await?;
-    progress.await.map_err(|err| anyhow!(err))?;
-    Ok(())
-}
-
 async fn download_blob_with_progress_from_providers(
     node: &AppNode,
     hash: BlobHash,
-    providers: &[PublicKey],
+    _providers: &[PublicKey],
 ) -> Result<DownloadProgress> {
-    let endpoint = node
-        .endpoint
-        .endpoint()
+    node.blobs
+        .download_with_progress(hash)
         .await
         .map_err(|err| anyhow!(err))
-        .context("failed to access iroh endpoint for blob download")?;
-    Ok(node.blobs.store().downloader(&endpoint).download(
-        hash,
-        providers
-            .iter()
-            .copied()
-            .map(from_public_key)
-            .collect::<Vec<_>>(),
-    ))
+        .context("blob download setup failed")
+}
+
+async fn sync_share_metadata(node: &AppNode, share_code: &ShareCode) -> Result<ReducedShareState> {
+    type DomainStore = MemoryStore<DomainLogId, DomainExtensions>;
+    type DomainSync = LogSync<DomainStore, DomainLogId, DomainExtensions, FileSharingTopicMap>;
+    type DomainSubscription = SyncSubscription<TopicLogSyncEvent<DomainExtensions>>;
+
+    let owner_profile_id = share_code.owner_profile_id()?;
+    let sharer_node_id = share_code.node_id()?;
+    let collection_hash = share_code.collection_hash().to_string();
+
+    let store = DomainStore::new();
+    let topic_map = FileSharingTopicMap::default();
+    let mut domain = FileSharingOperationDomain::new(store.clone(), topic_map.clone());
+    let topic = topic_map
+        .register_profile_author(&owner_profile_id, sharer_node_id)
+        .await;
+    node.address_book
+        .add_topic(node.node_id(), topic)
+        .await
+        .context("failed to register local share metadata topic")?;
+    node.address_book
+        .set_topics(sharer_node_id, [topic])
+        .await
+        .with_context(|| {
+            format!("failed to register share metadata topic for {owner_profile_id}")
+        })?;
+
+    let log_sync: DomainSync =
+        LogSync::builder(store, topic_map, node.endpoint.clone(), node.gossip.clone())
+            .spawn()
+            .await
+            .context("failed to spawn LogSync for share metadata lookup")?;
+    let handle = log_sync
+        .stream(topic, true)
+        .await
+        .context("failed to join share metadata LogSync topic")?;
+    let mut subscription: DomainSubscription = handle
+        .subscribe()
+        .await
+        .context("failed to subscribe to share metadata LogSync topic")?;
+    handle.initiate_session(sharer_node_id);
+
+    if let Some(share) = find_share_state(&domain, &owner_profile_id, &collection_hash).await? {
+        return Ok(share);
+    }
+
+    let mut last_sync_error = None::<String>;
+    let result = tokio::time::timeout(SHARE_METADATA_SYNC_TIMEOUT, async {
+        while let Some(message) = subscription.next().await {
+            let message = message.context("share metadata LogSync subscription closed")?;
+            match message.event {
+                TopicLogSyncEvent::Operation(operation) => {
+                    domain.ingest_remote_operation(*operation).await?;
+                    if let Some(share) =
+                        find_share_state(&domain, &owner_profile_id, &collection_hash).await?
+                    {
+                        return Ok(share);
+                    }
+                }
+                TopicLogSyncEvent::SyncFinished(_) | TopicLogSyncEvent::LiveModeStarted => {
+                    if let Some(share) =
+                        find_share_state(&domain, &owner_profile_id, &collection_hash).await?
+                    {
+                        return Ok(share);
+                    }
+                }
+                TopicLogSyncEvent::Failed { error } => {
+                    last_sync_error = Some(error.to_string());
+                }
+                TopicLogSyncEvent::SyncStarted(_)
+                | TopicLogSyncEvent::SyncStatus(_)
+                | TopicLogSyncEvent::LiveModeFinished(_)
+                | TopicLogSyncEvent::Success => {}
+            }
+        }
+
+        Err(anyhow!(
+            "owner profile sync ended before share metadata became available"
+        ))
+    })
+    .await;
+
+    match result {
+        Ok(share) => share,
+        Err(_) => {
+            if let Some(error) = last_sync_error {
+                bail!(
+                    "timed out waiting for share metadata for {}: last LogSync error: {}",
+                    owner_profile_id,
+                    error
+                );
+            }
+            bail!(
+                "timed out waiting for share metadata for {}",
+                owner_profile_id
+            );
+        }
+    }
+}
+
+async fn find_share_state(
+    domain: &FileSharingOperationDomain<MemoryStore<DomainLogId, DomainExtensions>>,
+    profile_id: &str,
+    collection_hash: &str,
+) -> Result<Option<ReducedShareState>> {
+    Ok(domain
+        .read_profile_state(profile_id)
+        .await?
+        .and_then(|state| {
+            state
+                .shares
+                .into_iter()
+                .find(|share| share.collection_hash == collection_hash)
+        }))
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -343,31 +374,6 @@ impl DownloadProgressTarget<'_> {
             Self::File { relative_path, .. } => format!("file {relative_path}"),
         }
     }
-}
-
-async fn retry_download<T, F, Fut>(label: &str, mut operation: F) -> Result<T>
-where
-    F: FnMut() -> Fut,
-    Fut: Future<Output = Result<T>>,
-{
-    let mut last_err = None;
-
-    for attempt in 1..=DOWNLOAD_ATTEMPTS {
-        match operation().await {
-            Ok(value) => return Ok(value),
-            Err(err) if attempt < DOWNLOAD_ATTEMPTS => {
-                last_err = Some(err);
-                tokio::time::sleep(DOWNLOAD_RETRY_DELAY).await;
-            }
-            Err(err) => {
-                last_err = Some(err);
-                break;
-            }
-        }
-    }
-
-    Err(last_err.unwrap_or_else(|| anyhow!("download failed for {label}")))
-        .with_context(|| format!("exhausted retries for {label}"))
 }
 
 async fn retry_download_progress<F, Fut, Emit>(
@@ -669,7 +675,7 @@ mod tests {
 
     use super::*;
     use crate::node::NodeOptions;
-    use crate::share::share_directory;
+    use crate::share::{publish_share_metadata, share_directory};
 
     #[tokio::test(flavor = "multi_thread")]
     async fn downloads_all_files_with_progress_and_nested_directories() -> Result<()> {
@@ -696,6 +702,7 @@ mod tests {
             .await?;
 
         let share = share_directory(&node_a, &source_root).await?;
+        let _publisher = publish_share_metadata(&node_a, &share).await?;
         let mut events = Vec::new();
         let session =
             download_share_with_progress(&node_b, &share.share_code, output_dir.path(), |event| {
@@ -785,6 +792,7 @@ mod tests {
             .await?;
 
         let share = share_directory(&node_a, &source_root).await?;
+        let _publisher = publish_share_metadata(&node_a, &share).await?;
         let preseeded_hash = share.files[0].hash;
         node_b.blobs.download(preseeded_hash).await?;
         assert!(node_b.blobs.has(preseeded_hash).await?);

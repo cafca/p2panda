@@ -90,6 +90,8 @@ pub enum DomainOperation {
         profile_id: String,
         collection_hash: String,
         share_code: String,
+        #[serde(default, with = "serde_bytes")]
+        manifest_bytes: Vec<u8>,
         source_dir: PathBuf,
         recorded_at: u64,
         #[serde(default)]
@@ -135,6 +137,7 @@ pub struct ReducedShareState {
     pub profile_id: String,
     pub collection_hash: String,
     pub share_code: String,
+    pub manifest_bytes: Vec<u8>,
     pub source_dir: PathBuf,
     pub recorded_at: u64,
     pub source_contact_profile_id: Option<String>,
@@ -159,6 +162,7 @@ pub struct ReducedContactFollowState {
 pub struct SharePublication {
     pub collection_hash: String,
     pub share_code: String,
+    pub manifest_bytes: Vec<u8>,
     pub source_dir: PathBuf,
     pub recorded_at: u64,
     pub source_contact_profile_id: Option<String>,
@@ -409,6 +413,7 @@ where
                 profile_id: profile_id.to_owned(),
                 collection_hash: share.collection_hash,
                 share_code: share.share_code,
+                manifest_bytes: share.manifest_bytes,
                 source_dir: share.source_dir,
                 recorded_at: share.recorded_at,
                 source_contact_profile_id: share.source_contact_profile_id,
@@ -493,6 +498,7 @@ where
                     profile_id,
                     collection_hash,
                     share_code,
+                    manifest_bytes,
                     source_dir,
                     recorded_at,
                     source_contact_profile_id,
@@ -504,6 +510,7 @@ where
                             profile_id,
                             collection_hash,
                             share_code,
+                            manifest_bytes,
                             source_dir,
                             recorded_at,
                             source_contact_profile_id,
@@ -846,6 +853,7 @@ mod tests {
                 SharePublication {
                     collection_hash: BlobHash::new(b"share-a").to_string(),
                     share_code: "p2p-A".into(),
+                    manifest_bytes: b"manifest-a".to_vec(),
                     source_dir: PathBuf::from("/tmp/share-a"),
                     recorded_at: 30,
                     source_contact_profile_id: None,
@@ -860,6 +868,7 @@ mod tests {
                 SharePublication {
                     collection_hash: BlobHash::new(b"share-b").to_string(),
                     share_code: "p2p-B".into(),
+                    manifest_bytes: b"manifest-b".to_vec(),
                     source_dir: PathBuf::from("/tmp/share-b"),
                     recorded_at: 31,
                     source_contact_profile_id: None,

@@ -9,7 +9,7 @@ use p2panda_file_sharing_gui::bridge::{AsyncBridge, NetworkCommand, NetworkEvent
 use p2panda_file_sharing_gui::download::{download_share_with_progress, DownloadEvent};
 use p2panda_file_sharing_gui::node::{AppNode, NodeOptions};
 use p2panda_file_sharing_gui::persist::load_state;
-use p2panda_file_sharing_gui::share::share_directory;
+use p2panda_file_sharing_gui::share::{publish_share_metadata, share_directory};
 use p2panda_net::addrs::NodeInfo;
 use p2panda_net::iroh_endpoint::{from_public_key, EndpointAddr, RelayUrl};
 use tempfile::tempdir;
@@ -44,6 +44,7 @@ async fn local_two_node_directory_transfer() -> Result<()> {
             .await?;
 
         let share = share_directory(&node_a, &source_root).await?;
+        let _publisher = publish_share_metadata(&node_a, &share).await?;
         let mut events = Vec::new();
         let session =
             download_share_with_progress(&node_b, &share.share_code, output_dir.path(), |event| {
@@ -123,6 +124,7 @@ async fn relay_based_transfer() -> Result<()> {
         tokio::time::sleep(Duration::from_secs(1)).await;
 
         let share = share_directory(&node_a, &source_root).await?;
+        let _publisher = publish_share_metadata(&node_a, &share).await?;
         let session =
             download_share_with_progress(&node_b, &share.share_code, output_dir.path(), |_| {})
                 .await?;
@@ -168,6 +170,7 @@ async fn multi_source_download_from_two_seeders() -> Result<()> {
             .await?;
 
         let share = share_directory(&node_a, &source_root).await?;
+        let _publisher = publish_share_metadata(&node_a, &share).await?;
         let _session_b = download_share_with_progress(
             &node_b,
             &share.share_code,

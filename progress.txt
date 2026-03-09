@@ -145,3 +145,25 @@ Added workflow permissions for GH PAT so Task 41 can continue.
 - `cargo test -p p2panda-file-sharing-gui profile_sync::tests --lib -- --nocapture`
 - `cargo test -p p2panda-file-sharing-gui --lib -- --nocapture`
 - marked Task 56 `passes: true` in `PRD.jsonl` because this run verified fresh-start startup without the deprecated JSON files, restart persistence of local profile display/share-follow state through the SQLite-backed store, and restart persistence of synced remote profile state with the cache data moved off JSON files
+
+# Mon, 09 Mar 2026 18:55:37 GMT
+
+- picked Task 57 (`Stop storing share metadata in p2panda-blobs`) as the highest-priority remaining product task because Task 58 is standalone cleanup while Task 57 is the last core file-sharing architecture item and still left the share/download path dependent on manifest and collection metadata blobs
+- moved share metadata transport onto the existing p2panda operation/LogSync path by embedding signed `manifest_bytes` in share publication records/operations, extending share codes with owner-profile metadata for profile-topic lookup, and resolving manifests during downloads via temporary LogSync catch-up instead of fetching manifest or `HashSeq` blobs from `p2panda-blobs`
+- removed manifest and collection metadata blobs from the runtime share pipeline: share creation now stores and pins only raw file payload blobs, transfer/share persistence keeps manifest bytes in SQLite/profile records for recovery and cleanup, and share removal now purges only share-scoped file pins instead of treating manifests/collections as blob assets
+- added a direct-node `publish_share_metadata` helper so tests that share outside the bridge still publish their manifests over LogSync; updated contacts/discovery fixtures to use reduced profile caches carrying manifest bytes instead of deprecated raw profile-record cache paths
+- feedback loops passed in this run:
+- `cargo fmt --package p2panda-file-sharing-gui`
+- `cargo check -p p2panda-file-sharing-gui --tests`
+- `cargo test -p p2panda-file-sharing-gui share::tests::sharing_directory_produces_share_code_and_store_artifacts --lib -- --nocapture`
+- `cargo test -p p2panda-file-sharing-gui download::tests::downloads_all_files_with_progress_and_nested_directories --lib -- --nocapture`
+- `cargo test -p p2panda-file-sharing-gui download::tests::skips_preexisting_blobs_without_re_downloading --lib -- --nocapture`
+- `cargo test -p p2panda-file-sharing-gui profile_sync::tests::syncs_contact_profile_via_log_sync_with_catch_up_and_live_updates --lib -- --nocapture`
+- `cargo test -p p2panda-file-sharing-gui bridge::tests::remove_share_cleanup_only_deletes_that_shares_pin_namespace --lib -- --nocapture`
+- `cargo test -p p2panda-file-sharing-gui bridge::tests::remove_share_cleanup_succeeds_for_large_pin_sets --lib -- --nocapture`
+- `cargo test -p p2panda-file-sharing-gui --test transfer local_two_node_directory_transfer -- --nocapture`
+- `cargo test -p p2panda-file-sharing-gui --test transfer relay_based_transfer -- --nocapture`
+- `cargo test -p p2panda-file-sharing-gui --test transfer multi_source_download_from_two_seeders -- --nocapture`
+- `cargo test -p p2panda-file-sharing-gui --test transfer removed_share_is_not_downloadable -- --nocapture`
+- attempted `cargo test -p p2panda-file-sharing-gui --no-run` to compile every test target at once, but the full test-binary link was SIGKILLed by the environment; used `cargo check --tests` plus focused executed tests instead, and those passed
+- marked Task 57 `passes: true` in `PRD.jsonl` because this run verified that share creation no longer writes manifest/collection metadata blobs, downloads resolve manifests via LogSync rather than `p2panda-blobs`, and end-to-end share/download coverage still passes with the operation-delivered manifest

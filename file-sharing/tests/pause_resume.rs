@@ -7,7 +7,7 @@ use iroh::test_utils::run_relay_server;
 use p2panda_file_sharing_gui::bridge::{AsyncBridge, NetworkCommand, NetworkEvent};
 use p2panda_file_sharing_gui::download::download_share_with_progress;
 use p2panda_file_sharing_gui::node::{AppNode, NodeOptions};
-use p2panda_file_sharing_gui::share::share_directory;
+use p2panda_file_sharing_gui::share::{publish_share_metadata, share_directory};
 use tempfile::tempdir;
 
 #[tokio::test(flavor = "multi_thread")]
@@ -295,6 +295,7 @@ async fn paused_download_resumes_without_re_downloading_completed_files() -> Res
 
     let sharer = AppNode::with_data_dir(sharer_dir.path(), opts.clone()).await?;
     let share = share_directory(&sharer, &source_root).await?;
+    let _publisher = publish_share_metadata(&sharer, &share).await?;
     let bridge = AsyncBridge::spawn_with_data_dir(opts, bridge_dir.path().to_path_buf())?;
 
     bridge.send(NetworkCommand::StartDownload {

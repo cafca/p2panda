@@ -6,7 +6,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use p2panda_file_sharing_gui::download::{download_share_with_progress, DownloadEvent};
 use p2panda_file_sharing_gui::node::{AppNode, NodeOptions};
-use p2panda_file_sharing_gui::share::share_directory;
+use p2panda_file_sharing_gui::share::{publish_share_metadata, share_directory};
 use p2panda_net::addrs::NodeInfo;
 use tempfile::tempdir;
 use tokio::time::timeout;
@@ -40,6 +40,7 @@ async fn resumes_after_crash_without_redownloading_completed_file() -> Result<()
             .await?;
 
         let share = share_directory(&node_a, &source_root).await?;
+        let _publisher = publish_share_metadata(&node_a, &share).await?;
         let blocked_parent = first_output_dir.path().join("source").join("nested");
         fs::create_dir_all(blocked_parent.parent().context("missing parent")?)?;
         fs::write(&blocked_parent, b"block nested dir creation")?;

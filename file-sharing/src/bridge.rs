@@ -11,7 +11,6 @@ use tokio::task::JoinHandle as TokioJoinHandle;
 use anyhow::{Context, Result};
 use bevy::prelude::Resource;
 use flume::{Receiver, Sender, TryRecvError};
-use iroh_blobs::hashseq::HashSeq;
 use p2panda_blobs::Hash as BlobHash;
 use p2panda_net::addrs::{NodeTransportInfo, TransportAddress};
 use p2panda_net::discovery::{DiscoveryEvent, SessionRole};
@@ -34,7 +33,7 @@ use crate::persist::{
 use crate::profile::ProfileStore;
 use crate::profile_sync::ProfileSyncService;
 use crate::settings::load_settings;
-use crate::share::{share_directory, share_pin_prefix, ShareSession};
+use crate::share::{share_directory_for_owner, share_pin_prefix, ShareSession};
 use crate::share_code::{decode_share_code, derive_topic};
 
 type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
@@ -470,8 +469,25 @@ async fn default_handle_command(
                 let profile_store = state.profile_store.lock().await;
                 profile_store.profile().profile_id.clone()
             };
-            let mut session = share_directory(&state.node, directory_path).await?;
-            session.owner_profile_id = Some(profile_id);
+            let session =
+                share_directory_for_owner(&state.node, directory_path, Some(&profile_id)).await?;
+
+            let share_record = ShareRecord::from(&session);
+            {
+                let mut profile_store = state.profile_store.lock().await;
+                profile_store.ensure_share_ownership_record(&share_record)?;
+            }
+            {
+                let mut profile_sync = state.profile_sync.lock().await;
+                profile_sync.refresh_local_profile().await?;
+            }
+            let mut runtime = state.inner.lock().await;
+            runtime.store.add_share(share_record)?;
+            runtime.live_shares.insert(transfer_id, session);
+            let session = runtime
+                .live_shares
+                .get(&transfer_id)
+                .expect("share session inserted");
             event_tx
                 .send(NetworkEvent::ShareReady {
                     transfer_id,
@@ -488,19 +504,6 @@ async fn default_handle_command(
                     file_count: session.file_count(),
                 })
                 .context("failed to send ShareReady event")?;
-
-            let share_record = ShareRecord::from(&session);
-            {
-                let mut profile_store = state.profile_store.lock().await;
-                profile_store.ensure_share_ownership_record(&share_record)?;
-            }
-            {
-                let mut profile_sync = state.profile_sync.lock().await;
-                profile_sync.refresh_local_profile().await?;
-            }
-            let mut runtime = state.inner.lock().await;
-            runtime.store.add_share(share_record)?;
-            runtime.live_shares.insert(transfer_id, session);
             Ok(())
         }
         NetworkCommand::StartDownload {
@@ -530,7 +533,7 @@ async fn default_handle_command(
                     .block_serving_hashes(share_hashes_for_session(&session));
                 runtime.store.remove_share_by_code(&session.share_code)?;
             } else if let Some(session) = runtime.recovered_shares.remove(&transfer_id) {
-                let hashes = share_hashes_for_record(&state.node, &session.record).await;
+                let hashes = share_hashes_for_record(&session.record);
                 state.node.blobs.block_serving_hashes(hashes);
                 runtime
                     .store
@@ -650,6 +653,7 @@ async fn persist_contact_download_ownership(
         &local_profile_id,
         session.share_code.encode()?,
         session.collection_hash.to_string(),
+        session.manifest_bytes.clone(),
         session.output_root.clone(),
         Some(source_contact_profile_id.clone()),
         record.source_contact_display_name.clone(),
@@ -683,7 +687,7 @@ async fn pause_transfer(
 
     if let Some(recovered) = runtime.recovered_shares.remove(&transfer_id) {
         let mut record = recovered.record;
-        let blocked_hashes = share_hashes_for_record(&state.node, &record).await;
+        let blocked_hashes = share_hashes_for_record(&record);
         state.node.blobs.block_serving_hashes(blocked_hashes);
         record.paused = true;
         runtime.store.add_share(record.clone())?;
@@ -744,7 +748,7 @@ async fn resume_transfer(
         let mut runtime = state.inner.lock().await;
         runtime.paused_shares.remove(&transfer_id)
     } {
-        let blocked_hashes = share_hashes_for_record(&state.node, &record).await;
+        let blocked_hashes = share_hashes_for_record(&record);
         let globally_paused = {
             let runtime = state.inner.lock().await;
             runtime.global_paused
@@ -866,7 +870,7 @@ async fn pause_all_transfers(
     for transfer_id in recovered_share_ids {
         if let Some(recovered) = runtime.recovered_shares.remove(&transfer_id) {
             let mut record = recovered.record;
-            let blocked_hashes = share_hashes_for_record(&state.node, &record).await;
+            let blocked_hashes = share_hashes_for_record(&record);
             state.node.blobs.block_serving_hashes(blocked_hashes);
             record.paused = false;
             runtime.store.add_share(record.clone())?;
@@ -924,7 +928,7 @@ async fn resume_all_transfers(
                 continue;
             }
 
-            let blocked_hashes = share_hashes_for_record(&state.node, &record).await;
+            let blocked_hashes = share_hashes_for_record(&record);
             state
                 .node
                 .blobs
@@ -1051,7 +1055,7 @@ async fn recover_startup_state(
     if persisted_state.global_paused {
         let mut runtime = state.inner.lock().await;
         for share in &persisted_state.active_shares {
-            let blocked_hashes = share_hashes_for_record(&state.node, share).await;
+            let blocked_hashes = share_hashes_for_record(share);
             state.node.blobs.block_serving_hashes(blocked_hashes);
             let transfer_id = state.next_recovery_transfer_id();
             event_tx
@@ -1127,7 +1131,7 @@ async fn recover_startup_state(
         .iter()
         .filter(|record| record.paused)
     {
-        let blocked_hashes = share_hashes_for_record(&state.node, share).await;
+        let blocked_hashes = share_hashes_for_record(share);
         state.node.blobs.block_serving_hashes(blocked_hashes);
         let transfer_id = state.next_recovery_transfer_id();
         event_tx
@@ -1651,42 +1655,25 @@ fn bytes_to_hex(bytes: &[u8]) -> String {
 }
 
 fn share_hashes_for_session(session: &ShareSession) -> Vec<BlobHash> {
-    let mut hashes = Vec::with_capacity(session.files.len() + 2);
-    hashes.push(session.collection_hash);
-    hashes.push(session.manifest_hash);
-    hashes.extend(session.files.iter().map(|file| file.hash));
-    hashes
+    session.files.iter().map(|file| file.hash).collect()
 }
 
-async fn share_hashes_for_record(node: &AppNode, record: &ShareRecord) -> Vec<BlobHash> {
-    let collection_hash = match record.collection_hash() {
-        Ok(hash) => hash,
+fn share_hashes_for_record(record: &ShareRecord) -> Vec<BlobHash> {
+    match crate::manifest::verify_manifest(&record.manifest_bytes) {
+        Ok(manifest) => manifest
+            .data
+            .files
+            .into_iter()
+            .map(|file| BlobHash::from_bytes(file.hash))
+            .collect(),
         Err(err) => {
             warn!(
-                "failed to parse collection hash {} from persisted share record: {err}",
-                record.collection_hash
+                "failed to verify persisted manifest for share {} while resolving file hashes: {err}",
+                record.share_code
             );
-            return Vec::new();
+            Vec::new()
         }
-    };
-    let mut hashes = Vec::new();
-    hashes.push(collection_hash);
-
-    match node.blobs.get_bytes(collection_hash).await {
-        Ok(collection_bytes) => match HashSeq::new(collection_bytes) {
-            Some(hash_seq) => hashes.extend(hash_seq.into_iter()),
-            None => warn!(
-                "collection blob {} is not a valid hash sequence while resolving paused share hashes",
-                record.collection_hash
-            ),
-        },
-        Err(err) => warn!(
-            "failed to load collection blob {} for paused share hash resolution: {err}",
-            record.collection_hash
-        ),
     }
-
-    hashes
 }
 
 #[derive(Debug, Clone)]
@@ -1761,7 +1748,7 @@ async fn remove_share_and_purge(state: &RuntimeState, transfer_id: u64) -> Resul
     }
 
     if removed.hashes.is_empty() {
-        removed.hashes = share_hashes_for_record(&state.node, &removed.record).await;
+        removed.hashes = share_hashes_for_record(&removed.record);
     }
 
     let mut hashes_referenced_elsewhere = HashSet::new();
@@ -1769,36 +1756,24 @@ async fn remove_share_and_purge(state: &RuntimeState, transfer_id: u64) -> Resul
         hashes_referenced_elsewhere.extend(hashes);
     }
     for record in &remaining_share_records {
-        hashes_referenced_elsewhere.extend(share_hashes_for_record(&state.node, record).await);
+        hashes_referenced_elsewhere.extend(share_hashes_for_record(record));
     }
 
     let collection_hash = removed.record.collection_hash()?;
-    let (manifest_hash, file_hashes) = split_share_hashes(collection_hash, &removed.hashes);
-
-    let removable_files: Vec<BlobHash> = file_hashes
+    let removable_files: Vec<BlobHash> = removed
+        .hashes
         .into_iter()
         .filter(|hash| !hashes_referenced_elsewhere.contains(hash))
         .collect();
-    let removable_manifest =
-        manifest_hash.filter(|hash| !hashes_referenced_elsewhere.contains(hash));
-    let collection_removable = !hashes_referenced_elsewhere.contains(&collection_hash);
 
-    let mut removable_hashes = removable_files.clone();
-    if let Some(manifest_hash) = removable_manifest {
-        removable_hashes.push(manifest_hash);
-    }
-    if collection_removable {
-        removable_hashes.push(collection_hash);
-    }
-
-    if !removable_hashes.is_empty() {
+    if !removable_files.is_empty() {
         state
             .node
             .blobs
-            .block_serving_hashes(removable_hashes.iter().copied());
+            .block_serving_hashes(removable_files.iter().copied());
     }
 
-    if collection_removable || removable_manifest.is_some() || !removable_files.is_empty() {
+    if !removable_files.is_empty() {
         if let Err(err) = state
             .node
             .blobs
@@ -1822,29 +1797,6 @@ async fn remove_share_and_purge(state: &RuntimeState, transfer_id: u64) -> Resul
     }
 
     Ok(())
-}
-
-fn split_share_hashes(
-    collection_hash: BlobHash,
-    hashes: &[BlobHash],
-) -> (Option<BlobHash>, Vec<BlobHash>) {
-    let mut deduped = Vec::new();
-    let mut seen = HashSet::new();
-    for hash in hashes {
-        if seen.insert(*hash) {
-            deduped.push(*hash);
-        }
-    }
-
-    if deduped.first().copied() == Some(collection_hash) {
-        let manifest_hash = deduped.get(1).copied();
-        let files = deduped.into_iter().skip(2).collect();
-        return (manifest_hash, files);
-    }
-
-    let mut iter = deduped.into_iter().filter(|hash| *hash != collection_hash);
-    let manifest_hash = iter.next();
-    (manifest_hash, iter.collect())
 }
 
 #[cfg(test)]
@@ -2286,7 +2238,7 @@ mod tests {
                 .list_prefix(&share_a_prefix)
                 .await?
                 .len()
-                >= 3
+                >= 2
         );
         assert!(
             state
@@ -2296,7 +2248,7 @@ mod tests {
                 .list_prefix(&share_b_prefix)
                 .await?
                 .len()
-                >= 3
+                >= 2
         );
 
         remove_share_and_purge(&state, 1).await?;
@@ -2365,7 +2317,7 @@ mod tests {
 
         let prefix = share_pin_prefix(collection_hash);
         let pinned_before = state.node.blobs.pins().list_prefix(&prefix).await?;
-        assert_eq!(pinned_before.len(), 98);
+        assert_eq!(pinned_before.len(), 96);
 
         remove_share_and_purge(&state, 7).await?;
 

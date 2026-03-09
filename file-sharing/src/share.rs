@@ -2,8 +2,6 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{bail, ensure, Context, Result};
-use iroh_blobs::hashseq::HashSeq;
-use iroh_blobs::{BlobFormat, HashAndFormat};
 use p2panda_blobs::Hash as BlobHash;
 use p2panda_net::gossip::GossipHandle;
 use p2panda_net::TopicId;
@@ -11,6 +9,9 @@ use tracing::warn;
 
 use crate::manifest::{serialize_manifest, sign_manifest, ManifestData, ManifestFile};
 use crate::node::AppNode;
+use crate::persist::ShareRecord;
+use crate::profile::ProfileStore;
+use crate::profile_sync::ProfileSyncService;
 use crate::share_code::encode_share_code;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,12 +25,16 @@ pub struct ShareSession {
     pub source_dir: PathBuf,
     pub share_code: String,
     pub collection_hash: BlobHash,
-    pub manifest_hash: BlobHash,
+    pub manifest_bytes: Vec<u8>,
     pub total_bytes: u64,
     pub files: Vec<SharedFile>,
     pub owner_profile_id: Option<String>,
     topic_id: TopicId,
     _gossip_handle: GossipHandle,
+}
+
+struct ShareMetadataPublisher {
+    _profile_sync: ProfileSyncService,
 }
 
 impl ShareSession {
@@ -43,6 +48,34 @@ impl ShareSession {
 }
 
 pub async fn share_directory(node: &AppNode, directory: impl AsRef<Path>) -> Result<ShareSession> {
+    share_directory_for_owner(node, directory, None).await
+}
+
+pub async fn publish_share_metadata(
+    node: &AppNode,
+    share: &ShareSession,
+) -> Result<impl Send + 'static> {
+    let mut profile_store = ProfileStore::load_or_create(&node.data_dir)?;
+    let profile_id = share
+        .owner_profile_id
+        .clone()
+        .unwrap_or_else(|| profile_store.profile().profile_id.clone());
+    let mut share_record = ShareRecord::from(share);
+    share_record.owner_profile_id = Some(profile_id.clone());
+    profile_store.ensure_share_ownership_record(&share_record)?;
+
+    let mut profile_sync = ProfileSyncService::new(node, profile_id).await?;
+    profile_sync.refresh_local_profile().await?;
+    Ok(ShareMetadataPublisher {
+        _profile_sync: profile_sync,
+    })
+}
+
+pub async fn share_directory_for_owner(
+    node: &AppNode,
+    directory: impl AsRef<Path>,
+    owner_profile_id: Option<&str>,
+) -> Result<ShareSession> {
     let source_dir = directory.as_ref().to_path_buf();
     let files = scan_directory(&source_dir)?;
     ensure!(
@@ -75,24 +108,9 @@ pub async fn share_directory(node: &AppNode, directory: impl AsRef<Path>) -> Res
     let signed_manifest =
         sign_manifest_from_node(node, &manifest).context("failed to sign share manifest")?;
     let manifest_bytes = serialize_manifest(&signed_manifest)?;
-    let manifest_tag = node
-        .blobs
-        .add_bytes(manifest_bytes)
-        .await
-        .context("failed to store manifest blob")?;
-    let manifest_hash = manifest_tag.hash;
+    let collection_hash = BlobHash::new(&manifest_bytes);
 
-    let links: HashSeq = std::iter::once(manifest_hash)
-        .chain(imported_files.iter().map(|file| file.hash))
-        .collect();
-    let collection_tag = node
-        .blobs
-        .add_bytes_with_opts((links.into_inner(), BlobFormat::HashSeq))
-        .await
-        .context("failed to store collection hash sequence")?;
-    let collection_hash = collection_tag.hash;
-
-    pin_shared_blobs(node, collection_hash, manifest_hash, &imported_files).await?;
+    pin_shared_blobs(node, collection_hash, &imported_files).await?;
 
     let topic_id: TopicId = crate::share_code::derive_topic(*collection_hash.as_bytes());
     let gossip_handle = node
@@ -104,16 +122,17 @@ pub async fn share_directory(node: &AppNode, directory: impl AsRef<Path>) -> Res
         collection_hash,
         node.node_id(),
         node.relay_url.as_ref().map(ToString::to_string),
+        owner_profile_id.map(str::to_owned),
     )?;
 
     let session = ShareSession {
         source_dir,
         share_code,
         collection_hash,
-        manifest_hash,
+        manifest_bytes,
         total_bytes,
         files: imported_files,
-        owner_profile_id: None,
+        owner_profile_id: owner_profile_id.map(str::to_owned),
         topic_id,
         _gossip_handle: gossip_handle,
     };
@@ -249,10 +268,6 @@ pub(crate) fn share_pin_prefix(collection_hash: BlobHash) -> String {
     share_pin_name(collection_hash)
 }
 
-pub(crate) fn share_manifest_pin_name(collection_hash: BlobHash) -> String {
-    format!("{}/manifest", share_pin_prefix(collection_hash))
-}
-
 pub(crate) fn share_file_pin_name(collection_hash: BlobHash, file_hash: BlobHash) -> String {
     format!(
         "{}/file/{}",
@@ -264,28 +279,8 @@ pub(crate) fn share_file_pin_name(collection_hash: BlobHash, file_hash: BlobHash
 async fn pin_shared_blobs(
     node: &AppNode,
     collection_hash: BlobHash,
-    manifest_hash: BlobHash,
     files: &[SharedFile],
 ) -> Result<()> {
-    node.blobs
-        .store()
-        .tags()
-        .set(
-            share_pin_name(collection_hash),
-            HashAndFormat {
-                hash: collection_hash,
-                format: BlobFormat::HashSeq,
-            },
-        )
-        .await
-        .context("failed to pin shared collection")?;
-
-    node.blobs
-        .pins()
-        .set(share_manifest_pin_name(collection_hash), manifest_hash)
-        .await
-        .context("failed to pin shared manifest")?;
-
     for file in files {
         node.blobs
             .pins()
@@ -308,6 +303,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+    use crate::manifest::verify_manifest;
     use crate::node::NodeOptions;
     use crate::share_code::decode_share_code;
 
@@ -332,18 +328,15 @@ mod tests {
         assert_eq!(decoded.node_id()?, node.node_id());
         assert_eq!(share.file_count(), 3);
         assert_eq!(share.total_bytes, 5 + 128 + 5);
+        assert_eq!(BlobHash::new(&share.manifest_bytes), share.collection_hash);
 
-        assert!(node.blobs.has(share.manifest_hash).await?);
-        assert!(node.blobs.has(share.collection_hash).await?);
         for file in &share.files {
             assert!(node.blobs.has(file.hash).await?);
         }
 
-        let collection_bytes = node.blobs.get_bytes(share.collection_hash).await?;
-        let links =
-            HashSeq::new(collection_bytes).context("stored collection is not a hash sequence")?;
-        assert_eq!(links.len(), share.files.len() + 1);
-        assert_eq!(links.get(0), Some(share.manifest_hash));
+        let verified_manifest = verify_manifest(&share.manifest_bytes)?;
+        assert_eq!(verified_manifest.data.name, "share-me");
+        assert_eq!(verified_manifest.data.files.len(), share.files.len());
 
         Ok(())
     }

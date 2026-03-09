@@ -12,21 +12,33 @@ pub struct ShareCode {
     pub collection_hash: [u8; 32],
     pub node_id: [u8; 32],
     pub relay_url: Option<String>,
+    pub owner_profile_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct EncodedShareCode(
-    #[serde(with = "serde_bytes")] Vec<u8>,
-    #[serde(with = "serde_bytes")] Vec<u8>,
-    Option<String>,
-);
+struct EncodedShareCode {
+    #[serde(with = "serde_bytes")]
+    collection_hash: Vec<u8>,
+    #[serde(with = "serde_bytes")]
+    node_id: Vec<u8>,
+    #[serde(default)]
+    relay_url: Option<String>,
+    #[serde(default)]
+    owner_profile_id: Option<String>,
+}
 
 impl ShareCode {
-    pub fn new(collection_hash: BlobHash, node_id: PublicKey, relay_url: Option<String>) -> Self {
+    pub fn new(
+        collection_hash: BlobHash,
+        node_id: PublicKey,
+        relay_url: Option<String>,
+        owner_profile_id: Option<String>,
+    ) -> Self {
         Self {
             collection_hash: *collection_hash.as_bytes(),
             node_id: *node_id.as_bytes(),
             relay_url,
+            owner_profile_id,
         }
     }
 
@@ -64,6 +76,17 @@ impl ShareCode {
         PublicKey::from_bytes(&self.node_id).context("invalid node_id public key in share code")
     }
 
+    pub fn owner_profile_id(&self) -> Result<String> {
+        let profile_id = self
+            .owner_profile_id
+            .clone()
+            .unwrap_or_else(|| self.node_id().map(|node_id| node_id.to_string()).unwrap());
+        let _: PublicKey = profile_id
+            .parse()
+            .with_context(|| format!("invalid owner profile ID {profile_id} in share code"))?;
+        Ok(profile_id)
+    }
+
     pub fn topic_id(&self) -> TopicId {
         derive_topic(self.collection_hash)
     }
@@ -77,8 +100,9 @@ pub fn encode_share_code(
     collection_hash: BlobHash,
     node_id: PublicKey,
     relay_url: Option<String>,
+    owner_profile_id: Option<String>,
 ) -> Result<String> {
-    ShareCode::new(collection_hash, node_id, relay_url).encode()
+    ShareCode::new(collection_hash, node_id, relay_url, owner_profile_id).encode()
 }
 
 pub fn decode_share_code(encoded: &str) -> Result<ShareCode> {
@@ -87,11 +111,12 @@ pub fn decode_share_code(encoded: &str) -> Result<ShareCode> {
 
 impl From<&ShareCode> for EncodedShareCode {
     fn from(value: &ShareCode) -> Self {
-        Self(
-            value.collection_hash.to_vec(),
-            value.node_id.to_vec(),
-            value.relay_url.clone(),
-        )
+        Self {
+            collection_hash: value.collection_hash.to_vec(),
+            node_id: value.node_id.to_vec(),
+            relay_url: value.relay_url.clone(),
+            owner_profile_id: value.owner_profile_id.clone(),
+        }
     }
 }
 
@@ -100,18 +125,19 @@ impl TryFrom<EncodedShareCode> for ShareCode {
 
     fn try_from(value: EncodedShareCode) -> Result<Self, Self::Error> {
         let collection_hash: [u8; 32] = value
-            .0
+            .collection_hash
             .try_into()
             .map_err(|_| anyhow::anyhow!("share code collection_hash must be 32 bytes"))?;
         let node_id: [u8; 32] = value
-            .1
+            .node_id
             .try_into()
             .map_err(|_| anyhow::anyhow!("share code node_id must be 32 bytes"))?;
 
         Ok(Self {
             collection_hash,
             node_id,
-            relay_url: value.2,
+            relay_url: value.relay_url,
+            owner_profile_id: value.owner_profile_id,
         })
     }
 }
@@ -126,6 +152,7 @@ mod tests {
             BlobHash::new(b"collection-root"),
             PrivateKey::from_bytes(&[7; 32]).public_key(),
             relay_url.map(str::to_owned),
+            Some(PrivateKey::from_bytes(&[9; 32]).public_key().to_string()),
         )
     }
 
@@ -139,6 +166,10 @@ mod tests {
         assert_eq!(decoded, share_code);
         assert_eq!(decoded.collection_hash(), share_code.collection_hash());
         assert_eq!(decoded.node_id().unwrap(), share_code.node_id().unwrap());
+        assert_eq!(
+            decoded.owner_profile_id().unwrap(),
+            share_code.owner_profile_id().unwrap()
+        );
         assert_eq!(decoded.topic_id(), derive_topic(share_code.collection_hash));
     }
 

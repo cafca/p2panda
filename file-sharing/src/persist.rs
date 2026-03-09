@@ -83,6 +83,8 @@ pub struct ShareRecord {
     pub source_dir: PathBuf,
     pub share_code: String,
     pub collection_hash: String,
+    #[serde(default, with = "serde_bytes")]
+    pub manifest_bytes: Vec<u8>,
     #[serde(default)]
     pub owner_profile_id: Option<String>,
     #[serde(default)]
@@ -100,6 +102,7 @@ impl ShareRecord {
         source_dir: impl Into<PathBuf>,
         share_code: impl Into<String>,
         collection_hash: BlobHash,
+        manifest_bytes: Vec<u8>,
         directory_name: impl Into<String>,
         file_count: usize,
         total_bytes: u64,
@@ -108,6 +111,7 @@ impl ShareRecord {
             source_dir: source_dir.into(),
             share_code: share_code.into(),
             collection_hash: collection_hash.to_hex(),
+            manifest_bytes,
             owner_profile_id: None,
             directory_name: directory_name.into(),
             file_count,
@@ -140,6 +144,7 @@ impl From<&ShareSession> for ShareRecord {
             value.source_dir.clone(),
             value.share_code.clone(),
             value.collection_hash,
+            value.manifest_bytes.clone(),
             directory_name,
             value.file_count(),
             value.total_bytes,
@@ -398,6 +403,7 @@ async fn ensure_state_tables(pool: &Pool) -> Result<()> {
             share_code TEXT PRIMARY KEY NOT NULL,
             source_dir TEXT NOT NULL,
             collection_hash TEXT NOT NULL,
+            manifest_bytes BLOB NOT NULL DEFAULT X'',
             owner_profile_id TEXT,
             directory_name TEXT NOT NULL,
             file_count TEXT NOT NULL,
@@ -408,6 +414,8 @@ async fn ensure_state_tables(pool: &Pool) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to create transfer share table")?;
+
+    ensure_share_manifest_column(pool).await?;
 
     query(
         "CREATE INDEX IF NOT EXISTS idx_transfer_active_shares_v1_owner
@@ -460,6 +468,7 @@ fn load_state_from_sqlite(pool: &Pool) -> Result<PersistedState> {
                 source_dir,
                 share_code,
                 collection_hash,
+                manifest_bytes,
                 owner_profile_id,
                 directory_name,
                 file_count,
@@ -477,6 +486,7 @@ fn load_state_from_sqlite(pool: &Pool) -> Result<PersistedState> {
                 source_dir: PathBuf::from(row.get::<String, _>("source_dir")),
                 share_code: row.get("share_code"),
                 collection_hash: row.get("collection_hash"),
+                manifest_bytes: row.get("manifest_bytes"),
                 owner_profile_id: row.get("owner_profile_id"),
                 directory_name: row.get("directory_name"),
                 file_count: row
@@ -607,15 +617,17 @@ fn upsert_share_in_sqlite(pool: &Pool, record: &ShareRecord) -> Result<()> {
                 share_code,
                 source_dir,
                 collection_hash,
+                manifest_bytes,
                 owner_profile_id,
                 directory_name,
                 file_count,
                 total_bytes,
                 paused
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(share_code) DO UPDATE SET
                 source_dir = excluded.source_dir,
                 collection_hash = excluded.collection_hash,
+                manifest_bytes = excluded.manifest_bytes,
                 owner_profile_id = excluded.owner_profile_id,
                 directory_name = excluded.directory_name,
                 file_count = excluded.file_count,
@@ -625,6 +637,7 @@ fn upsert_share_in_sqlite(pool: &Pool, record: &ShareRecord) -> Result<()> {
         .bind(record.share_code)
         .bind(path_to_string(&record.source_dir))
         .bind(record.collection_hash)
+        .bind(record.manifest_bytes)
         .bind(record.owner_profile_id)
         .bind(record.directory_name)
         .bind(record.file_count.to_string())
@@ -726,21 +739,46 @@ fn insert_share_query<'a>(
             share_code,
             source_dir,
             collection_hash,
+            manifest_bytes,
             owner_profile_id,
             directory_name,
             file_count,
             total_bytes,
             paused
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(record.share_code.as_str())
     .bind(path_to_string(&record.source_dir))
     .bind(record.collection_hash.as_str())
+    .bind(record.manifest_bytes.as_slice())
     .bind(record.owner_profile_id.as_deref())
     .bind(record.directory_name.as_str())
     .bind(record.file_count.to_string())
     .bind(record.total_bytes.to_string())
     .bind(sqlite_bool_int(record.paused))
+}
+
+async fn ensure_share_manifest_column(pool: &Pool) -> Result<()> {
+    let columns = query("PRAGMA table_info(transfer_active_shares_v1)")
+        .fetch_all(pool)
+        .await
+        .context("failed to inspect transfer share table schema")?;
+    let has_manifest_bytes = columns.iter().any(|row| {
+        row.get::<String, _>("name")
+            .eq_ignore_ascii_case("manifest_bytes")
+    });
+    if has_manifest_bytes {
+        return Ok(());
+    }
+
+    query(
+        "ALTER TABLE transfer_active_shares_v1
+         ADD COLUMN manifest_bytes BLOB NOT NULL DEFAULT X''",
+    )
+    .execute(pool)
+    .await
+    .context("failed to add manifest_bytes column to transfer share table")?;
+    Ok(())
 }
 
 fn insert_download_query<'a>(
@@ -856,6 +894,7 @@ mod tests {
             dir.path().join("source"),
             "p2p-SHARE",
             hash,
+            Vec::new(),
             "source",
             2,
             42,

@@ -1319,7 +1319,7 @@
     "The file-sharing crate uses `p2panda-blobs` only for raw file payload bytes in the share/download path",
     "End-to-end share and download tests still pass with the manifest delivered through the new operation-based path"
   ],
-  "passes": false
+  "passes": true
 }
 {
   "id": 58,

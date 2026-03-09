@@ -362,6 +362,7 @@ fn domain_operation_from_profile_record(record: &ProfileRecord) -> DomainOperati
                     profile_id: record.profile_id.clone(),
                     collection_hash: record.collection_hash.clone(),
                     share_code: record.share_code.clone(),
+                    manifest_bytes: record.manifest_bytes.clone(),
                     source_dir: record.source_dir.clone(),
                     recorded_at: record.recorded_at,
                     source_contact_profile_id: record.source_contact_profile_id.clone(),

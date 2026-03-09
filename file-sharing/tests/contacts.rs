@@ -5,12 +5,13 @@ use anyhow::Result;
 use p2panda_net::addrs::NodeInfo;
 use tempfile::tempdir;
 
-use p2panda_file_sharing_gui::contacts::{contact_records_cache_path, ContactsStore};
+use p2panda_file_sharing_gui::contacts::{write_contact_cache, ContactsStore};
 use p2panda_file_sharing_gui::download::download_share;
 use p2panda_file_sharing_gui::node::{AppNode, NodeOptions};
+use p2panda_file_sharing_gui::operation_domain::ReducedProfileState;
 use p2panda_file_sharing_gui::persist::ShareRecord;
-use p2panda_file_sharing_gui::profile::{profile_records_path, ProfileStore};
-use p2panda_file_sharing_gui::share::share_directory;
+use p2panda_file_sharing_gui::profile::ProfileStore;
+use p2panda_file_sharing_gui::share::{publish_share_metadata, share_directory};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn follow_contact_browse_share_and_record_download_provenance() -> Result<()> {
@@ -35,6 +36,7 @@ async fn follow_contact_browse_share_and_record_download_provenance() -> Result<
         .await?;
 
     let share = share_directory(&sharer, &source_root).await?;
+    let _publisher = publish_share_metadata(&sharer, &share).await?;
     let mut sharer_profile = ProfileStore::load_or_create(sharer_dir.path())?;
     let mut share_record = ShareRecord::from(&share);
     share_record.owner_profile_id = Some(sharer_profile.profile().profile_id.clone());
@@ -42,9 +44,32 @@ async fn follow_contact_browse_share_and_record_download_provenance() -> Result<
 
     let sharer_profile_id = sharer_profile.profile().profile_id.clone();
     let sharer_display_name = sharer_profile.profile().display_name.clone();
-    let cache_path = contact_records_cache_path(downloader_dir.path(), &sharer_profile_id);
-    fs::create_dir_all(cache_path.parent().unwrap())?;
-    fs::copy(profile_records_path(sharer_dir.path()), &cache_path)?;
+    let reduced_share = sharer_profile
+        .share_ownership_records()?
+        .into_iter()
+        .find(|record| record.share_code == share.share_code)
+        .expect("share ownership record persisted");
+    write_contact_cache(
+        downloader_dir.path(),
+        &sharer_profile_id,
+        &ReducedProfileState {
+            profile_id: sharer_profile_id.clone(),
+            display_name: Some(sharer_display_name.clone()),
+            shares: vec![
+                p2panda_file_sharing_gui::operation_domain::ReducedShareState {
+                    profile_id: sharer_profile_id.clone(),
+                    collection_hash: reduced_share.collection_hash.clone(),
+                    share_code: reduced_share.share_code.clone(),
+                    manifest_bytes: reduced_share.manifest_bytes.clone(),
+                    source_dir: reduced_share.source_dir.clone(),
+                    recorded_at: reduced_share.recorded_at,
+                    source_contact_profile_id: reduced_share.source_contact_profile_id.clone(),
+                    source_contact_display_name: reduced_share.source_contact_display_name.clone(),
+                },
+            ],
+            followed_profile_ids: Vec::new(),
+        },
+    )?;
 
     let mut contacts = ContactsStore::load(downloader_dir.path())?;
     contacts.follow_contact(sharer_profile_id.clone())?;
@@ -72,6 +97,7 @@ async fn follow_contact_browse_share_and_record_download_provenance() -> Result<
         &local_profile_id,
         session.share_code.encode()?,
         session.collection_hash.to_string(),
+        session.manifest_bytes.clone(),
         session.output_root.clone(),
         Some(sharer_profile_id.clone()),
         Some(sharer_display_name.clone()),

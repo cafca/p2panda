@@ -3,13 +3,12 @@ use std::path::Path;
 
 use anyhow::Result;
 use p2panda_core::PrivateKey;
-use p2panda_file_sharing_gui::contacts::{
-    contact_records_cache_path, ContactsStore, DiscoverySort,
-};
+use p2panda_file_sharing_gui::contacts::{write_contact_cache, ContactsStore, DiscoverySort};
 use p2panda_file_sharing_gui::download::download_share;
 use p2panda_file_sharing_gui::node::{AppNode, NodeOptions};
-use p2panda_file_sharing_gui::profile::{profile_records_path, ProfileStore};
-use p2panda_file_sharing_gui::share::share_directory;
+use p2panda_file_sharing_gui::operation_domain::{ReducedProfileState, ReducedShareState};
+use p2panda_file_sharing_gui::profile::ProfileStore;
+use p2panda_file_sharing_gui::share::{publish_share_metadata, share_directory};
 use p2panda_net::addrs::NodeInfo;
 use tempfile::tempdir;
 
@@ -41,6 +40,7 @@ async fn discover_second_degree_profile_browse_shares_and_download() -> Result<(
         .await?;
 
     let share = share_directory(&bob, &source_root).await?;
+    let _publisher = publish_share_metadata(&bob, &share).await?;
 
     let mut bob_profile = ProfileStore::load_or_create(bob_dir.path())?;
     let mut alice_profile = ProfileStore::load_or_create(alice_dir.path())?;
@@ -52,6 +52,7 @@ async fn discover_second_degree_profile_browse_shares_and_download() -> Result<(
         &bob_profile.profile().profile_id.clone(),
         share.share_code.clone(),
         share.collection_hash.to_string(),
+        share.manifest_bytes.clone(),
         share.source_dir.clone(),
         None,
         None,
@@ -63,23 +64,41 @@ async fn discover_second_degree_profile_browse_shares_and_download() -> Result<(
     contacts.refresh_contact(&alice_profile.profile().profile_id)?;
     contacts.refresh_contact(&dana_profile.profile().profile_id)?;
 
-    for (profile_id, source_path) in [
-        (
-            alice_profile.profile().profile_id.clone(),
-            profile_records_path(alice_dir.path()),
-        ),
-        (
-            dana_profile.profile().profile_id.clone(),
-            profile_records_path(dana_dir.path()),
-        ),
-        (
-            bob_profile.profile().profile_id.clone(),
-            profile_records_path(bob_dir.path()),
-        ),
+    let bob_share = bob_profile
+        .share_ownership_records()?
+        .into_iter()
+        .find(|record| record.share_code == share.share_code)
+        .expect("bob share persisted");
+    for state in [
+        ReducedProfileState {
+            profile_id: alice_profile.profile().profile_id.clone(),
+            display_name: Some(alice_profile.profile().display_name.clone()),
+            shares: Vec::new(),
+            followed_profile_ids: vec![bob_profile.profile().profile_id.clone()],
+        },
+        ReducedProfileState {
+            profile_id: dana_profile.profile().profile_id.clone(),
+            display_name: Some(dana_profile.profile().display_name.clone()),
+            shares: Vec::new(),
+            followed_profile_ids: vec![bob_profile.profile().profile_id.clone()],
+        },
+        ReducedProfileState {
+            profile_id: bob_profile.profile().profile_id.clone(),
+            display_name: Some(bob_profile.profile().display_name.clone()),
+            shares: vec![ReducedShareState {
+                profile_id: bob_profile.profile().profile_id.clone(),
+                collection_hash: bob_share.collection_hash.clone(),
+                share_code: bob_share.share_code.clone(),
+                manifest_bytes: bob_share.manifest_bytes.clone(),
+                source_dir: bob_share.source_dir.clone(),
+                recorded_at: bob_share.recorded_at,
+                source_contact_profile_id: bob_share.source_contact_profile_id.clone(),
+                source_contact_display_name: bob_share.source_contact_display_name.clone(),
+            }],
+            followed_profile_ids: Vec::new(),
+        },
     ] {
-        let cache_path = contact_records_cache_path(charlie_dir.path(), &profile_id);
-        fs::create_dir_all(cache_path.parent().unwrap())?;
-        fs::copy(source_path, cache_path)?;
+        write_contact_cache(charlie_dir.path(), &state.profile_id, &state)?;
     }
 
     let discovered =
