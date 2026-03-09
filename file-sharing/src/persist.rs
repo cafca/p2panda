@@ -19,7 +19,6 @@ use crate::node::AppNode;
 use crate::share::ShareSession;
 use crate::share_code::derive_topic;
 
-const STATE_FILE_NAME: &str = "state.json";
 const STATE_DB_FILE_NAME: &str = "state.sqlite3";
 const GLOBAL_PAUSED_KEY: &str = "global_paused";
 
@@ -171,14 +170,7 @@ impl StateStore {
     pub fn load(data_dir: impl AsRef<Path>) -> Result<Self> {
         let path = state_db_path(data_dir.as_ref());
         let pool = open_state_pool(&path)?;
-        let legacy_path = state_file_path(data_dir.as_ref());
-        let mut state = load_state_from_sqlite(&pool)?;
-
-        if state_is_empty(&state) && legacy_path.is_file() {
-            let legacy_state = load_legacy_state_from_path(&legacy_path)?;
-            write_state_snapshot(&pool, &legacy_state)?;
-            state = load_state_from_sqlite(&pool)?;
-        }
+        let state = load_state_from_sqlite(&pool)?;
 
         Ok(Self { path, pool, state })
     }
@@ -359,16 +351,8 @@ pub async fn resume_share_record(node: &AppNode, record: &ShareRecord) -> Result
     })
 }
 
-fn state_file_path(data_dir: &Path) -> PathBuf {
-    data_dir.join(STATE_FILE_NAME)
-}
-
 fn state_db_path(data_dir: &Path) -> PathBuf {
     data_dir.join(STATE_DB_FILE_NAME)
-}
-
-fn state_is_empty(state: &PersistedState) -> bool {
-    !state.global_paused && state.active_shares.is_empty() && state.active_downloads.is_empty()
 }
 
 fn open_state_pool(path: &Path) -> Result<Pool> {
@@ -780,16 +764,6 @@ fn insert_download_query<'a>(
     .bind(sqlite_bool_int(record.paused))
 }
 
-fn load_legacy_state_from_path(path: &Path) -> Result<PersistedState> {
-    match fs::read(path) {
-        Ok(bytes) => serde_json::from_slice(&bytes)
-            .with_context(|| format!("failed to parse persisted state at {}", path.display())),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(PersistedState::default()),
-        Err(err) => Err(err)
-            .with_context(|| format!("failed to read persisted state at {}", path.display())),
-    }
-}
-
 fn block_on_db<F, T>(future: F) -> Result<T>
 where
     F: Future<Output = Result<T>> + Send + 'static,
@@ -894,7 +868,6 @@ mod tests {
 
         let state_db_path = dir.path().join(STATE_DB_FILE_NAME);
         assert!(state_db_path.is_file());
-        assert!(!dir.path().join(STATE_FILE_NAME).exists());
 
         let loaded = load_state(dir.path())?;
         assert_eq!(loaded.active_shares.len(), 1);
@@ -902,41 +875,6 @@ mod tests {
         assert!(!loaded.active_shares[0].paused);
         assert!(!loaded.active_downloads[0].paused);
         assert!(!loaded.global_paused);
-
-        Ok(())
-    }
-
-    #[test]
-    fn legacy_state_without_share_metadata_fields_migrates_to_sqlite() -> Result<()> {
-        let dir = tempdir()?;
-        let state_path = dir.path().join(STATE_FILE_NAME);
-        std::fs::write(
-            &state_path,
-            r#"{
-  "active_shares": [
-    {
-      "source_dir": "/tmp/source",
-      "share_code": "p2p-LEGACY",
-      "collection_hash": "f627847f3d5ebecf169f2e08e10c22f14e8e3a25f8b73f7f15f2f6f5ddf7c905"
-    }
-  ],
-  "active_downloads": [],
-  "global_paused": true
-}"#,
-        )?;
-
-        let state = load_state(dir.path())?;
-        assert_eq!(state.active_shares.len(), 1);
-        let share = &state.active_shares[0];
-        assert_eq!(share.directory_name, "");
-        assert_eq!(share.file_count, 0);
-        assert_eq!(share.total_bytes, 0);
-        assert!(!share.paused);
-        assert!(state.global_paused);
-
-        fs::remove_file(&state_path)?;
-        let migrated = load_state(dir.path())?;
-        assert_eq!(migrated, state);
 
         Ok(())
     }

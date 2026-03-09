@@ -112,3 +112,19 @@ Added workflow permissions for GH PAT so Task 41 can continue.
 - `cargo test -p p2panda-file-sharing-gui profile_sync::tests::same_profile_devices_converge_contact_graph_via_log_sync --lib -- --nocapture`
 - `cargo test -p p2panda-file-sharing-gui --lib -- --nocapture`
 - marked Task 48 `passes: true` in `PRD.jsonl` because this run verified append-only follow/unfollow records, same-profile two-device convergence over LogSync, and contact projection rebuild from operation history
+
+# Mon, 09 Mar 2026 18:15:25 GMT
+
+- picked Task 55 (`Delete prerelease migration and compatibility paths`) as the highest-priority remaining feature because it unblocks both Task 56 and Task 58, while Tasks 56 and 57 still depend on that cleanup landing first
+- removed the remaining prerelease transfer-persistence compatibility path by deleting `state.json` import/migration support from `persist.rs`, leaving SQLite as the only active transfer persistence contract
+- collapsed remote contact-cache loading to the current reduced-profile-state format only, removed the legacy raw-profile-record fallback from `contacts.rs`, and tightened cache loading so version-mismatched reduced-state/domain-operation cache files are rejected instead of being treated as acceptable variants
+- deleted compatibility-only tests and dead migration code tied to deprecated persistence layouts, including the old transfer-state migration test, the legacy operation-domain snapshot migration helper/test, and the transfer integration assertion that still inspected `state.json`
+- updated contact-cache tests to write current reduced-state cache fixtures directly, so the automated coverage now targets only the active cache format
+- feedback loops passed in this run:
+- `cargo fmt --package p2panda-file-sharing-gui`
+- `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-file-sharing-gui --lib`
+- `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui persist::tests --lib -- --nocapture`
+- `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui contacts::tests --lib -- --nocapture`
+- `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui operation_domain::tests --lib -- --nocapture`
+- `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui --test transfer removed_share_is_not_downloadable -- --nocapture`
+- marked Task 55 `passes: true` in `PRD.jsonl` because this run verified SQLite-only transfer persistence, reduced-state-only remote contact caches, removal of deprecated migration coverage, and passing tests against the current persistence/cache contracts

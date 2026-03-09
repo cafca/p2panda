@@ -1271,7 +1271,7 @@
     "Automated tests do not reference deprecated persistence files or migration behavior",
     "The file-sharing crate has a single active persistence/cache format for each persisted concern"
   ],
-  "passes": false
+  "passes": true
 }
 {
   "id": 56,

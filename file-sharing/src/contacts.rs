@@ -11,10 +11,7 @@ use crate::operation_domain::{
     load_reduced_profile_state_from_path, ReducedContactFollowState, ReducedProfileState,
     ReducedShareState,
 };
-use crate::profile::{
-    active_follow_records_for_profile, load_profile_records_from_path, ProfileMetadataRecord,
-    ProfileRecord, ShareOwnershipRecord,
-};
+use crate::profile::{active_follow_records_for_profile, ProfileRecord};
 
 const CONTACTS_FILE_NAME: &str = "contacts.json";
 const CONTACT_CACHE_DIR_NAME: &str = "contact-record-cache";
@@ -259,7 +256,7 @@ impl ContactsStore {
             Err(err) => {
                 contact.last_refreshed_at = Some(now);
                 contact.last_error = Some(format!(
-                    "Contact records are unavailable for {profile_id}: {err}"
+                    "Contact cache is unavailable for {profile_id}: {err}"
                 ));
             }
         }
@@ -310,7 +307,7 @@ impl ContactsStore {
                 Ok(snapshot) => snapshot,
                 Err(err) => {
                     tracing::warn!(
-                        "failed to load cached profile records for {}: {err}",
+                        "failed to load cached profile state for {}: {err}",
                         source_contact.profile_id
                     );
                     continue;
@@ -450,45 +447,6 @@ struct ContactSnapshot {
 }
 
 impl ContactSnapshot {
-    fn from_records(profile_id: &str, records: &[ProfileRecord]) -> Result<Self> {
-        let display_name =
-            latest_profile_metadata(profile_id, records).map(|record| record.display_name);
-        let mut shares = share_records_for_profile(profile_id, records)
-            .into_iter()
-            .map(|record| ContactShare {
-                share_code: record.share_code,
-                collection_hash: record.collection_hash,
-                share_name: share_name_from_record(&record.source_dir),
-                recorded_at: record.recorded_at,
-            })
-            .collect::<Vec<_>>();
-        shares.sort_by(|left, right| {
-            right
-                .recorded_at
-                .cmp(&left.recorded_at)
-                .then_with(|| left.share_name.cmp(&right.share_name))
-        });
-
-        if display_name.is_none() && shares.is_empty() {
-            anyhow::bail!("no metadata or shares found for profile {profile_id}");
-        }
-
-        let followed_profile_ids = active_follow_records_for_profile(profile_id, records)
-            .into_iter()
-            .map(|record| record.followed_profile_id)
-            .collect::<Vec<_>>();
-        let last_updated_at = latest_profile_metadata(profile_id, records)
-            .map(|record| record.updated_at)
-            .or_else(|| shares.iter().map(|share| share.recorded_at).max());
-
-        Ok(Self {
-            display_name,
-            shares,
-            followed_profile_ids,
-            last_updated_at,
-        })
-    }
-
     fn from_reduced_state(profile_id: &str, state: ReducedProfileState) -> Result<Self> {
         if state.profile_id != profile_id {
             anyhow::bail!(
@@ -525,24 +483,8 @@ impl ContactSnapshot {
 }
 
 fn load_contact_cache(path: impl AsRef<Path>, profile_id: &str) -> Result<ContactSnapshot> {
-    let path = path.as_ref();
-    match load_profile_records_from_path(path) {
-        Ok(records) => match ContactSnapshot::from_records(profile_id, &records) {
-            Ok(snapshot) => Ok(snapshot),
-            Err(legacy_err) => match load_reduced_profile_state_from_path(path) {
-                Ok(state) => ContactSnapshot::from_reduced_state(profile_id, state),
-                Err(reduced_err) => Err(anyhow::anyhow!(
-                    "failed to load contact cache as legacy records ({legacy_err}) or reduced profile state ({reduced_err})"
-                )),
-            },
-        },
-        Err(legacy_err) => match load_reduced_profile_state_from_path(path) {
-            Ok(state) => ContactSnapshot::from_reduced_state(profile_id, state),
-            Err(reduced_err) => Err(anyhow::anyhow!(
-                "failed to load contact cache as legacy records ({legacy_err}) or reduced profile state ({reduced_err})"
-            )),
-        },
-    }
+    let state = load_reduced_profile_state_from_path(path)?;
+    ContactSnapshot::from_reduced_state(profile_id, state)
 }
 
 fn reduced_share_to_contact_share(share: ReducedShareState) -> ContactShare {
@@ -552,53 +494,6 @@ fn reduced_share_to_contact_share(share: ReducedShareState) -> ContactShare {
         share_name: share_name_from_record(&share.source_dir),
         recorded_at: share.recorded_at,
     }
-}
-
-fn latest_profile_metadata(
-    profile_id: &str,
-    records: &[ProfileRecord],
-) -> Option<ProfileMetadataRecord> {
-    records
-        .iter()
-        .filter_map(|record| match record {
-            ProfileRecord::Metadata(record) if record.profile_id == profile_id => {
-                Some(record.clone())
-            }
-            ProfileRecord::Metadata(_)
-            | ProfileRecord::ShareOwnership(_)
-            | ProfileRecord::ContactFollow(_) => None,
-        })
-        .max_by(|left, right| {
-            left.updated_at
-                .cmp(&right.updated_at)
-                .then_with(|| left.created_at.cmp(&right.created_at))
-        })
-}
-
-fn share_records_for_profile(
-    profile_id: &str,
-    records: &[ProfileRecord],
-) -> Vec<ShareOwnershipRecord> {
-    let mut latest_records =
-        std::collections::HashMap::<(String, String), ShareOwnershipRecord>::new();
-
-    for record in records {
-        let ProfileRecord::ShareOwnership(record) = record else {
-            continue;
-        };
-        if record.profile_id != profile_id {
-            continue;
-        }
-        latest_records.insert(
-            (record.collection_hash.clone(), record.share_code.clone()),
-            record.clone(),
-        );
-    }
-
-    latest_records
-        .into_values()
-        .filter(|record| record.active)
-        .collect()
 }
 
 fn share_name_from_record(source_dir: &Path) -> String {
@@ -692,6 +587,25 @@ mod tests {
         record
     }
 
+    fn write_contact_cache(
+        data_dir: &Path,
+        profile_id: &str,
+        display_name: Option<String>,
+        shares: Vec<crate::operation_domain::ReducedShareState>,
+        followed_profile_ids: Vec<String>,
+    ) -> Result<()> {
+        let cache_path = contact_records_cache_path(data_dir, profile_id);
+        write_reduced_profile_state_to_path(
+            &cache_path,
+            &ReducedProfileState {
+                profile_id: profile_id.to_owned(),
+                display_name,
+                shares,
+                followed_profile_ids,
+            },
+        )
+    }
+
     #[test]
     fn follow_persists_and_rejects_invalid_ids_or_duplicates() -> Result<()> {
         let dir = tempdir()?;
@@ -716,7 +630,7 @@ mod tests {
     }
 
     #[test]
-    fn refresh_reads_cached_profile_records_and_lists_shares() -> Result<()> {
+    fn refresh_reads_reduced_profile_cache_and_lists_shares() -> Result<()> {
         let sharer_dir = tempdir()?;
         let follower_dir = tempdir()?;
         let sharer_key = PrivateKey::new();
@@ -728,12 +642,20 @@ mod tests {
         let share = sample_share_record(&sharer_store.profile().profile_id);
         sharer_store.ensure_share_ownership_record(&share)?;
 
-        let cache_path =
-            contact_records_cache_path(follower_dir.path(), &sharer_store.profile().profile_id);
-        fs::create_dir_all(cache_path.parent().unwrap())?;
-        fs::copy(
-            crate::profile::profile_records_path(sharer_dir.path()),
-            &cache_path,
+        write_contact_cache(
+            follower_dir.path(),
+            &sharer_store.profile().profile_id,
+            Some(sharer_store.profile().display_name.clone()),
+            vec![crate::operation_domain::ReducedShareState {
+                profile_id: sharer_store.profile().profile_id.clone(),
+                collection_hash: share.collection_hash.clone(),
+                share_code: share.share_code.clone(),
+                source_dir: share.source_dir.clone(),
+                recorded_at: 42,
+                source_contact_profile_id: None,
+                source_contact_display_name: None,
+            }],
+            Vec::new(),
         )?;
 
         let mut contacts = ContactsStore::load(follower_dir.path())?;
@@ -754,7 +676,7 @@ mod tests {
     }
 
     #[test]
-    fn refresh_ignores_inactive_share_tombstones_in_profile_records() -> Result<()> {
+    fn refresh_ignores_inactive_share_tombstones_in_reduced_profile_cache() -> Result<()> {
         let sharer_dir = tempdir()?;
         let follower_dir = tempdir()?;
         let sharer_key = PrivateKey::new();
@@ -767,12 +689,12 @@ mod tests {
         sharer_store.ensure_share_ownership_record(&share)?;
         sharer_store.remove_share_ownership_record(&share)?;
 
-        let cache_path =
-            contact_records_cache_path(follower_dir.path(), &sharer_store.profile().profile_id);
-        fs::create_dir_all(cache_path.parent().unwrap())?;
-        fs::copy(
-            crate::profile::profile_records_path(sharer_dir.path()),
-            &cache_path,
+        write_contact_cache(
+            follower_dir.path(),
+            &sharer_store.profile().profile_id,
+            Some(sharer_store.profile().display_name.clone()),
+            Vec::new(),
+            Vec::new(),
         )?;
 
         let mut contacts = ContactsStore::load(follower_dir.path())?;
@@ -805,7 +727,7 @@ mod tests {
             .last_error
             .as_deref()
             .unwrap_or_default()
-            .contains("Contact records are unavailable"));
+            .contains("Contact cache is unavailable"));
 
         Ok(())
     }
@@ -814,23 +736,20 @@ mod tests {
     fn refresh_reads_reduced_profile_state_cache() -> Result<()> {
         let dir = tempdir()?;
         let profile_id = PrivateKey::new().public_key().to_string();
-        let cache_path = contact_records_cache_path(dir.path(), &profile_id);
-        write_reduced_profile_state_to_path(
-            &cache_path,
-            &ReducedProfileState {
+        write_contact_cache(
+            dir.path(),
+            &profile_id,
+            Some("Remote Example".to_owned()),
+            vec![crate::operation_domain::ReducedShareState {
                 profile_id: profile_id.clone(),
-                display_name: Some("Remote Example".to_owned()),
-                shares: vec![crate::operation_domain::ReducedShareState {
-                    profile_id: profile_id.clone(),
-                    collection_hash: BlobHash::new(b"remote-share").to_string(),
-                    share_code: "p2p-REMOTE".to_owned(),
-                    source_dir: PathBuf::from("/tmp/remote-share"),
-                    recorded_at: 42,
-                    source_contact_profile_id: None,
-                    source_contact_display_name: None,
-                }],
-                followed_profile_ids: vec![PrivateKey::new().public_key().to_string()],
-            },
+                collection_hash: BlobHash::new(b"remote-share").to_string(),
+                share_code: "p2p-REMOTE".to_owned(),
+                source_dir: PathBuf::from("/tmp/remote-share"),
+                recorded_at: 42,
+                source_contact_profile_id: None,
+                source_contact_display_name: None,
+            }],
+            vec![PrivateKey::new().public_key().to_string()],
         )?;
 
         let mut contacts = ContactsStore::load(dir.path())?;
@@ -1004,18 +923,51 @@ mod tests {
             bob_profile.profile().profile_id.clone(),
             erin_profile.profile().profile_id.clone(),
         ] {
-            let source_path = if profile_id == alice_profile.profile().profile_id {
-                crate::profile::profile_records_path(alice_dir.path())
+            if profile_id == alice_profile.profile().profile_id {
+                write_contact_cache(
+                    viewer_dir.path(),
+                    &profile_id,
+                    Some(alice_profile.profile().display_name.clone()),
+                    Vec::new(),
+                    vec![bob_profile.profile().profile_id.clone()],
+                )?;
             } else if profile_id == dana_profile.profile().profile_id {
-                crate::profile::profile_records_path(dana_dir.path())
+                write_contact_cache(
+                    viewer_dir.path(),
+                    &profile_id,
+                    Some(dana_profile.profile().display_name.clone()),
+                    Vec::new(),
+                    vec![
+                        bob_profile.profile().profile_id.clone(),
+                        erin_profile.profile().profile_id.clone(),
+                    ],
+                )?;
             } else if profile_id == bob_profile.profile().profile_id {
-                crate::profile::profile_records_path(bob_dir.path())
+                let bob_share = sample_share_record(&profile_id);
+                write_contact_cache(
+                    viewer_dir.path(),
+                    &profile_id,
+                    Some(bob_profile.profile().display_name.clone()),
+                    vec![crate::operation_domain::ReducedShareState {
+                        profile_id: profile_id.clone(),
+                        collection_hash: bob_share.collection_hash.clone(),
+                        share_code: bob_share.share_code.clone(),
+                        source_dir: bob_share.source_dir.clone(),
+                        recorded_at: 42,
+                        source_contact_profile_id: None,
+                        source_contact_display_name: None,
+                    }],
+                    Vec::new(),
+                )?;
             } else {
-                crate::profile::profile_records_path(erin_dir.path())
-            };
-            let cache_path = contact_records_cache_path(viewer_dir.path(), &profile_id);
-            fs::create_dir_all(cache_path.parent().unwrap())?;
-            fs::copy(source_path, cache_path)?;
+                write_contact_cache(
+                    viewer_dir.path(),
+                    &profile_id,
+                    Some(erin_profile.profile().display_name.clone()),
+                    Vec::new(),
+                    Vec::new(),
+                )?;
+            }
         }
 
         contacts.refresh_contact(&alice_profile.profile().profile_id)?;

@@ -16,8 +16,6 @@ use p2panda_sync::traits::TopicMap;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
-use crate::profile::{load_profile_records_from_path, profile_records_path, ProfileRecord};
-
 const OPERATION_DOMAIN_TOPIC_NAMESPACE: &[u8] = b"p2panda-file-sharing/operation-domain/v1";
 const REDUCED_PROFILE_STATE_VERSION: u8 = 1;
 const DOMAIN_OPERATION_CACHE_VERSION: u8 = 1;
@@ -167,13 +165,6 @@ pub struct SharePublication {
     pub source_contact_display_name: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct MigrationReport {
-    pub profile_operations: usize,
-    pub share_operations: usize,
-    pub contact_operations: usize,
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct StoredDomainOperation {
     pub author: PublicKey,
@@ -184,16 +175,13 @@ pub struct StoredDomainOperation {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct PersistedReducedProfileState {
-    #[serde(default = "reduced_profile_state_version")]
     version: u8,
     state: ReducedProfileState,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct PersistedDomainOperations {
-    #[serde(default = "domain_operation_cache_version")]
     version: u8,
-    #[serde(default)]
     operations: Vec<StoredRawDomainOperation>,
 }
 
@@ -653,77 +641,6 @@ where
 
         Ok(operations)
     }
-
-    pub async fn migrate_legacy_profile_snapshot(
-        &mut self,
-        data_dir: impl AsRef<Path>,
-        private_key: &PrivateKey,
-    ) -> Result<MigrationReport> {
-        let path = profile_records_path(data_dir);
-        let records = load_profile_records_from_path(&path).with_context(|| {
-            format!(
-                "failed to load legacy profile snapshot from {}",
-                path.display()
-            )
-        })?;
-
-        let mut report = MigrationReport::default();
-        for record in records {
-            match record {
-                ProfileRecord::Metadata(record) => {
-                    self.append_profile_update(
-                        private_key,
-                        &record.profile_id,
-                        record.display_name,
-                        record.created_at,
-                        record.updated_at,
-                    )
-                    .await?;
-                    report.profile_operations += 1;
-                }
-                ProfileRecord::ShareOwnership(record) => {
-                    if record.active {
-                        self.append_share_published(
-                            private_key,
-                            &record.profile_id,
-                            SharePublication {
-                                collection_hash: record.collection_hash,
-                                share_code: record.share_code,
-                                source_dir: record.source_dir,
-                                recorded_at: record.recorded_at,
-                                source_contact_profile_id: record.source_contact_profile_id,
-                                source_contact_display_name: record.source_contact_display_name,
-                            },
-                        )
-                        .await?;
-                    } else {
-                        self.append_share_removed(
-                            private_key,
-                            &record.profile_id,
-                            record.collection_hash,
-                            record.share_code,
-                            record.recorded_at,
-                        )
-                        .await?;
-                    }
-                    report.share_operations += 1;
-                }
-                ProfileRecord::ContactFollow(record) => {
-                    self.append_contact_follow_changed(
-                        private_key,
-                        &record.profile_id,
-                        record.followed_profile_id,
-                        record.recorded_at,
-                        record.active,
-                    )
-                    .await?;
-                    report.contact_operations += 1;
-                }
-            }
-        }
-
-        Ok(report)
-    }
 }
 
 fn profile_sync_topic(profile_id: &str) -> TopicId {
@@ -733,14 +650,6 @@ fn profile_sync_topic(profile_id: &str) -> TopicId {
     bytes.push(b'/');
     bytes.extend_from_slice(profile_id.as_bytes());
     Hash::new(&bytes).into()
-}
-
-const fn reduced_profile_state_version() -> u8 {
-    REDUCED_PROFILE_STATE_VERSION
-}
-
-const fn domain_operation_cache_version() -> u8 {
-    DOMAIN_OPERATION_CACHE_VERSION
 }
 
 pub fn write_reduced_profile_state_to_path(
@@ -786,6 +695,13 @@ pub fn load_reduced_profile_state_from_path(path: impl AsRef<Path>) -> Result<Re
         .with_context(|| format!("failed to read reduced profile cache {}", path.display()))?;
     let persisted: PersistedReducedProfileState = serde_json::from_slice(&bytes)
         .with_context(|| format!("failed to parse reduced profile cache {}", path.display()))?;
+    if persisted.version != REDUCED_PROFILE_STATE_VERSION {
+        anyhow::bail!(
+            "unsupported reduced profile cache version {} in {}",
+            persisted.version,
+            path.display()
+        );
+    }
     Ok(persisted.state)
 }
 
@@ -797,6 +713,13 @@ pub fn load_raw_domain_operations_from_path(
         .with_context(|| format!("failed to read domain operation cache {}", path.display()))?;
     let persisted: PersistedDomainOperations = serde_json::from_slice(&bytes)
         .with_context(|| format!("failed to parse domain operation cache {}", path.display()))?;
+    if persisted.version != DOMAIN_OPERATION_CACHE_VERSION {
+        anyhow::bail!(
+            "unsupported domain operation cache version {} in {}",
+            persisted.version,
+            path.display()
+        );
+    }
     persisted
         .operations
         .into_iter()
@@ -871,8 +794,6 @@ fn write_json_atomic<T: Serialize>(path: &Path, value: &T, label: &str) -> Resul
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
-
     use anyhow::Result;
     use p2panda_blobs::Hash as BlobHash;
     use p2panda_net::LogSync;
@@ -881,8 +802,6 @@ mod tests {
 
     use super::*;
     use crate::node::{AppNode, NodeOptions};
-    use crate::persist::ShareRecord;
-    use crate::profile::ProfileStore;
 
     #[tokio::test]
     async fn topic_map_resolves_profile_topic_to_all_domain_logs() -> Result<()> {
@@ -999,84 +918,6 @@ mod tests {
         assert_eq!(profile_log[1].0.seq_num, 1);
         assert_eq!(profile_log[1].0.backlink, Some(first_header.hash()));
         assert_eq!(second_header.backlink, Some(first_header.hash()));
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn legacy_profile_snapshot_migrates_into_split_domain_logs() -> Result<()> {
-        let dir = tempdir()?;
-        let private_key = PrivateKey::new();
-        fs::write(dir.path().join("node.key"), private_key.as_bytes())?;
-
-        let mut legacy_store = ProfileStore::load_or_create(dir.path())?;
-        let local_profile_id = legacy_store.profile().profile_id.clone();
-        legacy_store.update_display_name("Solar Melon")?;
-        let share = ShareRecord::new(
-            dir.path().join("shared"),
-            "p2p-SHARE",
-            BlobHash::new(b"legacy-share"),
-            "shared",
-            1,
-            42,
-        )
-        .with_owner_profile_id(Some(local_profile_id.clone()));
-        legacy_store.ensure_share_ownership_record(&share)?;
-        let followed_profile_id = PrivateKey::new().public_key().to_string();
-        legacy_store.follow_contact(&followed_profile_id)?;
-
-        let mut domain = FileSharingOperationDomain::new(
-            MemoryStore::<DomainLogId, DomainExtensions>::new(),
-            FileSharingTopicMap::default(),
-        );
-        let report = domain
-            .migrate_legacy_profile_snapshot(dir.path(), &private_key)
-            .await?;
-
-        assert_eq!(report.profile_operations, 2);
-        assert_eq!(report.share_operations, 1);
-        assert_eq!(report.contact_operations, 1);
-
-        let reduced = domain
-            .read_profile_state(&local_profile_id)
-            .await?
-            .expect("migrated state should exist");
-        assert_eq!(reduced.display_name.as_deref(), Some("Solar Melon"));
-        assert_eq!(reduced.followed_profile_ids, vec![followed_profile_id]);
-        assert_eq!(reduced.shares.len(), 1);
-        assert_eq!(reduced.shares[0].share_code, "p2p-SHARE");
-
-        let profile_log = domain
-            .store
-            .get_log(
-                &private_key.public_key(),
-                &DomainLogId::new(&local_profile_id, DomainLogKind::Profile),
-                None,
-            )
-            .await?
-            .expect("profile log to exist after migration");
-        let share_log = domain
-            .store
-            .get_log(
-                &private_key.public_key(),
-                &DomainLogId::new(&local_profile_id, DomainLogKind::Shares),
-                None,
-            )
-            .await?
-            .expect("share log to exist after migration");
-        let contact_log = domain
-            .store
-            .get_log(
-                &private_key.public_key(),
-                &DomainLogId::new(&local_profile_id, DomainLogKind::Contacts),
-                None,
-            )
-            .await?
-            .expect("contact log to exist after migration");
-
-        assert_eq!(profile_log.len(), 2);
-        assert_eq!(share_log.len(), 1);
-        assert_eq!(contact_log.len(), 1);
 
         Ok(())
     }
