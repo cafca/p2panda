@@ -89,6 +89,7 @@ jobs:
             libxcursor-dev \
             libxi-dev \
             libxkbcommon-dev \
+            libxkbcommon-x11-0 \
             libxrandr-dev \
             librsvg2-bin \
             xvfb
