@@ -1251,3 +1251,93 @@
   ],
   "passes": true
 }
+{
+  "id": 55,
+  "title": "Delete prerelease migration and compatibility paths",
+  "description": "The app is prerelease, so old-format compatibility is unnecessary complexity. Remove all migration and backward-compatibility code paths from file-sharing persistence, cache loading, and tests so the runtime only supports the current data model.",
+  "depends_on": [
+    46,
+    49
+  ],
+  "spec": {
+    "transfer_persistence": "Remove legacy `state.json` loading, writing, and migration support from `persist.rs`. `state.sqlite3` (or the current primary store-backed persistence layer if replaced by another active task) is the only transfer persistence contract.",
+    "contact_cache_format": "Remove legacy raw-profile-record cache loading from `contacts.rs`. Remote contact cache reads must accept exactly one current format.",
+    "schema_cleanup": "Delete compatibility-only serde defaults, fallback branches, comments, and tests whose purpose is to keep older persisted layouts loading. Keep defaults only where they are part of the current runtime model rather than backcompat.",
+    "test_cleanup": "Update or remove tests that still inspect deprecated files or rely on migration behavior. Assertions must target the current persistence path only."
+  },
+  "acceptance": [
+    "Runtime code no longer reads or writes `state.json`",
+    "Runtime code no longer attempts to load remote contact caches as legacy raw profile-record snapshots",
+    "Automated tests do not reference deprecated persistence files or migration behavior",
+    "The file-sharing crate has a single active persistence/cache format for each persisted concern"
+  ],
+  "passes": false
+}
+{
+  "id": 56,
+  "title": "Replace profile and contact JSON storage with p2panda-store",
+  "description": "Unify profile, follow graph, and synced profile-cache persistence on `p2panda-store` so the app no longer uses ad-hoc JSON files for profile state, contact projections, or synced profile caches.",
+  "depends_on": [
+    45,
+    46,
+    48,
+    55
+  ],
+  "spec": {
+    "local_profile_source_of_truth": "Replace `profile.json` and `profile-records.json` with store-backed persistence for local profile metadata, share ownership records, and contact-follow operations. `ProfileStore` should become a projection/query layer over the store instead of owning append-only JSON files.",
+    "contacts_projection": "Replace `contacts.json` with a store-backed contacts projection or query path derived from the persisted operation data. `ContactsStore` should stop maintaining a separate JSON source of truth.",
+    "synced_profile_state": "Persist remote synced profile state and same-profile remote operations in `p2panda-store` instead of `contact-record-cache/*.json` and `local-profile-sync-cache.json`. Keep the current product behavior, but move the storage contract into the store.",
+    "restart_behavior": "Preserve restart semantics for local profile editing, followed-contact projection, and remote profile sync. Empty data directories should bootstrap entirely from the store-backed path."
+  },
+  "acceptance": [
+    "Starting the app with a fresh data directory no longer creates `profile.json`, `profile-records.json`, `contacts.json`, `contact-record-cache/*.json`, or `local-profile-sync-cache.json`",
+    "Local profile display-name updates, share ownership updates, and follow/unfollow state survive restart through the store-backed path",
+    "Remote synced profile state survives restart without JSON cache files",
+    "Tests cover restart persistence for both local profile data and synced remote profile data"
+  ],
+  "passes": false
+}
+{
+  "id": 57,
+  "title": "Stop storing share metadata in p2panda-blobs",
+  "description": "Restrict `p2panda-blobs` usage to raw file payloads. Move share-manifest and other directory metadata transport out of blob storage and into p2panda operation/sync infrastructure.",
+  "depends_on": [
+    45,
+    46,
+    56
+  ],
+  "spec": {
+    "manifest_transport": "Replace the blob-stored manifest with a p2panda operation-based manifest transport. The downloaded manifest must still authenticate the publisher and carry the ordered file list, relative paths, sizes, and file hashes needed for download.",
+    "share_locator": "Redesign the share locator/share-code contract so downloaders can discover the manifest through p2panda sync rather than by fetching a manifest blob from `p2panda-blobs`.",
+    "blob_scope": "Remove manifest and collection-metadata blobs from the share pipeline. `p2panda-blobs` should store only raw file payload blobs for this feature.",
+    "download_flow": "Update the download path to fetch and verify the manifest through the new operation/sync path before downloading file blobs. Preserve file verification and directory reconstruction behavior.",
+    "cleanup": "Update share pinning and share-removal cleanup so they no longer treat manifests or collection metadata as blob assets."
+  },
+  "acceptance": [
+    "Creating a share no longer stores the manifest or directory-metadata container as blobs",
+    "Downloading a share no longer reads the manifest from `p2panda-blobs`",
+    "The file-sharing crate uses `p2panda-blobs` only for raw file payload bytes in the share/download path",
+    "End-to-end share and download tests still pass with the manifest delivered through the new operation-based path"
+  ],
+  "passes": false
+}
+{
+  "id": 58,
+  "title": "Remove notification batching and raw timestamp UI output",
+  "description": "Simplify prerelease UX behavior by removing completion-notification batching and replacing raw integer timestamps with human-readable output throughout the file-sharing UI.",
+  "depends_on": [
+    55
+  ],
+  "spec": {
+    "notifications": "Remove the completion batching window in `notifications.rs`. Each completed download should emit its own unfocused-app notification without queueing or grouped summaries.",
+    "timestamp_formatting": "Replace raw UNIX integer rendering in the file-sharing UI and updater with human-readable formatting appropriate for end users. This includes places such as followed dates, recently-seen dates, and update last-checked output.",
+    "test_updates": "Update notification and UI/helper tests to assert the simplified notification behavior and non-raw timestamp formatting."
+  },
+  "acceptance": [
+    "Completed downloads emit one notification each when notifications are enabled and the app is unfocused",
+    "Settings, Contacts, and related views do not display raw UNIX timestamp integers to end users",
+    "Notification tests no longer assert batching behavior",
+    "Timestamp-formatting helpers are covered by automated tests"
+  ],
+  "passes": false
+}
