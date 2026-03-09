@@ -6,7 +6,6 @@ use p2panda_net::iroh_endpoint::RelayUrl;
 use serde::{Deserialize, Serialize};
 
 const SETTINGS_FILE_NAME: &str = "settings.json";
-const TESTING_RELAY_URL: &str = "https://use1-1.relay.iroh.network.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -59,7 +58,9 @@ impl Default for AppSettings {
 impl AppSettings {
     pub fn relay_url_for_node(&self) -> Result<Option<RelayUrl>> {
         match self.relay_mode {
-            RelayMode::TestingRelay => Ok(Some(TESTING_RELAY_URL.parse()?)),
+            RelayMode::TestingRelay => Ok(Some(
+                format!("https://{}", iroh::defaults::prod::EU_RELAY_HOSTNAME).parse()?,
+            )),
             RelayMode::Relay => {
                 let relay_url = normalize_custom_relay_url(self.custom_relay_url.as_deref())
                     .ok_or_else(|| anyhow::anyhow!("Relay mode requires a custom relay URL"))?;
@@ -289,7 +290,7 @@ mod tests {
         let relay_url = settings
             .relay_url_for_node()?
             .expect("testing relay should be configured");
-        assert!(relay_url.to_string().contains("relay.iroh.network"));
+        assert!(relay_url.to_string().contains(iroh::defaults::prod::EU_RELAY_HOSTNAME.trim_end_matches('.')));
 
         settings.relay_mode = RelayMode::Disabled;
         assert!(settings.relay_url_for_node()?.is_none());

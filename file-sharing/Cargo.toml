@@ -54,6 +54,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
 # HashSeq and blob-format APIs are imported directly in share/download flows.
 iroh-blobs = "0.98.0"
+iroh = { version = "0.96.1", default-features = false }
 flate2 = "1"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 semver = "1"
