@@ -40,12 +40,13 @@ jobs:
           RUST_LOG=info "$BIN" >"$LOG" 2>&1 &
           PID=$!
           sleep 5
+          EXIT=0
           if kill -0 "$PID" 2>/dev/null; then
             kill "$PID"; wait "$PID" 2>/dev/null || true
             echo "--- binary output ---"; cat "$LOG"
             echo "--- smoke test passed (ran for 5s) ---"
           else
-            wait "$PID"; EXIT=$?
+            wait "$PID" || EXIT=$?
             echo "--- binary output ---"; cat "$LOG"
             [ "$EXIT" -eq 0 ] || { echo "--- FAILED (exit $EXIT) ---"; exit 1; }
             echo "--- smoke test passed (clean exit) ---"
@@ -113,12 +114,13 @@ jobs:
           xvfb-run --auto-servernum env RUST_LOG=info "$BIN" >"$LOG" 2>&1 &
           PID=$!
           sleep 5
+          EXIT=0
           if kill -0 "$PID" 2>/dev/null; then
             kill "$PID"; wait "$PID" 2>/dev/null || true
             echo "--- binary output ---"; cat "$LOG"
             echo "--- smoke test passed (ran for 5s) ---"
           else
-            wait "$PID"; EXIT=$?
+            wait "$PID" || EXIT=$?
             echo "--- binary output ---"; cat "$LOG"
             [ "$EXIT" -eq 0 ] || { echo "--- FAILED (exit $EXIT) ---"; exit 1; }
             echo "--- smoke test passed (clean exit) ---"
