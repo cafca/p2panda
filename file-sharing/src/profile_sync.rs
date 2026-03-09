@@ -645,26 +645,35 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn syncs_contact_profile_via_log_sync_with_catch_up_and_live_updates() -> Result<()> {
         setup_logging();
+        let test_start = std::time::Instant::now();
+        let mut phase_start = test_start;
 
         let sharer_dir = tempdir()?;
         let follower_dir = tempdir()?;
         let (_relay_map, relay_url, _relay_server) = run_relay_server().await?;
+        println!("  relay server started: {:.1}s", phase_start.elapsed().as_secs_f64());
 
         let node_options = NodeOptions {
             relay_url: Some(relay_url.clone()),
             mdns_enabled: false,
             insecure_skip_relay_cert_verify: true,
         };
+        phase_start = std::time::Instant::now();
         let sharer = AppNode::with_data_dir(sharer_dir.path(), node_options.clone()).await?;
+        println!("  sharer node created: {:.1}s", phase_start.elapsed().as_secs_f64());
         let sharer_profile_id = {
             let mut sharer_profile = ProfileStore::load_or_create(sharer_dir.path())?;
             sharer_profile.update_display_name("Alice Example")?;
             sharer_profile.profile().profile_id.clone()
         };
+        phase_start = std::time::Instant::now();
         let mut sharer_sync = ProfileSyncService::new(&sharer, sharer_profile_id.clone()).await?;
         sharer_sync.refresh_local_profile().await?;
+        println!("  sharer sync ready: {:.1}s", phase_start.elapsed().as_secs_f64());
 
+        phase_start = std::time::Instant::now();
         let follower = AppNode::with_data_dir(follower_dir.path(), node_options.clone()).await?;
+        println!("  follower node created: {:.1}s", phase_start.elapsed().as_secs_f64());
         follower
             .address_book
             .insert_node_info(relay_bootstrap_node_info(
@@ -686,11 +695,13 @@ mod tests {
             sharer_profile_id.chars().take(8).collect::<String>()
         );
 
+        phase_start = std::time::Instant::now();
         let mut follower_sync =
             ProfileSyncService::new(&follower, follower_profile_id.clone()).await?;
         follower_sync
             .sync_contact_profile(&sharer_profile_id)
             .await?;
+        println!("  phase 1 sync_contact_profile: {:.1}s", phase_start.elapsed().as_secs_f64());
 
         wait_for_contact_label(follower_dir.path(), &sharer_profile_id, "Alice Example").await?;
 
@@ -698,6 +709,8 @@ mod tests {
         drop(follower);
         tokio::time::sleep(Duration::from_millis(250)).await;
 
+        println!("  -- phase 2: reconnect --");
+        phase_start = std::time::Instant::now();
         {
             let mut sharer_profile = ProfileStore::load_or_create(sharer_dir.path())?;
             sharer_profile.update_display_name("Alice Reconnected")?;
@@ -705,16 +718,21 @@ mod tests {
         sharer_sync.refresh_local_profile().await?;
 
         let follower = AppNode::with_data_dir(follower_dir.path(), node_options).await?;
+        println!("  follower node recreated: {:.1}s", phase_start.elapsed().as_secs_f64());
         follower
             .address_book
             .insert_node_info(relay_bootstrap_node_info(sharer.node_id(), relay_url))
             .await?;
+        phase_start = std::time::Instant::now();
         let mut follower_sync =
             ProfileSyncService::new(&follower, follower_profile_id.clone()).await?;
         assert_eq!(follower_sync.sync_followed_contacts_from_disk().await?, 1);
+        println!("  phase 2 sync_followed_contacts_from_disk: {:.1}s", phase_start.elapsed().as_secs_f64());
         wait_for_contact_label(follower_dir.path(), &sharer_profile_id, "Alice Reconnected")
             .await?;
 
+        println!("  -- phase 3: live update --");
+        phase_start = std::time::Instant::now();
         {
             let mut sharer_profile = ProfileStore::load_or_create(sharer_dir.path())?;
             sharer_profile.update_display_name("Alice Live")?;
@@ -723,8 +741,10 @@ mod tests {
         follower_sync
             .sync_contact_profile(&sharer_profile_id)
             .await?;
+        println!("  phase 3 sync_contact_profile: {:.1}s", phase_start.elapsed().as_secs_f64());
         wait_for_contact_label(follower_dir.path(), &sharer_profile_id, "Alice Live").await?;
 
+        println!("  total test time: {:.1}s", test_start.elapsed().as_secs_f64());
         Ok(())
     }
 
@@ -959,22 +979,29 @@ mod tests {
         profile_id: &str,
         expected_label: &str,
     ) -> Result<()> {
+        let start = std::time::Instant::now();
         tokio::time::timeout(Duration::from_secs(30), async {
             loop {
                 let mut contacts = ContactsStore::load(data_dir)?;
                 contacts.refresh_contact(profile_id).ok();
-                if contacts
+                let actual = contacts
                     .get(profile_id)
-                    .and_then(|contact| contact.display_name())
-                    == Some(expected_label)
-                {
+                    .and_then(|contact| contact.display_name().map(String::from));
+                if actual.as_deref() == Some(expected_label) {
+                    println!(
+                        "  wait_for_contact_label({expected_label:?}): ok in {:.1}s",
+                        start.elapsed().as_secs_f64()
+                    );
                     return Ok::<(), anyhow::Error>(());
                 }
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
         })
         .await
-        .context("timed out waiting for synced contact label")??;
+        .context(format!(
+            "timed out after {:.1}s waiting for contact label {expected_label:?}",
+            start.elapsed().as_secs_f64()
+        ))??;
         Ok(())
     }
 

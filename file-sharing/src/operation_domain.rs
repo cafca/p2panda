@@ -3,11 +3,11 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 use p2panda_core::cbor::{decode_cbor, encode_cbor};
 use p2panda_core::{Body, Extension, Hash, Header, Operation, PrivateKey, PublicKey};
+use p2panda_net::timestamp::HybridTimestamp;
 use p2panda_net::TopicId;
 use p2panda_store::{LogStore, OperationStore};
 use p2panda_stream::operation::{ingest_operation, IngestResult};
@@ -69,6 +69,8 @@ impl DomainLogId {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DomainExtensions {
     pub log_id: DomainLogId,
+    #[serde(default = "HybridTimestamp::now")]
+    pub ordering_timestamp: HybridTimestamp,
 }
 
 impl Extension<DomainLogId> for DomainExtensions {
@@ -312,18 +314,20 @@ where
             .map(|(header, _)| (header.seq_num + 1, Some(header.hash())))
             .unwrap_or((0, None));
 
+        let ordering_timestamp = HybridTimestamp::now();
         let mut header = Header {
             version: 1,
             public_key: private_key.public_key(),
             signature: None,
             payload_size: body.size(),
             payload_hash: Some(body.hash()),
-            timestamp: now_unix_secs(),
+            timestamp: u64::from(ordering_timestamp.timestamp()),
             seq_num,
             backlink,
             previous: backlink.into_iter().collect(),
             extensions: DomainExtensions {
                 log_id: log_id.clone(),
+                ordering_timestamp,
             },
         };
         header.sign(private_key);
@@ -477,8 +481,9 @@ where
 
         operations.sort_by(|left, right| {
             left.header
-                .timestamp
-                .cmp(&right.header.timestamp)
+                .extensions
+                .ordering_timestamp
+                .cmp(&right.header.extensions.ordering_timestamp)
                 .then_with(|| left.log_id.kind.rank().cmp(&right.log_id.kind.rank()))
                 .then_with(|| left.author.to_string().cmp(&right.author.to_string()))
                 .then_with(|| left.header.seq_num.cmp(&right.header.seq_num))
@@ -565,8 +570,9 @@ where
         });
         operations.sort_by(|left, right| {
             left.header
-                .timestamp
-                .cmp(&right.header.timestamp)
+                .extensions
+                .ordering_timestamp
+                .cmp(&right.header.extensions.ordering_timestamp)
                 .then_with(|| left.log_id.kind.rank().cmp(&right.log_id.kind.rank()))
                 .then_with(|| left.author.to_string().cmp(&right.author.to_string()))
                 .then_with(|| left.header.seq_num.cmp(&right.header.seq_num))
@@ -727,13 +733,6 @@ fn profile_sync_topic(profile_id: &str) -> TopicId {
     bytes.push(b'/');
     bytes.extend_from_slice(profile_id.as_bytes());
     Hash::new(&bytes).into()
-}
-
-fn now_unix_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
 }
 
 const fn reduced_profile_state_version() -> u8 {

@@ -114,7 +114,7 @@ impl SignedManifest {
         let body_bytes = data.encode()?;
         let body = Body::from(body_bytes);
         let ordering_timestamp = HybridTimestamp::now();
-        let timestamp = hybrid_timestamp_unix_micros(ordering_timestamp)?;
+        let timestamp = hybrid_timestamp_unix_micros(ordering_timestamp);
 
         let mut header = Header {
             version: 1,
@@ -199,7 +199,7 @@ impl SignedManifest {
 
         let ordering_timestamp = self.header.extensions.ordering_timestamp;
         ensure!(
-            hybrid_timestamp_unix_micros(ordering_timestamp)? == self.header.timestamp,
+            hybrid_timestamp_unix_micros(ordering_timestamp) == self.header.timestamp,
             "manifest ordering timestamp does not match header timestamp"
         );
 
@@ -212,14 +212,8 @@ impl SignedManifest {
     }
 }
 
-fn hybrid_timestamp_unix_micros(timestamp: HybridTimestamp) -> Result<u64> {
-    timestamp
-        .to_string()
-        .split('/')
-        .next()
-        .ok_or_else(|| anyhow!("hybrid timestamp is missing unix timestamp component"))?
-        .parse()
-        .context("failed to parse hybrid timestamp unix component")
+fn hybrid_timestamp_unix_micros(timestamp: HybridTimestamp) -> u64 {
+    u64::from(timestamp.timestamp())
 }
 
 pub fn encode_manifest_data(data: &ManifestData) -> Result<Vec<u8>> {
@@ -332,7 +326,7 @@ mod tests {
 
         assert_eq!(signed.metadata(), &expected_metadata);
         assert_eq!(
-            hybrid_timestamp_unix_micros(signed.ordering_timestamp()).unwrap(),
+            u64::from(signed.ordering_timestamp().timestamp()),
             signed.header.timestamp
         );
     }
@@ -349,7 +343,7 @@ mod tests {
             signature: None,
             payload_size: body.size(),
             payload_hash: Some(body.hash()),
-            timestamp: hybrid_timestamp_unix_micros(ordering_timestamp).unwrap(),
+            timestamp: u64::from(ordering_timestamp.timestamp()),
             seq_num: 0,
             backlink: None,
             previous: vec![],

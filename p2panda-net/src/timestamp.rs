@@ -124,6 +124,11 @@ impl HybridTimestamp {
         Self(Timestamp::now(), LamportTimestamp::default())
     }
 
+    /// Returns the wall-clock component of this hybrid timestamp.
+    pub fn timestamp(&self) -> Timestamp {
+        self.0
+    }
+
     pub fn increment(self) -> Self {
         let timestamp = Timestamp::now();
         if timestamp == self.0 {
@@ -230,5 +235,11 @@ mod tests {
             HybridTimestamp::from_str(&timestamp_str).unwrap(),
             timestamp
         );
+    }
+
+    #[test]
+    fn extract_timestamp() {
+        let timestamp = HybridTimestamp::now();
+        assert!(timestamp.timestamp() < super::Timestamp::now());
     }
 }

@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+
+use p2panda_net::timestamp::Timestamp;
 
 use anyhow::{Context, Result};
 use p2panda_core::cbor::{decode_cbor, encode_cbor};
@@ -51,7 +52,7 @@ pub struct UserProfile {
 
 impl UserProfile {
     fn new(public_key: PublicKey) -> Self {
-        let timestamp = now_unix_secs();
+        let timestamp = u64::from(Timestamp::now());
         let profile_id = public_key.to_string();
         Self {
             version: PROFILE_VERSION,
@@ -220,7 +221,7 @@ impl ProfileStore {
         if self.profile.display_name.trim().is_empty() {
             self.profile.display_name = default_display_name(&self.profile.profile_id);
         }
-        self.profile.updated_at = now_unix_secs();
+        self.profile.updated_at = u64::from(Timestamp::now());
         self.save_profile()?;
         self.ensure_profile_metadata_record()?;
         Ok(true)
@@ -237,7 +238,7 @@ impl ProfileStore {
         }
 
         self.profile.display_name = display_name;
-        self.profile.updated_at = now_unix_secs();
+        self.profile.updated_at = u64::from(Timestamp::now());
         self.save_profile()?;
         self.append_record(ProfileRecordBody::Metadata {
             profile_id: self.profile.profile_id.clone(),
@@ -371,7 +372,7 @@ impl ProfileStore {
             self.profile.display_name = default_display_name(&self.profile.profile_id);
         }
         if !self.path.exists() {
-            self.profile.updated_at = now_unix_secs();
+            self.profile.updated_at = u64::from(Timestamp::now());
         }
         self.save_profile()?;
         Ok(())
@@ -415,7 +416,7 @@ impl ProfileStore {
             collection_hash: update.collection_hash,
             share_code: update.share_code,
             source_dir: update.source_dir,
-            recorded_at: now_unix_secs(),
+            recorded_at: u64::from(Timestamp::now()),
             source_contact_profile_id: update.source_contact_profile_id,
             source_contact_display_name: update.source_contact_display_name,
             active: update.active,
@@ -444,7 +445,7 @@ impl ProfileStore {
         self.append_record(ProfileRecordBody::ContactFollow {
             profile_id: self.profile.profile_id.clone(),
             followed_profile_id,
-            recorded_at: now_unix_secs(),
+            recorded_at: u64::from(Timestamp::now()),
             active,
         })?;
         Ok(true)
@@ -466,7 +467,7 @@ impl ProfileStore {
             .iter()
             .filter(|operation| operation.header.public_key == self.private_key.public_key())
             .count() as u64;
-        let timestamp = now_unix_secs();
+        let timestamp = u64::from(Timestamp::now());
         let mut header = Header {
             version: 1,
             public_key: self.private_key.public_key(),
@@ -770,7 +771,7 @@ fn normalize_profile_id(profile_id: String) -> Result<String> {
 }
 
 fn move_corrupt_file_aside(path: &Path) -> Result<PathBuf> {
-    let recovered_path = path.with_extension(format!("corrupt-{}.json", now_unix_secs()));
+    let recovered_path = path.with_extension(format!("corrupt-{}.json", u64::from(Timestamp::now())));
     fs::rename(path, &recovered_path).with_context(|| {
         format!(
             "failed to move corrupt file {} to {}",
@@ -805,12 +806,6 @@ fn default_display_name(profile_id: &str) -> String {
     format!("{adjective} {fruit}")
 }
 
-fn now_unix_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
-}
 
 const fn profile_version() -> u8 {
     PROFILE_VERSION

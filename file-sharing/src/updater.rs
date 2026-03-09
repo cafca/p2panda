@@ -10,6 +10,8 @@ use semver::Version;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
+use p2panda_net::timestamp::Timestamp;
+
 use crate::settings::{AppSettings, SettingsStore, UpdateChannel};
 
 const UPDATE_REPO_OWNER: &str = "p2panda";
@@ -319,7 +321,7 @@ impl UpdateController {
                     Ok(applied) => {
                         self.pending_exit = true;
                         self.status = UpdateStatus::UpToDate;
-                        self.last_checked_unix_secs = Some(now_unix_secs());
+                        self.last_checked_unix_secs = Some(u64::from(Timestamp::now()) / 1_000_000);
                         self.snoozed_version = None;
                         tracing::info!("relaunched app into version {}", applied.version);
                     }
@@ -336,7 +338,7 @@ impl UpdateController {
             return;
         }
 
-        let now = now_unix_secs();
+        let now = u64::from(Timestamp::now()) / 1_000_000;
         let due = self
             .last_checked_unix_secs
             .map(|last_checked| now.saturating_sub(last_checked) >= UPDATE_CHECK_INTERVAL_SECS)
@@ -356,7 +358,7 @@ impl UpdateController {
         let channel = self.channel;
         self.status = UpdateStatus::Checking { automatic };
         std::thread::spawn(move || {
-            let checked_at_unix_secs = now_unix_secs();
+            let checked_at_unix_secs = u64::from(Timestamp::now()) / 1_000_000;
             let result = backend
                 .check_for_update(&current_version, channel)
                 .map_err(|err| err.to_string());
@@ -718,12 +720,6 @@ fn platform_checksum_extension() -> &'static str {
     }
 }
 
-pub fn now_unix_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
 
 pub fn format_last_checked(timestamp: Option<u64>) -> String {
     timestamp

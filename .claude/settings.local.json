@@ -3,7 +3,9 @@
     "allow": [
       "WebSearch",
       "WebFetch(domain:docs.iroh.computer)",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "Bash(cargo test:*)",
+      "Bash(grep:*)"
     ]
   }
 }

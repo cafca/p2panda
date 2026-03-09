@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+
+use p2panda_net::timestamp::Timestamp;
 
 use anyhow::{Context, Result};
 use p2panda_core::PublicKey;
@@ -156,7 +157,7 @@ impl ContactsStore {
 
         self.state.followed_contacts.push(Contact {
             profile_id,
-            followed_at: now_unix_secs(),
+            followed_at: u64::from(Timestamp::now()),
             cached_display_name: None,
             cached_shares: Vec::new(),
             last_refreshed_at: None,
@@ -237,7 +238,7 @@ impl ContactsStore {
     }
 
     pub fn refresh_contact(&mut self, profile_id: &str) -> Result<()> {
-        let now = now_unix_secs();
+        let now = u64::from(Timestamp::now());
         let cache_path = self.cache_path(profile_id);
         let Some(contact) = self
             .state
@@ -657,13 +658,6 @@ fn write_atomic(path: &Path, state: &PersistedContacts) -> Result<()> {
         )
     })?;
     Ok(())
-}
-
-fn now_unix_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }
 
 #[cfg(test)]
