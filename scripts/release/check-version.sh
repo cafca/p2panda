@@ -28,11 +28,34 @@ if [[ -z "$TAG" ]]; then
   exit 1
 fi
 
-EXPECTED_TAG="v$VERSION"
-EXPERIMENTAL_TAG_PATTERN="^${EXPECTED_TAG}-experimental\\.[0-9]+$"
-if [[ "$TAG" != "$EXPECTED_TAG" && ! "$TAG" =~ $EXPERIMENTAL_TAG_PATTERN ]]; then
-  echo "tag/version mismatch: expected '$EXPECTED_TAG' or '${EXPECTED_TAG}-experimental.<n>' but got '$TAG'" >&2
-  exit 1
-fi
+python3 - "$TAG" "$VERSION" <<'PYEOF'
+import re, sys
 
-echo "$VERSION"
+def parse_semver(v):
+    # Official semver regex from https://semver.org/#is-there-a-suggested-regexp-to-check-a-semver-string
+    m = re.fullmatch(
+        r'^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)'
+        r'(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?'
+        r'(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$', v)
+    return m
+
+tag, version = sys.argv[1], sys.argv[2]
+tag_no_v = tag[1:] if tag.startswith('v') else tag
+
+m = parse_semver(tag_no_v)
+if not m:
+    print(f"invalid semver tag: '{tag}'", file=sys.stderr)
+    sys.exit(1)
+
+core = f"{m.group(1)}.{m.group(2)}.{m.group(3)}"
+if core != version:
+    print(f"tag/version mismatch: tag has {core} but Cargo.toml has {version}", file=sys.stderr)
+    sys.exit(1)
+
+pre = m.group(4) or ''
+if pre and not pre.startswith('experimental'):
+    print(f"pre-release identifier must start with 'experimental', got: '{pre}'", file=sys.stderr)
+    sys.exit(1)
+
+print(version)
+PYEOF
