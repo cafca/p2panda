@@ -128,3 +128,20 @@ Added workflow permissions for GH PAT so Task 41 can continue.
 - `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui operation_domain::tests --lib -- --nocapture`
 - `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui --test transfer removed_share_is_not_downloadable -- --nocapture`
 - marked Task 55 `passes: true` in `PRD.jsonl` because this run verified SQLite-only transfer persistence, reduced-state-only remote contact caches, removal of deprecated migration coverage, and passing tests against the current persistence/cache contracts
+
+# Mon, 09 Mar 2026 18:31:04 GMT
+
+- picked Task 56 (`Replace profile and contact JSON storage with p2panda-store`) as the highest-priority remaining product task because it blocks Task 57, while Task 58 is independent cleanup and no longer on the critical path
+- replaced the remaining profile/contact JSON persistence with a shared SQLite-backed profile data store by:
+- moving `ProfileStore` local profile metadata plus append-only profile operations off `profile.json` / `profile-records.json` and into store-backed key/value records
+- moving `ContactsStore` off `contacts.json` and onto the same store-backed projection, while persisting remote reduced-profile caches in SQLite instead of `contact-record-cache/*.json`
+- persisting same-profile remote LogSync operations in SQLite instead of `local-profile-sync-cache.json`, and updating profile-sync startup/retry paths to query the store rather than filesystem cache files
+- added regression coverage for fresh-start bootstrap without the deprecated JSON files, restart persistence of local profile state, and restart persistence of synced remote profile state without JSON caches
+- feedback loops passed in this run:
+- `cargo fmt --package p2panda-file-sharing-gui`
+- `cargo check -p p2panda-file-sharing-gui --lib`
+- `cargo test -p p2panda-file-sharing-gui profile::tests --lib -- --nocapture`
+- `cargo test -p p2panda-file-sharing-gui contacts::tests --lib -- --nocapture`
+- `cargo test -p p2panda-file-sharing-gui profile_sync::tests --lib -- --nocapture`
+- `cargo test -p p2panda-file-sharing-gui --lib -- --nocapture`
+- marked Task 56 `passes: true` in `PRD.jsonl` because this run verified fresh-start startup without the deprecated JSON files, restart persistence of local profile display/share-follow state through the SQLite-backed store, and restart persistence of synced remote profile state with the cache data moved off JSON files

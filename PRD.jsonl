@@ -1295,7 +1295,7 @@
     "Remote synced profile state survives restart without JSON cache files",
     "Tests cover restart persistence for both local profile data and synced remote profile data"
   ],
-  "passes": false
+  "passes": true
 }
 {
   "id": 57,

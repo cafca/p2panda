@@ -12,23 +12,22 @@ use p2panda_net::sync::{SyncHandle, SyncSubscription};
 use p2panda_net::{LogSync, TopicId};
 use p2panda_store::MemoryStore;
 use p2panda_sync::protocols::TopicLogSyncEvent;
+use serde::{Deserialize, Serialize};
 
-use crate::contacts::{contact_records_cache_path, ContactsStore};
+use crate::contacts::{contact_cache_exists, write_contact_cache, ContactsStore};
 use crate::node::AppNode;
 use crate::operation_domain::{
-    load_raw_domain_operations_from_path, write_raw_domain_operations_to_path,
-    write_reduced_profile_state_to_path, DomainExtensions, DomainLogId, DomainOperation,
-    FileSharingOperationDomain, FileSharingTopicMap,
+    DomainExtensions, DomainLogId, DomainOperation, FileSharingOperationDomain,
+    FileSharingTopicMap, ReducedProfileState,
 };
-use crate::profile::{
-    load_private_key_from_data_dir, load_profile_records_from_path, profile_records_path,
-    ProfileRecord,
-};
+use crate::profile::{load_private_key_from_data_dir, load_profile_records, ProfileRecord};
+use crate::profile_data::{load_json_key, open_profile_data_store, write_json_key};
 
 const CONTACT_PROFILE_BOOTSTRAP_SETTLE_MILLIS: u64 = 750;
 const CONTACT_PROFILE_SYNC_RETRY_ATTEMPTS: usize = 6;
 const CONTACT_PROFILE_SYNC_RETRY_INTERVAL_MILLIS: u64 = 1_000;
-const LOCAL_PROFILE_SYNC_CACHE_FILE_NAME: &str = "local-profile-sync-cache.json";
+const LOCAL_PROFILE_SYNC_OPERATIONS_KEY: &str = "local_profile_sync_operations";
+const DOMAIN_OPERATION_CACHE_VERSION: u8 = 1;
 
 type DomainStore = MemoryStore<DomainLogId, DomainExtensions>;
 type DomainSync = LogSync<DomainStore, DomainLogId, DomainExtensions, FileSharingTopicMap>;
@@ -38,8 +37,20 @@ type DomainSyncSubscription = SyncSubscription<TopicLogSyncEvent<DomainExtension
 
 struct ContactProfileSync {
     handle: DomainSyncHandle,
-    cache_path: PathBuf,
     _task: tokio::task::JoinHandle<()>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct PersistedDomainOperations {
+    version: u8,
+    operations: Vec<StoredRawDomainOperation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct StoredRawDomainOperation {
+    header: p2panda_core::Header<DomainExtensions>,
+    #[serde(with = "serde_bytes")]
+    body: Vec<u8>,
 }
 
 pub(crate) struct ProfileSyncService {
@@ -66,14 +77,9 @@ impl ProfileSyncService {
         let store = DomainStore::new();
         let topic_map = FileSharingTopicMap::default();
         let mut domain = FileSharingOperationDomain::new(store.clone(), topic_map.clone());
-        let local_record_count = migrate_local_profile_records(
-            &mut domain,
-            &local_private_key,
-            profile_records_path(&node.data_dir),
-        )
-        .await?;
-        load_local_profile_sync_cache(&mut domain, local_profile_sync_cache_path(&node.data_dir))
-            .await?;
+        let local_record_count =
+            migrate_local_profile_records(&mut domain, &local_private_key, &node.data_dir).await?;
+        load_local_profile_sync_cache(&mut domain, &node.data_dir).await?;
 
         let topic = topic_map
             .register_profile_author(&local_profile_id, local_private_key.public_key())
@@ -132,13 +138,8 @@ impl ProfileSyncService {
     }
 
     pub(crate) async fn refresh_local_profile(&mut self) -> Result<()> {
-        let path = profile_records_path(&self.data_dir);
-        let records = load_profile_records_from_path(&path).with_context(|| {
-            format!(
-                "failed to read local profile records from {}",
-                path.display()
-            )
-        })?;
+        let records = load_profile_records(&self.data_dir)
+            .context("failed to read local profile records from profile store")?;
 
         if records.len() < self.local_record_count {
             tracing::warn!(
@@ -255,19 +256,17 @@ impl ProfileSyncService {
             let subscription = handle.subscribe().await.with_context(|| {
                 format!("failed to subscribe to LogSync topic for {profile_id}")
             })?;
-            let cache_path = contact_records_cache_path(&self.data_dir, profile_id);
             let task = spawn_contact_profile_task(
                 subscription,
                 self.store.clone(),
                 self.topic_map.clone(),
+                self.data_dir.clone(),
                 profile_id.to_owned(),
-                cache_path.clone(),
             );
             self.contact_streams.insert(
                 profile_id.to_owned(),
                 ContactProfileSync {
                     handle,
-                    cache_path,
                     _task: task,
                 },
             );
@@ -285,9 +284,9 @@ impl ProfileSyncService {
             .await;
         }
         sync.handle.initiate_session(public_key);
-        if !sync.cache_path.exists() {
+        if !contact_cache_exists(&self.data_dir, profile_id)? {
             for _ in 0..CONTACT_PROFILE_SYNC_RETRY_ATTEMPTS {
-                if sync.cache_path.exists() {
+                if contact_cache_exists(&self.data_dir, profile_id)? {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(
@@ -319,14 +318,10 @@ impl ProfileSyncService {
 async fn migrate_local_profile_records(
     domain: &mut FileSharingOperationDomain<DomainStore>,
     private_key: &PrivateKey,
-    records_path: PathBuf,
+    data_dir: &Path,
 ) -> Result<usize> {
-    let records = load_profile_records_from_path(&records_path).with_context(|| {
-        format!(
-            "failed to load local profile records for LogSync migration from {}",
-            records_path.display()
-        )
-    })?;
+    let records = load_profile_records(data_dir)
+        .context("failed to load local profile records for LogSync migration")?;
     for record in &records {
         append_profile_record(domain, private_key, record).await?;
     }
@@ -394,8 +389,8 @@ fn spawn_contact_profile_task(
     mut subscription: DomainSyncSubscription,
     store: DomainStore,
     topic_map: FileSharingTopicMap,
+    data_dir: std::path::PathBuf,
     profile_id: String,
-    cache_path: PathBuf,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut domain = FileSharingOperationDomain::new(store, topic_map.clone());
@@ -414,8 +409,7 @@ fn spawn_contact_profile_task(
                         );
                         continue;
                     }
-                    if let Err(err) = persist_contact_cache(&domain, &cache_path, &profile_id).await
-                    {
+                    if let Err(err) = persist_contact_cache(&domain, &data_dir, &profile_id).await {
                         tracing::warn!(
                             remote_profile_id = %profile_id,
                             "failed to persist reduced profile cache from LogSync operation: {err:#}"
@@ -423,8 +417,7 @@ fn spawn_contact_profile_task(
                     }
                 }
                 TopicLogSyncEvent::SyncFinished(_) | TopicLogSyncEvent::LiveModeStarted => {
-                    if let Err(err) = persist_contact_cache(&domain, &cache_path, &profile_id).await
-                    {
+                    if let Err(err) = persist_contact_cache(&domain, &data_dir, &profile_id).await {
                         tracing::warn!(
                             remote_profile_id = %profile_id,
                             "failed to persist reduced profile cache after sync milestone: {err:#}"
@@ -517,13 +510,13 @@ fn spawn_local_profile_task(
 
 async fn persist_contact_cache(
     domain: &FileSharingOperationDomain<DomainStore>,
-    cache_path: &Path,
+    data_dir: &Path,
     profile_id: &str,
 ) -> Result<()> {
     let Some(state) = domain.read_profile_state(profile_id).await? else {
         return Ok(());
     };
-    write_reduced_profile_state_to_path(cache_path, &state)?;
+    persist_contact_profile_state(data_dir, profile_id, &state)?;
     Ok(())
 }
 
@@ -550,7 +543,7 @@ async fn persist_local_profile_sync_state(
             })
         })
         .collect::<Result<Vec<_>>>()?;
-    write_raw_domain_operations_to_path(local_profile_sync_cache_path(data_dir), operations)?;
+    write_local_profile_sync_operations(data_dir, operations)?;
     reconcile_local_contacts_projection(data_dir, domain, profile_id).await?;
     Ok(())
 }
@@ -571,26 +564,75 @@ async fn reconcile_local_contacts_projection(
 
 async fn load_local_profile_sync_cache(
     domain: &mut FileSharingOperationDomain<DomainStore>,
-    cache_path: PathBuf,
+    data_dir: &Path,
 ) -> Result<()> {
-    if !cache_path.exists() {
-        return Ok(());
-    }
-
-    let operations = load_raw_domain_operations_from_path(&cache_path).with_context(|| {
-        format!(
-            "failed to load cached synced local profile operations from {}",
-            cache_path.display()
-        )
-    })?;
+    let operations = load_local_profile_sync_operations(data_dir)
+        .context("failed to load cached synced local profile operations")?;
     for operation in operations {
         domain.ingest_remote_operation(operation).await?;
     }
     Ok(())
 }
 
-fn local_profile_sync_cache_path(data_dir: &Path) -> PathBuf {
-    data_dir.join(LOCAL_PROFILE_SYNC_CACHE_FILE_NAME)
+fn persist_contact_profile_state(
+    data_dir: &Path,
+    profile_id: &str,
+    state: &ReducedProfileState,
+) -> Result<()> {
+    write_contact_cache(data_dir, profile_id, state)
+}
+
+fn load_local_profile_sync_operations(data_dir: &Path) -> Result<Vec<Operation<DomainExtensions>>> {
+    let store = open_profile_data_store(data_dir)?;
+    let Some(persisted): Option<PersistedDomainOperations> =
+        load_json_key(&store.pool, LOCAL_PROFILE_SYNC_OPERATIONS_KEY)?
+    else {
+        return Ok(Vec::new());
+    };
+    if persisted.version != DOMAIN_OPERATION_CACHE_VERSION {
+        anyhow::bail!(
+            "unsupported domain operation cache version {}",
+            persisted.version
+        );
+    }
+
+    persisted
+        .operations
+        .into_iter()
+        .map(|operation| {
+            let validated = Operation {
+                hash: operation.header.hash(),
+                header: operation.header,
+                body: Some(Body::from(operation.body)),
+            };
+            p2panda_core::validate_operation(&validated)
+                .context("cached domain operation validation failed")?;
+            Ok(validated)
+        })
+        .collect()
+}
+
+fn write_local_profile_sync_operations(
+    data_dir: &Path,
+    operations: Vec<Operation<DomainExtensions>>,
+) -> Result<()> {
+    let persisted = PersistedDomainOperations {
+        version: DOMAIN_OPERATION_CACHE_VERSION,
+        operations: operations
+            .into_iter()
+            .map(|operation| {
+                let body = operation
+                    .body
+                    .context("domain operation is missing a body while persisting cache")?;
+                Ok(StoredRawDomainOperation {
+                    header: operation.header,
+                    body: body.to_bytes(),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?,
+    };
+    let store = open_profile_data_store(data_dir)?;
+    write_json_key(&store.pool, LOCAL_PROFILE_SYNC_OPERATIONS_KEY, &persisted)
 }
 
 async fn wait_for_topic_registration(
@@ -651,7 +693,10 @@ mod tests {
         let sharer_dir = tempdir()?;
         let follower_dir = tempdir()?;
         let (_relay_map, relay_url, _relay_server) = run_relay_server().await?;
-        println!("  relay server started: {:.1}s", phase_start.elapsed().as_secs_f64());
+        println!(
+            "  relay server started: {:.1}s",
+            phase_start.elapsed().as_secs_f64()
+        );
 
         let node_options = NodeOptions {
             relay_url: Some(relay_url.clone()),
@@ -660,7 +705,10 @@ mod tests {
         };
         phase_start = std::time::Instant::now();
         let sharer = AppNode::with_data_dir(sharer_dir.path(), node_options.clone()).await?;
-        println!("  sharer node created: {:.1}s", phase_start.elapsed().as_secs_f64());
+        println!(
+            "  sharer node created: {:.1}s",
+            phase_start.elapsed().as_secs_f64()
+        );
         let sharer_profile_id = {
             let mut sharer_profile = ProfileStore::load_or_create(sharer_dir.path())?;
             sharer_profile.update_display_name("Alice Example")?;
@@ -669,11 +717,17 @@ mod tests {
         phase_start = std::time::Instant::now();
         let mut sharer_sync = ProfileSyncService::new(&sharer, sharer_profile_id.clone()).await?;
         sharer_sync.refresh_local_profile().await?;
-        println!("  sharer sync ready: {:.1}s", phase_start.elapsed().as_secs_f64());
+        println!(
+            "  sharer sync ready: {:.1}s",
+            phase_start.elapsed().as_secs_f64()
+        );
 
         phase_start = std::time::Instant::now();
         let follower = AppNode::with_data_dir(follower_dir.path(), node_options.clone()).await?;
-        println!("  follower node created: {:.1}s", phase_start.elapsed().as_secs_f64());
+        println!(
+            "  follower node created: {:.1}s",
+            phase_start.elapsed().as_secs_f64()
+        );
         follower
             .address_book
             .insert_node_info(relay_bootstrap_node_info(
@@ -701,9 +755,14 @@ mod tests {
         follower_sync
             .sync_contact_profile(&sharer_profile_id)
             .await?;
-        println!("  phase 1 sync_contact_profile: {:.1}s", phase_start.elapsed().as_secs_f64());
+        println!(
+            "  phase 1 sync_contact_profile: {:.1}s",
+            phase_start.elapsed().as_secs_f64()
+        );
 
         wait_for_contact_label(follower_dir.path(), &sharer_profile_id, "Alice Example").await?;
+        assert!(!follower_dir.path().join("contact-record-cache").exists());
+        assert!(!follower_dir.path().join("contacts.json").exists());
 
         drop(follower_sync);
         drop(follower);
@@ -718,7 +777,10 @@ mod tests {
         sharer_sync.refresh_local_profile().await?;
 
         let follower = AppNode::with_data_dir(follower_dir.path(), node_options).await?;
-        println!("  follower node recreated: {:.1}s", phase_start.elapsed().as_secs_f64());
+        println!(
+            "  follower node recreated: {:.1}s",
+            phase_start.elapsed().as_secs_f64()
+        );
         follower
             .address_book
             .insert_node_info(relay_bootstrap_node_info(sharer.node_id(), relay_url))
@@ -727,9 +789,17 @@ mod tests {
         let mut follower_sync =
             ProfileSyncService::new(&follower, follower_profile_id.clone()).await?;
         assert_eq!(follower_sync.sync_followed_contacts_from_disk().await?, 1);
-        println!("  phase 2 sync_followed_contacts_from_disk: {:.1}s", phase_start.elapsed().as_secs_f64());
+        println!(
+            "  phase 2 sync_followed_contacts_from_disk: {:.1}s",
+            phase_start.elapsed().as_secs_f64()
+        );
         wait_for_contact_label(follower_dir.path(), &sharer_profile_id, "Alice Reconnected")
             .await?;
+        assert!(!follower_dir.path().join("contact-record-cache").exists());
+        assert!(!follower_dir
+            .path()
+            .join("local-profile-sync-cache.json")
+            .exists());
 
         println!("  -- phase 3: live update --");
         phase_start = std::time::Instant::now();
@@ -741,10 +811,16 @@ mod tests {
         follower_sync
             .sync_contact_profile(&sharer_profile_id)
             .await?;
-        println!("  phase 3 sync_contact_profile: {:.1}s", phase_start.elapsed().as_secs_f64());
+        println!(
+            "  phase 3 sync_contact_profile: {:.1}s",
+            phase_start.elapsed().as_secs_f64()
+        );
         wait_for_contact_label(follower_dir.path(), &sharer_profile_id, "Alice Live").await?;
 
-        println!("  total test time: {:.1}s", test_start.elapsed().as_secs_f64());
+        println!(
+            "  total test time: {:.1}s",
+            test_start.elapsed().as_secs_f64()
+        );
         Ok(())
     }
 
@@ -775,6 +851,33 @@ mod tests {
             reduced.display_name.as_deref(),
             Some(expected_display_name.as_str())
         );
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn fresh_start_avoids_legacy_profile_contact_json_files() -> Result<()> {
+        let dir = tempdir()?;
+        let node = AppNode::with_data_dir(
+            dir.path(),
+            NodeOptions {
+                mdns_enabled: false,
+                ..Default::default()
+            },
+        )
+        .await?;
+        let profile = ProfileStore::load_or_create(dir.path())?;
+        let profile_id = profile.profile().profile_id.clone();
+        drop(profile);
+        let _contacts = ContactsStore::load(dir.path())?;
+        let mut sync = ProfileSyncService::new(&node, profile_id).await?;
+        sync.refresh_local_profile().await?;
+
+        assert!(!dir.path().join("profile.json").exists());
+        assert!(!dir.path().join("profile-records.json").exists());
+        assert!(!dir.path().join("contacts.json").exists());
+        assert!(!dir.path().join("contact-record-cache").exists());
+        assert!(!dir.path().join("local-profile-sync-cache.json").exists());
 
         Ok(())
     }

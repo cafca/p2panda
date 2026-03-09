@@ -9,6 +9,7 @@ pub mod operation_domain;
 pub mod persist;
 pub mod plugin;
 pub mod profile;
+pub(crate) mod profile_data;
 pub mod profile_sync;
 pub mod settings;
 pub mod share;

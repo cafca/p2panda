@@ -3,6 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use p2panda_net::timestamp::Timestamp;
+use p2panda_store::sqlite::store::Pool;
 
 use anyhow::{Context, Result};
 use p2panda_core::cbor::{decode_cbor, encode_cbor};
@@ -13,10 +14,15 @@ use p2panda_core::{
 use serde::{Deserialize, Serialize};
 
 use crate::persist::ShareRecord;
+use crate::profile_data::{load_json_key, open_profile_data_store, write_json_key};
 
+#[cfg(test)]
 const PROFILE_FILE_NAME: &str = "profile.json";
+#[cfg(test)]
 const PROFILE_RECORDS_FILE_NAME: &str = "profile-records.json";
 const NODE_KEY_FILE_NAME: &str = "node.key";
+const PROFILE_STORE_PROFILE_KEY: &str = "user_profile";
+const PROFILE_STORE_RECORDS_KEY: &str = "profile_records";
 const PROFILE_VERSION: u8 = 1;
 const PROFILE_RECORDS_VERSION: u8 = 1;
 
@@ -160,8 +166,7 @@ struct PersistedProfileRecords {
 
 #[derive(Debug, bevy::prelude::Resource)]
 pub struct ProfileStore {
-    path: PathBuf,
-    records_path: PathBuf,
+    pool: Pool,
     profile: UserProfile,
     records: PersistedProfileRecords,
     load_warning: Option<String>,
@@ -177,20 +182,16 @@ impl ProfileStore {
 
         let private_key = load_private_key(data_dir)?;
         let public_key = private_key.public_key();
-        let path = data_dir.join(PROFILE_FILE_NAME);
-        let records_path = data_dir.join(PROFILE_RECORDS_FILE_NAME);
-
-        let (profile, profile_warning) = load_or_create_profile(&path, public_key)?;
-        let (records, records_warning) = load_or_create_records(&records_path)?;
-
-        let load_warning = profile_warning.or(records_warning);
+        let store_data = open_profile_data_store(data_dir)?;
+        let profile = load_or_create_profile(&store_data.pool, public_key)?;
+        let records = load_or_create_records(&store_data.pool)?;
+        let load_warning = store_data.load_warning;
         if let Some(message) = &load_warning {
             tracing::warn!("{message}");
         }
 
         let mut store = Self {
-            path,
-            records_path,
+            pool: store_data.pool,
             profile,
             records,
             load_warning,
@@ -371,9 +372,6 @@ impl ProfileStore {
         if self.profile.display_name.trim().is_empty() {
             self.profile.display_name = default_display_name(&self.profile.profile_id);
         }
-        if !self.path.exists() {
-            self.profile.updated_at = u64::from(Timestamp::now());
-        }
         self.save_profile()?;
         Ok(())
     }
@@ -490,24 +488,18 @@ impl ProfileStore {
     }
 
     fn save_profile(&self) -> Result<()> {
-        write_json_atomic(&self.path, &self.profile, "profile")
+        write_json_key(&self.pool, PROFILE_STORE_PROFILE_KEY, &self.profile)
     }
 
     fn save_records(&self) -> Result<()> {
-        write_json_atomic(&self.records_path, &self.records, "profile records")
+        write_json_key(&self.pool, PROFILE_STORE_RECORDS_KEY, &self.records)
     }
 }
 
-pub fn profile_records_path(data_dir: impl AsRef<Path>) -> PathBuf {
-    data_dir.as_ref().join(PROFILE_RECORDS_FILE_NAME)
-}
-
-pub fn load_profile_records_from_path(path: impl AsRef<Path>) -> Result<Vec<ProfileRecord>> {
-    let path = path.as_ref();
-    let bytes = fs::read(path)
-        .with_context(|| format!("failed to read profile records file {}", path.display()))?;
-    let records: PersistedProfileRecords = serde_json::from_slice(&bytes)
-        .with_context(|| format!("failed to parse profile records at {}", path.display()))?;
+pub fn load_profile_records(data_dir: impl AsRef<Path>) -> Result<Vec<ProfileRecord>> {
+    let store = open_profile_data_store(data_dir.as_ref())?;
+    let records: PersistedProfileRecords =
+        load_json_key(&store.pool, PROFILE_STORE_RECORDS_KEY)?.unwrap_or_default();
     records
         .operations
         .iter()
@@ -515,12 +507,10 @@ pub fn load_profile_records_from_path(path: impl AsRef<Path>) -> Result<Vec<Prof
         .collect()
 }
 
-pub fn load_raw_profile_operations_from_path(path: impl AsRef<Path>) -> Result<Vec<RawOperation>> {
-    let path = path.as_ref();
-    let bytes = fs::read(path)
-        .with_context(|| format!("failed to read profile records file {}", path.display()))?;
-    let records: PersistedProfileRecords = serde_json::from_slice(&bytes)
-        .with_context(|| format!("failed to parse profile records at {}", path.display()))?;
+pub fn load_raw_profile_operations(data_dir: impl AsRef<Path>) -> Result<Vec<RawOperation>> {
+    let store = open_profile_data_store(data_dir.as_ref())?;
+    let records: PersistedProfileRecords =
+        load_json_key(&store.pool, PROFILE_STORE_RECORDS_KEY)?.unwrap_or_default();
     Ok(records
         .operations
         .into_iter()
@@ -528,8 +518,8 @@ pub fn load_raw_profile_operations_from_path(path: impl AsRef<Path>) -> Result<V
         .collect())
 }
 
-pub fn write_raw_profile_operations_to_path(
-    path: impl AsRef<Path>,
+pub fn write_raw_profile_operations(
+    data_dir: impl AsRef<Path>,
     operations: impl IntoIterator<Item = RawOperation>,
 ) -> Result<()> {
     let operations = operations
@@ -546,7 +536,8 @@ pub fn write_raw_profile_operations_to_path(
         version: PROFILE_RECORDS_VERSION,
         operations,
     };
-    write_json_atomic(path.as_ref(), &records, "profile records")
+    let store = open_profile_data_store(data_dir.as_ref())?;
+    write_json_key(&store.pool, PROFILE_STORE_RECORDS_KEY, &records)
 }
 
 pub(crate) fn load_private_key_from_data_dir(data_dir: &Path) -> Result<PrivateKey> {
@@ -641,99 +632,18 @@ fn decode_stored_operation(operation: &StoredOperation) -> Result<ProfileRecord>
     })
 }
 
-fn load_or_create_profile(
-    path: &Path,
-    public_key: PublicKey,
-) -> Result<(UserProfile, Option<String>)> {
-    match fs::read(path) {
-        Ok(bytes) => match serde_json::from_slice::<UserProfile>(&bytes) {
-            Ok(profile) => Ok((profile, None)),
-            Err(err) => {
-                let recovered_path = move_corrupt_file_aside(path)?;
-                let profile = UserProfile::new(public_key);
-                write_json_atomic(path, &profile, "profile")?;
-                Ok((
-                    profile,
-                    Some(format!(
-                        "Recovered profile after parse failure ({err}) and moved corrupt file to {}",
-                        recovered_path.display()
-                    )),
-                ))
-            }
-        },
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            let profile = UserProfile::new(public_key);
-            write_json_atomic(path, &profile, "profile")?;
-            Ok((profile, None))
-        }
-        Err(err) => {
-            Err(err).with_context(|| format!("failed to read profile file {}", path.display()))
-        }
+fn load_or_create_profile(pool: &Pool, public_key: PublicKey) -> Result<UserProfile> {
+    if let Some(profile) = load_json_key(pool, PROFILE_STORE_PROFILE_KEY)? {
+        return Ok(profile);
     }
+
+    let profile = UserProfile::new(public_key);
+    write_json_key(pool, PROFILE_STORE_PROFILE_KEY, &profile)?;
+    Ok(profile)
 }
 
-fn load_or_create_records(path: &Path) -> Result<(PersistedProfileRecords, Option<String>)> {
-    match fs::read(path) {
-        Ok(bytes) => match serde_json::from_slice::<PersistedProfileRecords>(&bytes) {
-            Ok(records) => Ok((records, None)),
-            Err(err) => {
-                let recovered_path = move_corrupt_file_aside(path)?;
-                let records = PersistedProfileRecords {
-                    version: PROFILE_RECORDS_VERSION,
-                    operations: Vec::new(),
-                };
-                write_json_atomic(path, &records, "profile records")?;
-                Ok((
-                    records,
-                    Some(format!(
-                        "Recovered profile records after parse failure ({err}) and moved corrupt file to {}",
-                        recovered_path.display()
-                    )),
-                ))
-            }
-        },
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok((
-            PersistedProfileRecords {
-                version: PROFILE_RECORDS_VERSION,
-                operations: Vec::new(),
-            },
-            None,
-        )),
-        Err(err) => Err(err)
-            .with_context(|| format!("failed to read profile records file {}", path.display())),
-    }
-}
-
-fn write_json_atomic<T: Serialize>(path: &Path, value: &T, label: &str) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).with_context(|| {
-            format!(
-                "failed to create parent directory for {} at {}",
-                label,
-                parent.display()
-            )
-        })?;
-    }
-
-    let bytes =
-        serde_json::to_vec_pretty(value).with_context(|| format!("failed to serialize {label}"))?;
-    let tmp_path = path.with_extension("json.tmp");
-    fs::write(&tmp_path, bytes).with_context(|| {
-        format!(
-            "failed to write temporary {} file {}",
-            label,
-            tmp_path.display()
-        )
-    })?;
-    fs::rename(&tmp_path, path).with_context(|| {
-        format!(
-            "failed to atomically move temporary {} file {} to {}",
-            label,
-            tmp_path.display(),
-            path.display()
-        )
-    })?;
-    Ok(())
+fn load_or_create_records(pool: &Pool) -> Result<PersistedProfileRecords> {
+    Ok(load_json_key(pool, PROFILE_STORE_RECORDS_KEY)?.unwrap_or_default())
 }
 
 fn latest_contact_follow_record<'a>(
@@ -770,18 +680,6 @@ fn normalize_profile_id(profile_id: String) -> Result<String> {
     Ok(profile_id)
 }
 
-fn move_corrupt_file_aside(path: &Path) -> Result<PathBuf> {
-    let recovered_path = path.with_extension(format!("corrupt-{}.json", u64::from(Timestamp::now())));
-    fs::rename(path, &recovered_path).with_context(|| {
-        format!(
-            "failed to move corrupt file {} to {}",
-            path.display(),
-            recovered_path.display()
-        )
-    })?;
-    Ok(recovered_path)
-}
-
 fn load_private_key(data_dir: &Path) -> Result<PrivateKey> {
     let key_path = data_dir.join(NODE_KEY_FILE_NAME);
     let bytes = fs::read(&key_path)
@@ -805,7 +703,6 @@ fn default_display_name(profile_id: &str) -> String {
     let fruit = FRUITS[bytes[1] as usize % FRUITS.len()];
     format!("{adjective} {fruit}")
 }
-
 
 const fn profile_version() -> u8 {
     PROFILE_VERSION
@@ -899,7 +796,10 @@ mod tests {
         let dir = tempdir()?;
         let private_key = PrivateKey::new();
         write_node_key(dir.path(), &private_key)?;
-        fs::write(dir.path().join(PROFILE_FILE_NAME), b"{ definitely not json")?;
+        fs::write(
+            dir.path().join("profile-store.sqlite3"),
+            b"definitely not sqlite",
+        )?;
 
         let store = ProfileStore::load_or_create(dir.path())?;
 
@@ -1030,6 +930,40 @@ mod tests {
             reloaded.profile().profile_id,
             private_key.public_key().to_string()
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn local_profile_state_survives_restart_without_legacy_json_files() -> Result<()> {
+        let dir = tempdir()?;
+        let private_key = PrivateKey::new();
+        let followed_key = PrivateKey::new();
+        write_node_key(dir.path(), &private_key)?;
+
+        let share = {
+            let mut store = ProfileStore::load_or_create(dir.path())?;
+            store.update_display_name("Restart Persisted")?;
+            let share = sample_share_record(&store.profile().profile_id);
+            assert!(store.ensure_share_ownership_record(&share)?);
+            assert!(store.follow_contact(followed_key.public_key().to_string())?);
+            share
+        };
+
+        let reloaded = ProfileStore::load_or_create(dir.path())?;
+        assert_eq!(reloaded.profile().display_name, "Restart Persisted");
+        assert_eq!(reloaded.share_ownership_records()?.len(), 1);
+        assert!(reloaded
+            .share_ownership_records()?
+            .iter()
+            .any(|record| { record.share_code == share.share_code && record.active }));
+        assert_eq!(
+            active_follow_records_for_profile(&reloaded.profile().profile_id, &reloaded.records()?)
+                .len(),
+            1
+        );
+        assert!(!dir.path().join(PROFILE_FILE_NAME).exists());
+        assert!(!dir.path().join(PROFILE_RECORDS_FILE_NAME).exists());
 
         Ok(())
     }

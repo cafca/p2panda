@@ -1,20 +1,23 @@
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use p2panda_net::timestamp::Timestamp;
+use p2panda_store::sqlite::store::Pool;
 
 use anyhow::{Context, Result};
 use p2panda_core::PublicKey;
 use serde::{Deserialize, Serialize};
 
-use crate::operation_domain::{
-    load_reduced_profile_state_from_path, ReducedContactFollowState, ReducedProfileState,
-    ReducedShareState,
-};
+use crate::operation_domain::{ReducedContactFollowState, ReducedProfileState, ReducedShareState};
 use crate::profile::{active_follow_records_for_profile, ProfileRecord};
+use crate::profile_data::{
+    has_contact_cache, load_contact_cache as load_contact_cache_entry, load_json_key,
+    open_profile_data_store, write_contact_cache as write_contact_cache_entry, write_json_key,
+};
 
+#[cfg(test)]
 const CONTACTS_FILE_NAME: &str = "contacts.json";
 const CONTACT_CACHE_DIR_NAME: &str = "contact-record-cache";
+const CONTACTS_STORE_CONTACTS_KEY: &str = "followed_contacts";
 const CONTACT_REFRESH_INTERVAL_SECS: u64 = 5;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -113,19 +116,17 @@ struct PersistedContacts {
 #[derive(Debug, bevy::prelude::Resource)]
 pub struct ContactsStore {
     path: PathBuf,
-    cache_dir: PathBuf,
+    pool: Pool,
     state: PersistedContacts,
 }
 
 impl ContactsStore {
     pub fn load(data_dir: impl AsRef<Path>) -> Result<Self> {
-        let data_dir = data_dir.as_ref();
-        let path = data_dir.join(CONTACTS_FILE_NAME);
-        let cache_dir = data_dir.join(CONTACT_CACHE_DIR_NAME);
-        let state = load_from_path(&path)?;
+        let store = open_profile_data_store(data_dir.as_ref())?;
+        let state = load_json_key(&store.pool, CONTACTS_STORE_CONTACTS_KEY)?.unwrap_or_default();
         Ok(Self {
-            path,
-            cache_dir,
+            path: store.path,
+            pool: store.pool,
             state,
         })
     }
@@ -236,7 +237,6 @@ impl ContactsStore {
 
     pub fn refresh_contact(&mut self, profile_id: &str) -> Result<()> {
         let now = u64::from(Timestamp::now());
-        let cache_path = self.cache_path(profile_id);
         let Some(contact) = self
             .state
             .followed_contacts
@@ -246,7 +246,7 @@ impl ContactsStore {
             anyhow::bail!("unknown contact {profile_id}");
         };
 
-        match load_contact_cache(&cache_path, profile_id) {
+        match load_contact_cache_from_pool(&self.pool, profile_id) {
             Ok(snapshot) => {
                 contact.cached_display_name = snapshot.display_name;
                 contact.cached_shares = snapshot.shares;
@@ -281,7 +281,11 @@ impl ContactsStore {
     }
 
     pub fn cache_path(&self, profile_id: &str) -> PathBuf {
-        self.cache_dir.join(format!("{profile_id}.json"))
+        self.path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(CONTACT_CACHE_DIR_NAME)
+            .join(format!("{profile_id}.json"))
     }
 
     pub fn discover_second_degree_profiles(
@@ -300,19 +304,17 @@ impl ContactsStore {
         let mut discovered = std::collections::HashMap::<String, DiscoveredProfile>::new();
 
         for source_contact in &self.state.followed_contacts {
-            let source_snapshot = match load_contact_cache(
-                self.cache_path(&source_contact.profile_id),
-                &source_contact.profile_id,
-            ) {
-                Ok(snapshot) => snapshot,
-                Err(err) => {
-                    tracing::warn!(
-                        "failed to load cached profile state for {}: {err}",
-                        source_contact.profile_id
-                    );
-                    continue;
-                }
-            };
+            let source_snapshot =
+                match load_contact_cache_from_pool(&self.pool, &source_contact.profile_id) {
+                    Ok(snapshot) => snapshot,
+                    Err(err) => {
+                        tracing::warn!(
+                            "failed to load cached profile state for {}: {err}",
+                            source_contact.profile_id
+                        );
+                        continue;
+                    }
+                };
 
             let source_label = source_snapshot
                 .display_name
@@ -363,7 +365,7 @@ impl ContactsStore {
             entry
                 .source_contacts
                 .sort_by(|left, right| left.label.cmp(&right.label));
-            match load_contact_cache(self.cache_path(&entry.profile_id), &entry.profile_id) {
+            match load_contact_cache_from_pool(&self.pool, &entry.profile_id) {
                 Ok(snapshot) => {
                     entry.cached_display_name = snapshot.display_name;
                     entry.cached_shares = snapshot.shares;
@@ -427,15 +429,22 @@ impl ContactsStore {
     }
 
     fn save(&self) -> Result<()> {
-        write_atomic(&self.path, &self.state)
+        write_json_key(&self.pool, CONTACTS_STORE_CONTACTS_KEY, &self.state)
     }
 }
 
-pub fn contact_records_cache_path(data_dir: impl AsRef<Path>, profile_id: &str) -> PathBuf {
-    data_dir
-        .as_ref()
-        .join(CONTACT_CACHE_DIR_NAME)
-        .join(format!("{profile_id}.json"))
+pub fn write_contact_cache(
+    data_dir: impl AsRef<Path>,
+    profile_id: &str,
+    state: &ReducedProfileState,
+) -> Result<()> {
+    let store = open_profile_data_store(data_dir.as_ref())?;
+    write_contact_cache_entry(&store.pool, profile_id, state)
+}
+
+pub fn contact_cache_exists(data_dir: impl AsRef<Path>, profile_id: &str) -> Result<bool> {
+    let store = open_profile_data_store(data_dir.as_ref())?;
+    has_contact_cache(&store.pool, profile_id)
 }
 
 #[derive(Debug)]
@@ -482,8 +491,9 @@ impl ContactSnapshot {
     }
 }
 
-fn load_contact_cache(path: impl AsRef<Path>, profile_id: &str) -> Result<ContactSnapshot> {
-    let state = load_reduced_profile_state_from_path(path)?;
+fn load_contact_cache_from_pool(pool: &Pool, profile_id: &str) -> Result<ContactSnapshot> {
+    let state: ReducedProfileState = load_contact_cache_entry(pool, profile_id)?
+        .ok_or_else(|| anyhow::anyhow!("missing reduced profile cache for {profile_id}"))?;
     ContactSnapshot::from_reduced_state(profile_id, state)
 }
 
@@ -520,50 +530,17 @@ fn truncate_profile_id(profile_id: &str) -> String {
     profile_id.chars().take(8).collect()
 }
 
-fn load_from_path(path: &Path) -> Result<PersistedContacts> {
-    match fs::read(path) {
-        Ok(bytes) => serde_json::from_slice(&bytes)
-            .with_context(|| format!("failed to parse contacts at {}", path.display())),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(PersistedContacts::default()),
-        Err(err) => {
-            Err(err).with_context(|| format!("failed to read contacts at {}", path.display()))
-        }
-    }
-}
-
-fn write_atomic(path: &Path, state: &PersistedContacts) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create contacts directory {}", parent.display()))?;
-    }
-
-    let bytes = serde_json::to_vec_pretty(state).context("failed to serialize contacts")?;
-    let tmp_path = path.with_extension("json.tmp");
-    fs::write(&tmp_path, bytes).with_context(|| {
-        format!(
-            "failed to write temporary contacts file {}",
-            tmp_path.display()
-        )
-    })?;
-    fs::rename(&tmp_path, path).with_context(|| {
-        format!(
-            "failed to atomically move {} to {}",
-            tmp_path.display(),
-            path.display()
-        )
-    })?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use anyhow::Result;
     use p2panda_blobs::Hash as BlobHash;
     use p2panda_core::PrivateKey;
     use tempfile::tempdir;
 
     use super::*;
-    use crate::operation_domain::{write_reduced_profile_state_to_path, ReducedProfileState};
+    use crate::operation_domain::ReducedProfileState;
     use crate::persist::ShareRecord;
     use crate::profile::ProfileStore;
 
@@ -594,9 +571,9 @@ mod tests {
         shares: Vec<crate::operation_domain::ReducedShareState>,
         followed_profile_ids: Vec<String>,
     ) -> Result<()> {
-        let cache_path = contact_records_cache_path(data_dir, profile_id);
-        write_reduced_profile_state_to_path(
-            &cache_path,
+        super::write_contact_cache(
+            data_dir,
+            profile_id,
             &ReducedProfileState {
                 profile_id: profile_id.to_owned(),
                 display_name,
@@ -625,6 +602,21 @@ mod tests {
         let reloaded = ContactsStore::load(dir.path())?;
         assert_eq!(reloaded.contacts().len(), 1);
         assert!(store.follow_contact(profile_id).is_err());
+
+        Ok(())
+    }
+
+    #[test]
+    fn contacts_store_persists_without_legacy_json_files() -> Result<()> {
+        let dir = tempdir()?;
+        let profile_id = PrivateKey::new().public_key().to_string();
+        let mut store = ContactsStore::load(dir.path())?;
+        store.follow_contact(profile_id)?;
+
+        let reloaded = ContactsStore::load(dir.path())?;
+        assert_eq!(reloaded.contacts().len(), 1);
+        assert!(!dir.path().join(CONTACTS_FILE_NAME).exists());
+        assert!(!dir.path().join(CONTACT_CACHE_DIR_NAME).exists());
 
         Ok(())
     }
@@ -793,9 +785,9 @@ mod tests {
         contacts.follow_contact(first_profile_id.clone())?;
         contacts.follow_contact(second_profile_id.clone())?;
         {
-            let cache_path = contact_records_cache_path(dir.path(), &second_profile_id);
-            write_reduced_profile_state_to_path(
-                &cache_path,
+            super::write_contact_cache(
+                dir.path(),
+                &second_profile_id,
                 &ReducedProfileState {
                     profile_id: second_profile_id.clone(),
                     display_name: Some("Kept Contact".to_owned()),
@@ -1021,10 +1013,10 @@ mod tests {
         let mut contacts = ContactsStore::load(viewer_dir.path())?;
         contacts.follow_contact(source_profile.profile().profile_id.clone())?;
 
-        let cache_path =
-            contact_records_cache_path(viewer_dir.path(), &source_profile.profile().profile_id);
-        fs::create_dir_all(cache_path.parent().unwrap())?;
-        fs::write(&cache_path, b"{not valid json")?;
+        fs::write(
+            viewer_dir.path().join("profile-store.sqlite3"),
+            b"not sqlite",
+        )?;
 
         let discovered =
             contacts.discover_second_degree_profiles(false, false, "", DiscoverySort::MutualCount);
