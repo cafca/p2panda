@@ -15,5 +15,6 @@ pub mod settings;
 pub mod share;
 pub mod share_code;
 pub mod state;
+pub(crate) mod time_format;
 pub mod ui;
 pub mod updater;

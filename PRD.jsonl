@@ -1339,5 +1339,5 @@
     "Notification tests no longer assert batching behavior",
     "Timestamp-formatting helpers are covered by automated tests"
   ],
-  "passes": false
+  "passes": true
 }

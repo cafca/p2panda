@@ -1,5 +1,5 @@
 use std::process::Command;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use anyhow::Result;
 use bevy::prelude::Resource;
@@ -7,13 +7,6 @@ use tracing::warn;
 
 use crate::bridge::NetworkEvent;
 use crate::state::{Direction, TransferRegistry, TransferStatus};
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct CompletedDownload {
-    name: String,
-    file_count: usize,
-    total_bytes: u64,
-}
 
 trait NotificationSender: Send + Sync {
     fn send(&self, summary: &str, body: &str) -> Result<()>;
@@ -101,8 +94,6 @@ fn escape_xml(input: &str) -> String {
 #[derive(Resource)]
 pub struct NotificationState {
     sender: Box<dyn NotificationSender>,
-    pending_completed: Vec<CompletedDownload>,
-    completion_deadline: Option<Instant>,
     warned_unavailable: bool,
 }
 
@@ -110,22 +101,18 @@ impl Default for NotificationState {
     fn default() -> Self {
         Self {
             sender: Box::new(SystemNotificationSender),
-            pending_completed: Vec::new(),
-            completion_deadline: None,
             warned_unavailable: false,
         }
     }
 }
 
 impl NotificationState {
-    const COMPLETION_BATCH_WINDOW: Duration = Duration::from_secs(2);
-
     pub fn on_event(
         &mut self,
         event: &NetworkEvent,
         transfers: &TransferRegistry,
         app_focused: bool,
-        now: Instant,
+        _now: Instant,
     ) {
         if app_focused {
             return;
@@ -162,14 +149,13 @@ impl NotificationState {
                     if transfer.direction == Direction::Download
                         && matches!(transfer.status, TransferStatus::Completed)
                     {
-                        self.pending_completed.push(CompletedDownload {
-                            name: transfer.name.clone(),
-                            file_count: transfer.file_count(),
-                            total_bytes: transfer.total_bytes,
-                        });
-                        if self.completion_deadline.is_none() {
-                            self.completion_deadline = Some(now + Self::COMPLETION_BATCH_WINDOW);
-                        }
+                        let body = format!(
+                            "'{}' finished downloading ({} files, {})",
+                            transfer.name,
+                            transfer.file_count(),
+                            format_bytes(transfer.total_bytes)
+                        );
+                        self.send_notification("Download completed", &body);
                     }
                 }
             }
@@ -177,38 +163,7 @@ impl NotificationState {
         }
     }
 
-    pub fn flush_due(&mut self, app_focused: bool, now: Instant) {
-        if app_focused {
-            self.pending_completed.clear();
-            self.completion_deadline = None;
-            return;
-        }
-
-        let should_flush = self
-            .completion_deadline
-            .map(|deadline| now >= deadline)
-            .unwrap_or(false);
-        if !should_flush || self.pending_completed.is_empty() {
-            return;
-        }
-
-        if self.pending_completed.len() == 1 {
-            let completion = &self.pending_completed[0];
-            let body = format!(
-                "'{}' finished downloading ({} files, {})",
-                completion.name,
-                completion.file_count,
-                format_bytes(completion.total_bytes)
-            );
-            self.send_notification("Download completed", &body);
-        } else {
-            let body = format!("{} transfers completed", self.pending_completed.len());
-            self.send_notification("Transfers completed", &body);
-        }
-
-        self.pending_completed.clear();
-        self.completion_deadline = None;
-    }
+    pub fn flush_due(&mut self, _app_focused: bool, _now: Instant) {}
 
     fn send_notification(&mut self, summary: &str, body: &str) {
         if let Err(err) = self.sender.send(summary, body) {
@@ -242,6 +197,7 @@ fn format_bytes(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     use super::*;
     use crate::state::{Direction, Transfer, TransferStatus};
@@ -274,8 +230,6 @@ mod tests {
     fn test_state(sender: RecordingSender) -> NotificationState {
         NotificationState {
             sender: Box::new(sender),
-            pending_completed: Vec::new(),
-            completion_deadline: None,
             warned_unavailable: false,
         }
     }
@@ -346,7 +300,7 @@ mod tests {
     }
 
     #[test]
-    fn batches_multiple_download_completions() {
+    fn sends_one_notification_per_completed_download() {
         let sender = RecordingSender::default();
         let mut state = test_state(sender.clone());
         let now = Instant::now();
@@ -373,14 +327,12 @@ mod tests {
             false,
             now + Duration::from_millis(500),
         );
-        state.flush_due(false, now + Duration::from_secs(1));
-        assert!(sender.messages().is_empty());
-
-        state.flush_due(false, now + Duration::from_secs(3));
         let messages = sender.messages();
-        assert_eq!(messages.len(), 1);
-        assert_eq!(messages[0].0, "Transfers completed");
-        assert_eq!(messages[0].1, "2 transfers completed");
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].0, "Download completed");
+        assert!(messages[0].1.contains("'alpha' finished downloading"));
+        assert_eq!(messages[1].0, "Download completed");
+        assert!(messages[1].1.contains("'beta' finished downloading"));
     }
 
     #[test]
@@ -405,7 +357,6 @@ mod tests {
             false,
             now,
         );
-        state.flush_due(false, now + Duration::from_secs(3));
 
         let messages = sender.messages();
         assert_eq!(messages.len(), 1);

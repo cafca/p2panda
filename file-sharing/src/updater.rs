@@ -13,6 +13,7 @@ use sha2::{Digest, Sha256};
 use p2panda_net::timestamp::Timestamp;
 
 use crate::settings::{AppSettings, SettingsStore, UpdateChannel};
+use crate::time_format::format_optional_unix_timestamp_secs;
 
 const UPDATE_REPO_OWNER: &str = "p2panda";
 const UPDATE_REPO_NAME: &str = "p2panda";
@@ -719,12 +720,8 @@ fn platform_checksum_extension() -> &'static str {
         "-linux-tar.sha256"
     }
 }
-
-
 pub fn format_last_checked(timestamp: Option<u64>) -> String {
-    timestamp
-        .map(|timestamp| format!("{timestamp}"))
-        .unwrap_or_else(|| "Never".to_owned())
+    format_optional_unix_timestamp_secs(timestamp)
 }
 
 pub fn release_notes_preview(notes: &str) -> String {
@@ -1193,5 +1190,11 @@ mod tests {
     fn release_notes_preview_is_bounded() {
         let preview = release_notes_preview("1\n2\n3\n4\n5\n6\n7\n8");
         assert_eq!(preview.lines().count(), 6);
+    }
+
+    #[test]
+    fn last_checked_timestamps_are_human_readable() {
+        assert_eq!(format_last_checked(Some(0)), "1970-01-01 00:00 UTC");
+        assert_eq!(format_last_checked(None), "Never");
     }
 }

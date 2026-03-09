@@ -167,3 +167,18 @@ Added workflow permissions for GH PAT so Task 41 can continue.
 - `cargo test -p p2panda-file-sharing-gui --test transfer removed_share_is_not_downloadable -- --nocapture`
 - attempted `cargo test -p p2panda-file-sharing-gui --no-run` to compile every test target at once, but the full test-binary link was SIGKILLed by the environment; used `cargo check --tests` plus focused executed tests instead, and those passed
 - marked Task 57 `passes: true` in `PRD.jsonl` because this run verified that share creation no longer writes manifest/collection metadata blobs, downloads resolve manifests via LogSync rather than `p2panda-blobs`, and end-to-end share/download coverage still passes with the operation-delivered manifest
+
+# Mon, 09 Mar 2026 19:01:34 GMT
+
+- picked Task 58 (`Remove notification batching and raw timestamp UI output`) as the highest-priority remaining feature because it was the only unfinished PRD item and could be completed without expanding scope beyond the current file-sharing UI/runtime polish slice
+- removed the completion batching window from `notifications.rs`; unfocused completed downloads now emit one `Download completed` notification each as soon as the transfer completion event arrives
+- added a shared UTC timestamp formatter and switched the contacts/settings/updater rendering paths off raw UNIX integers for followed dates, recently-seen dates, and update last-checked output
+- added regression coverage for the per-download notification behavior and the timestamp-formatting helpers used by the UI and updater
+- feedback loops passed in this run:
+- `cargo fmt --package p2panda-file-sharing-gui`
+- `cargo test -p p2panda-file-sharing-gui notifications::tests --lib -- --nocapture`
+- `cargo test -p p2panda-file-sharing-gui time_format::tests --lib -- --nocapture`
+- `cargo test -p p2panda-file-sharing-gui ui::tests::unix_dates_are_formatted_for_people --lib -- --nocapture`
+- `cargo test -p p2panda-file-sharing-gui updater::tests::last_checked_timestamps_are_human_readable --lib -- --nocapture`
+- `cargo check -p p2panda-file-sharing-gui --lib`
+- marked Task 58 `passes: true` in `PRD.jsonl` because this run verified one-notification-per-completed-download behavior, removed the old batching assertion path, and covered the human-readable timestamp helpers now used in settings/contacts/updater rendering

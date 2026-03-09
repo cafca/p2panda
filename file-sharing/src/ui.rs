@@ -17,6 +17,7 @@ use crate::diagnostics::{
 use crate::profile::ProfileStore;
 use crate::settings::{RelayMode, SettingsStore};
 use crate::state::{Direction, FileVerification, Transfer, TransferRegistry, TransferStatus};
+use crate::time_format::format_unix_timestamp_secs;
 use crate::updater::{format_last_checked, release_notes_preview, UpdateController, UpdateStatus};
 
 /// Which file dialog is currently open.
@@ -2367,7 +2368,7 @@ pub fn default_download_directory() -> PathBuf {
 }
 
 fn format_unix_date(timestamp: u64) -> String {
-    format!("{timestamp}")
+    format_unix_timestamp_secs(timestamp)
 }
 
 fn format_bytes(bytes: u64) -> String {
@@ -2456,6 +2457,11 @@ mod tests {
         assert_eq!(format_bytes(1_024), "1.0 KB");
         assert_eq!(format_bytes(1_048_576), "1.0 MB");
         assert_eq!(format_bytes(1_073_741_824), "1.0 GB");
+    }
+
+    #[test]
+    fn unix_dates_are_formatted_for_people() {
+        assert_eq!(format_unix_date(0), "1970-01-01 00:00 UTC");
     }
 
     #[test]

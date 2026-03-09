@@ -61,6 +61,7 @@ semver = "1"
 self-replace = "1.5"
 sha2 = "0.10"
 tar = "0.4"
+time = { version = "0.3", features = ["formatting", "macros"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
