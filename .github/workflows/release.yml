@@ -71,6 +71,9 @@ jobs:
             libxkbcommon-dev \
             libxrandr-dev
           cargo install cargo-appimage --locked
+          wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage -O /tmp/appimagetool
+          chmod +x /tmp/appimagetool
+          sudo mv /tmp/appimagetool /usr/local/bin/appimagetool
 
       - name: Validate tag and read version
         id: version
