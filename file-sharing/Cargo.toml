@@ -2,6 +2,7 @@
 name = "p2panda-file-sharing-gui"
 version = "0.1.0"
 edition = "2021"
+authors = ["p2panda contributors"]
 
 [[bin]]
 name = "p2panda-file-sharing-gui"

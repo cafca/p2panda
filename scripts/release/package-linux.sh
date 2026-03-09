@@ -36,7 +36,7 @@ tar -czf \
   -C "$DIST_DIR/linux-tar" \
   "p2panda-file-sharing-${VERSION}-linux-${ARCH}"
 
-cargo appimage --locked -p "$BIN_NAME"
+(cd "$ROOT_DIR/file-sharing" && cargo appimage --locked)
 APPIMAGE_SOURCE="$(find "$TARGET_DIR" -type f -name '*.AppImage' | sort | tail -n 1)"
 
 if [[ -z "$APPIMAGE_SOURCE" ]]; then
