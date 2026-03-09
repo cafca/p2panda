@@ -92,7 +92,8 @@ jobs:
             libxkbcommon-x11-0 \
             libxrandr-dev \
             librsvg2-bin \
-            xvfb
+            xvfb \
+            mesa-vulkan-drivers
           cargo install cargo-appimage --locked
           wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage -O /tmp/appimagetool
           chmod +x /tmp/appimagetool
