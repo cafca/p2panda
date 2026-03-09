@@ -36,7 +36,11 @@ tar -czf \
   -C "$DIST_DIR/linux-tar" \
   "p2panda-file-sharing-${VERSION}-linux-${ARCH}"
 
+# cargo-appimage looks for ./icon.png in cwd to embed as the app icon.
+# Convert the SVG to PNG so appimagetool finds it.
+rsvg-convert -w 256 -h 256 "$ASSETS_DIR/icon.svg" > "$ROOT_DIR/file-sharing/icon.png"
 (cd "$ROOT_DIR/file-sharing" && cargo appimage --locked)
+rm -f "$ROOT_DIR/file-sharing/icon.png"
 APPIMAGE_SOURCE="$(find "$TARGET_DIR" -type f -name '*.AppImage' | sort | tail -n 1)"
 
 if [[ -z "$APPIMAGE_SOURCE" ]]; then
