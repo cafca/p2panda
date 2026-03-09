@@ -32,6 +32,25 @@ jobs:
       - name: Build macOS app bundle and dmg
         run: bash scripts/release/package-macos.sh "${{ steps.version.outputs.version }}"
 
+      - name: Smoke test binary
+        run: |
+          BIN="dist/macos/p2panda File Sharing.app/Contents/MacOS/p2panda-file-sharing-gui"
+          LOG=$(mktemp)
+          echo "Starting: $BIN"
+          RUST_LOG=info "$BIN" >"$LOG" 2>&1 &
+          PID=$!
+          sleep 5
+          if kill -0 "$PID" 2>/dev/null; then
+            kill "$PID"; wait "$PID" 2>/dev/null || true
+            echo "--- binary output ---"; cat "$LOG"
+            echo "--- smoke test passed (ran for 5s) ---"
+          else
+            wait "$PID"; EXIT=$?
+            echo "--- binary output ---"; cat "$LOG"
+            [ "$EXIT" -eq 0 ] || { echo "--- FAILED (exit $EXIT) ---"; exit 1; }
+            echo "--- smoke test passed (clean exit) ---"
+          fi
+
       - name: Generate checksums
         run: |
           shasum -a 256 dist/p2panda-file-sharing-*.dmg > dist/p2panda-file-sharing-${{ steps.version.outputs.version }}-macos.sha256
@@ -70,7 +89,8 @@ jobs:
             libxi-dev \
             libxkbcommon-dev \
             libxrandr-dev \
-            librsvg2-bin
+            librsvg2-bin \
+            xvfb
           cargo install cargo-appimage --locked
           wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage -O /tmp/appimagetool
           chmod +x /tmp/appimagetool
@@ -84,6 +104,25 @@ jobs:
 
       - name: Build Linux artifacts
         run: bash scripts/release/package-linux.sh "${{ steps.version.outputs.version }}"
+
+      - name: Smoke test binary
+        run: |
+          BIN=$(find dist/linux-tar -name 'p2panda-file-sharing-gui' -type f | head -1)
+          LOG=$(mktemp)
+          echo "Starting: $BIN"
+          xvfb-run --auto-servernum env RUST_LOG=info "$BIN" >"$LOG" 2>&1 &
+          PID=$!
+          sleep 5
+          if kill -0 "$PID" 2>/dev/null; then
+            kill "$PID"; wait "$PID" 2>/dev/null || true
+            echo "--- binary output ---"; cat "$LOG"
+            echo "--- smoke test passed (ran for 5s) ---"
+          else
+            wait "$PID"; EXIT=$?
+            echo "--- binary output ---"; cat "$LOG"
+            [ "$EXIT" -eq 0 ] || { echo "--- FAILED (exit $EXIT) ---"; exit 1; }
+            echo "--- smoke test passed (clean exit) ---"
+          fi
 
       - name: Generate checksums
         run: |
@@ -122,6 +161,26 @@ jobs:
       - name: Build Windows artifacts
         shell: pwsh
         run: scripts/release/package-windows.ps1 -Version "${{ steps.version.outputs.version }}"
+
+      - name: Smoke test binary
+        shell: pwsh
+        run: |
+          $ExePath = (Get-ChildItem -Path "dist\windows" -Filter "p2panda-file-sharing-gui.exe" -Recurse | Select-Object -First 1).FullName
+          $Log = Join-Path $env:TEMP "smoke.log"
+          Write-Output "Starting: $ExePath"
+          $proc = Start-Process -FilePath $ExePath -RedirectStandardOutput $Log -RedirectStandardError "$Log.err" -PassThru -Environment @{ RUST_LOG = "info" }
+          Start-Sleep -Seconds 5
+          if (-not $proc.HasExited) {
+            $proc.Kill(); $proc.WaitForExit(3000) | Out-Null
+            Write-Output "--- binary output ---"
+            Get-Content $Log, "$Log.err" -ErrorAction SilentlyContinue
+            Write-Output "--- smoke test passed (ran for 5s) ---"
+          } else {
+            Write-Output "--- binary output ---"
+            Get-Content $Log, "$Log.err" -ErrorAction SilentlyContinue
+            if ($proc.ExitCode -ne 0) { Write-Error "--- FAILED (exit $($proc.ExitCode)) ---"; exit 1 }
+            Write-Output "--- smoke test passed (clean exit) ---"
+          }
 
       - name: Generate checksums
         shell: pwsh
