@@ -182,3 +182,12 @@ Added workflow permissions for GH PAT so Task 41 can continue.
 - `cargo test -p p2panda-file-sharing-gui updater::tests::last_checked_timestamps_are_human_readable --lib -- --nocapture`
 - `cargo check -p p2panda-file-sharing-gui --lib`
 - marked Task 58 `passes: true` in `PRD.jsonl` because this run verified one-notification-per-completed-download behavior, removed the old batching assertion path, and covered the human-readable timestamp helpers now used in settings/contacts/updater rendering
+
+# Thu, 12 Mar 2026 14:44:58 GMT
+
+- picked Task 60 (`Fix persist unit test: add publish_share_metadata before resume_downloads`) as the highest-priority unfinished task because it is a concrete failing test on the critical path to Tasks 62 and 63, while Task 63 is explicitly blocked on 60
+- updated `persist::tests::restart_resumes_incomplete_downloads` to call `publish_share_metadata(&node_a, &share).await?` immediately after `share_directory`, binding the returned publisher to `_publisher` so the sharer keeps its `ProfileSyncService` alive while `resume_downloads` synchronizes share metadata over LogSync
+- feedback loops passed in this run:
+- `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-file-sharing-gui --lib`
+- `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui --lib -- persist::tests::restart_resumes_incomplete_downloads --nocapture`
+- marked Task 60 `passes: true` in `PRD.jsonl` because the targeted acceptance command now passes and completes well within the 30-second requirement

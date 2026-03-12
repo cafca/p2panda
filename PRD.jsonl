@@ -1341,3 +1341,100 @@
   ],
   "passes": true
 }
+{
+  "id": 59,
+  "title": "Fix share code compactness test after owner_profile_id field addition",
+  "description": "The share code compactness unit test asserts share codes are shorter than 120 chars (no relay) and 180 chars (with relay). After owner_profile_id was added as a 64-character hex field to the CBOR-encoded share code, codes are now ~184 chars without a relay URL and ~220+ chars with one. Update the assertions to reflect the new realistic upper bounds.",
+  "depends_on": [
+    57
+  ],
+  "spec": {
+    "file": "file-sharing/src/share_code.rs",
+    "test": "share_codes_stay_compact",
+    "current_failure": "assertion `no_relay.len() < 120` panics with 'share code too long: 304'",
+    "fix": "Replace the hard-coded length bounds with values that are still meaningfully compact but accommodate owner_profile_id. Compute the actual worst-case sizes: a share code with no relay and a 64-char owner_profile_id encodes to roughly 184 chars; with a 30-char relay URL it is roughly 220 chars. Update the assertions to `< 200` and `< 240` (or similar values chosen after measuring the actual output of `sample_share_code`). Add a comment in the test explaining why the limits changed.",
+    "note": "Do not relax the bounds arbitrarily — the point of the test is to catch future regressions that bloat share codes unnecessarily."
+  },
+  "acceptance": [
+    "`cargo test -p p2panda-file-sharing-gui --lib -- share_code::tests::share_codes_stay_compact` passes",
+    "The test still catches a regression if the share code struct gains another large field"
+  ],
+  "passes": false
+}
+{
+  "id": 60,
+  "title": "Fix persist unit test: add publish_share_metadata before resume_downloads",
+  "description": "The unit test `persist::tests::restart_resumes_incomplete_downloads` creates a share with `share_directory`, records a download in the state store, restarts the node, then calls `resume_downloads`. Since the LogSync migration, `download_share` now synchronises the share manifest via LogSync (not from the blob store). The test never calls `publish_share_metadata` on the sharer node, so no ProfileSyncService is running, and `sync_share_metadata` times out after 10 seconds, causing the test to fail with 'failed to synchronise share metadata over LogSync'.",
+  "depends_on": [
+    57
+  ],
+  "spec": {
+    "file": "file-sharing/src/persist.rs",
+    "test": "restart_resumes_incomplete_downloads",
+    "fix": "Call `publish_share_metadata(&node_a, &share).await?` immediately after `share_directory` and bind the result to `_publisher` so the `ProfileSyncService` stays alive for the remainder of the test. Mirror the pattern used in `download.rs::tests::downloads_all_files_with_progress_and_nested_directories` and other tests that already do this correctly."
+  },
+  "acceptance": [
+    "`cargo test -p p2panda-file-sharing-gui --lib -- persist::tests::restart_resumes_incomplete_downloads` passes within 30 seconds"
+  ],
+  "passes": true
+}
+{
+  "id": 61,
+  "title": "Fix profile_sync parallel-load flakiness",
+  "description": "The unit test `profile_sync::tests::syncs_contact_profile_via_log_sync_with_catch_up_and_live_updates` has a 30-second deadline for 'wait_for_contact_label(Alice Reconnected)'. When the full test suite runs in parallel with other CPU/IO-heavy tests, the deadline is exceeded. The test passes reliably in isolation (about 10 s) but fails intermittently in the full-suite run.",
+  "depends_on": [
+    56
+  ],
+  "spec": {
+    "file": "file-sharing/src/profile_sync.rs",
+    "test": "syncs_contact_profile_via_log_sync_with_catch_up_and_live_updates",
+    "fix": "Increase the per-phase deadline from 30 s to 60 s so that the test has headroom under parallel load. Alternatively, annotate the test with `#[serial_test::serial]` (already a dev-dependency if present, otherwise add it) to prevent it from competing for resources. Prefer the timeout increase if serial_test is not already available, since it is simpler. Verify the test still finishes well under the new deadline when run in isolation."
+  },
+  "acceptance": [
+    "`cargo test -p p2panda-file-sharing-gui --lib` runs all 130 lib tests and reports 0 failures across five consecutive runs"
+  ],
+  "passes": false
+}
+{
+  "id": 62,
+  "title": "Fix recovery integration test: downloaded file blobs not skipped after node restart",
+  "description": "The integration test `resumes_after_crash_without_redownloading_completed_file` verifies that a resumed download does not re-download file blobs that were already completed in a prior interrupted run. After the LogSync migration the test fails: file index 0 emits `FileDownloadProgress` events in the resumed run even though `mark_blob_completed` was called and `FileCompleted` was emitted for that file in the first run. Root cause: the blob downloaded in the first run (written to `node_b_dir/blobs` via `FsStore`) is not found by `node.blobs.has(hash)` in the restarted node. This is because file blobs downloaded through the iroh-blobs transfer protocol are stored only as partial/temp blobs unless an explicit tag or persistent pin is committed to the FsStore tag database before the node drops. The `pins().set(…)` call in `download_one_file` may be async-fire-and-forget or backed by an in-memory pin store that does not survive restart, so on restart `has(hash)` returns false, `skipped_download` is false, and the blob is re-downloaded with new progress events.",
+  "depends_on": [
+    57,
+    60
+  ],
+  "spec": {
+    "primary_fix": "In `download_one_file` (file-sharing/src/download.rs), ensure that each successfully downloaded file blob is durably committed to the FsStore before `mark_blob_completed` is written. Use the `Blobs` API to create a named persistent tag (e.g., `node.blobs.tag(download_blob_pin_name(file_hash), file_hash).await?`) if such an API exists. If the only available mechanism is `pins().set`, verify that the PinStore implementation in p2panda-blobs writes through to the FsStore's tag database immediately; if not, switch to whichever API does guarantee disk persistence.",
+    "secondary_fix": "Add a small sleep or an explicit flush after all file blobs are pinned in the first-run portion of the recovery test to rule out timing windows around node drop. Keep node_b alive until all pins are confirmed written (look for a drain/sync API on Blobs or FsStore).",
+    "verification": "The test must pass with node_b dropped immediately after the first download attempt without any artificial sleep beyond the existing 250 ms teardown delay."
+  },
+  "acceptance": [
+    "`cargo test -p p2panda-file-sharing-gui --test recovery` passes",
+    "File index 0 does not appear in `FileDownloadProgress` events during the resumed run",
+    "`completed_files == {0, 1, 2}` still holds — all files are reported complete in the resumed run"
+  ],
+  "passes": false
+}
+{
+  "id": 63,
+  "title": "Fix CI: run integration tests, fix clippy warning, and validate smoke tests",
+  "description": "Three CI gaps on the port-blobs-to-net-v0.5 branch. (1) The `test-file-sharing` job in ci.yml only runs `--lib` tests; the five integration test files in `file-sharing/tests/` are never executed on CI, so integration regressions go undetected. (2) `ensure_downloaded_share_record` in `file-sharing/src/profile.rs` has 8 parameters, triggering a `clippy::too_many_arguments` warning; the CI clippy job runs with `-D warnings` and therefore fails. (3) The release workflow smoke tests start the binary with `xvfb-run` on Linux and directly on macOS/Windows; they depend on a successful build, which is blocked by the clippy failure.",
+  "depends_on": [
+    59,
+    60,
+    61,
+    62
+  ],
+  "spec": {
+    "integration_tests_ci": "Add a new `test-file-sharing-integration` job to `.github/workflows/ci.yml` that installs the same Bevy system dependencies as the existing `test-file-sharing` job, then runs `cargo test -p p2panda-file-sharing-gui --tests --locked -- --nocapture`. Set `timeout-minutes: 30` to accommodate the relay-based integration tests.",
+    "clippy_fix": "In `file-sharing/src/profile.rs`, refactor `ensure_downloaded_share_record` to accept a builder struct (e.g., `DownloadedShareInput`) or a smaller number of required parameters so that the argument count falls within the allowed limit of 7. Alternatively, add `#[allow(clippy::too_many_arguments)]` with a comment if a struct refactor is out of scope for this fix.",
+    "smoke_tests": "No changes are needed to the release workflow smoke-test steps themselves — they pass once the build succeeds. Verify by checking that `cargo build --release -p p2panda-file-sharing-gui --locked` completes without errors after the clippy fix is applied."
+  },
+  "acceptance": [
+    "`cargo clippy --workspace --locked -- -D warnings` produces zero errors and zero warnings",
+    "The `test-file-sharing-integration` CI job runs all five integration test suites (transfer, recovery, pause_resume, contacts, discovery) and reports no failures",
+    "The existing `test-file-sharing` lib-test job continues to pass",
+    "The release workflow smoke tests (macOS, Linux, Windows) complete successfully on a tag push"
+  ],
+  "passes": false
+}

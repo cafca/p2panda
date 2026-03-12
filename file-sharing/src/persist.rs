@@ -868,7 +868,7 @@ mod tests {
 
     use super::*;
     use crate::node::NodeOptions;
-    use crate::share::share_directory;
+    use crate::share::{publish_share_metadata, share_directory};
 
     #[test]
     fn missing_state_file_loads_default_state() -> Result<()> {
@@ -939,6 +939,7 @@ mod tests {
             .await?;
 
         let share = share_directory(&node_a, &source_root).await?;
+        let _publisher = publish_share_metadata(&node_a, &share).await?;
         let preseeded_hash = share.files[0].hash;
         node_b.blobs.download(preseeded_hash).await?;
         assert!(node_b.blobs.has(preseeded_hash).await?);
