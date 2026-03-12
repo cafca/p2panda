@@ -10,7 +10,7 @@ use p2panda_file_sharing_gui::download::download_share;
 use p2panda_file_sharing_gui::node::{AppNode, NodeOptions};
 use p2panda_file_sharing_gui::operation_domain::ReducedProfileState;
 use p2panda_file_sharing_gui::persist::ShareRecord;
-use p2panda_file_sharing_gui::profile::ProfileStore;
+use p2panda_file_sharing_gui::profile::{DownloadedShareInput, ProfileStore};
 use p2panda_file_sharing_gui::share::{publish_share_metadata, share_directory};
 
 #[tokio::test(flavor = "multi_thread")]
@@ -93,15 +93,15 @@ async fn follow_contact_browse_share_and_record_download_provenance() -> Result<
 
     let mut downloader_profile = ProfileStore::load_or_create(downloader_dir.path())?;
     let local_profile_id = downloader_profile.profile().profile_id.clone();
-    downloader_profile.ensure_downloaded_share_record(
-        &local_profile_id,
-        session.share_code.encode()?,
-        session.collection_hash.to_string(),
-        session.manifest_bytes.clone(),
-        session.output_root.clone(),
-        Some(sharer_profile_id.clone()),
-        Some(sharer_display_name.clone()),
-    )?;
+    downloader_profile.ensure_downloaded_share_record(DownloadedShareInput {
+        profile_id: local_profile_id.clone(),
+        share_code: session.share_code.encode()?,
+        collection_hash: session.collection_hash.to_string(),
+        manifest_bytes: session.manifest_bytes.clone(),
+        source_dir: session.output_root.clone(),
+        source_contact_profile_id: Some(sharer_profile_id.clone()),
+        source_contact_display_name: Some(sharer_display_name.clone()),
+    })?;
 
     let ownerships = downloader_profile.share_ownership_records()?;
     assert!(ownerships.iter().any(|record| {

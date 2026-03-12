@@ -121,6 +121,17 @@ struct ShareOwnershipUpdate {
     active: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DownloadedShareInput {
+    pub profile_id: String,
+    pub share_code: String,
+    pub collection_hash: String,
+    pub manifest_bytes: Vec<u8>,
+    pub source_dir: PathBuf,
+    pub source_contact_profile_id: Option<String>,
+    pub source_contact_display_name: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum ProfileRecordBody {
@@ -322,24 +333,15 @@ impl ProfileStore {
         })
     }
 
-    pub fn ensure_downloaded_share_record(
-        &mut self,
-        profile_id: &str,
-        share_code: impl Into<String>,
-        collection_hash: impl Into<String>,
-        manifest_bytes: Vec<u8>,
-        source_dir: impl Into<PathBuf>,
-        source_contact_profile_id: Option<String>,
-        source_contact_display_name: Option<String>,
-    ) -> Result<bool> {
+    pub fn ensure_downloaded_share_record(&mut self, input: DownloadedShareInput) -> Result<bool> {
         self.set_share_ownership_state(ShareOwnershipUpdate {
-            profile_id: profile_id.to_owned(),
-            collection_hash: collection_hash.into(),
-            share_code: share_code.into(),
-            manifest_bytes,
-            source_dir: source_dir.into(),
-            source_contact_profile_id,
-            source_contact_display_name,
+            profile_id: input.profile_id,
+            collection_hash: input.collection_hash,
+            share_code: input.share_code,
+            manifest_bytes: input.manifest_bytes,
+            source_dir: input.source_dir,
+            source_contact_profile_id: input.source_contact_profile_id,
+            source_contact_display_name: input.source_contact_display_name,
             active: true,
         })
     }
@@ -856,15 +858,15 @@ mod tests {
 
         let mut store = ProfileStore::load_or_create(dir.path())?;
         let local_profile_id = store.profile().profile_id.clone();
-        assert!(store.ensure_downloaded_share_record(
-            &local_profile_id,
-            "p2p-DOWNLOAD",
-            BlobHash::new(b"downloaded-share").to_string(),
-            Vec::new(),
-            PathBuf::from("/tmp/downloads/shared"),
-            Some("contact-profile".into()),
-            Some("Alice".into()),
-        )?);
+        assert!(store.ensure_downloaded_share_record(DownloadedShareInput {
+            profile_id: local_profile_id.clone(),
+            share_code: "p2p-DOWNLOAD".into(),
+            collection_hash: BlobHash::new(b"downloaded-share").to_string(),
+            manifest_bytes: Vec::new(),
+            source_dir: PathBuf::from("/tmp/downloads/shared"),
+            source_contact_profile_id: Some("contact-profile".into()),
+            source_contact_display_name: Some("Alice".into()),
+        })?);
 
         let ownerships = store.share_ownership_records()?;
         assert!(ownerships.iter().any(|record| {

@@ -220,3 +220,16 @@ Added workflow permissions for GH PAT so Task 41 can continue.
 - `cargo test -p p2panda-file-sharing-gui --lib` once
 - `cargo test -p p2panda-file-sharing-gui --lib --quiet` four more consecutive times
 - marked Task 61 `passes: true` in `PRD.jsonl` because the acceptance requirement was satisfied by five consecutive successful `--lib` runs (`130 passed; 0 failed` each)
+
+# Thu, 12 Mar 2026 15:27:46 GMT
+
+- picked Task 63 (`Fix CI: run integration tests, fix clippy warning, and validate smoke tests`) as the highest-priority unfinished task because it is the only remaining `passes: false` item in `PRD.jsonl` and it gates overall CI confidence
+- added a dedicated `test-file-sharing-integration` job to `.github/workflows/ci.yml` that installs the same Bevy system dependencies as the lib-test job and runs `cargo test -p p2panda-file-sharing-gui --tests --locked -- --nocapture` with a 30-minute timeout
+- refactored `ProfileStore::ensure_downloaded_share_record` to take a `DownloadedShareInput` struct and updated all current callers so `cargo clippy --workspace --locked -- -D warnings` no longer trips `clippy::too_many_arguments` on that helper
+- feedback loops passed in this run:
+- `cargo test -p p2panda-file-sharing-gui --lib --locked -- --nocapture`
+- `cargo clippy --workspace --locked -j1 -- -D warnings`
+- `cargo build --release -p p2panda-file-sharing-gui --locked -j1`
+- verification blocker in this run:
+- `cargo test -p p2panda-file-sharing-gui --tests --locked -j1 -- --nocapture` failed in `file-sharing/tests/pause_resume.rs` at `global_pause_respects_individual_flags_and_toggle_during_pause` with `per-share toggle during global pause should apply after ResumeAll`
+- left Task 63 `passes: false` in `PRD.jsonl` because the new integration-test coverage exposed an existing failing integration test, and the tag-push release smoke tests still cannot be confirmed from this local run

@@ -7,7 +7,7 @@ use p2panda_file_sharing_gui::contacts::{write_contact_cache, ContactsStore, Dis
 use p2panda_file_sharing_gui::download::download_share;
 use p2panda_file_sharing_gui::node::{AppNode, NodeOptions};
 use p2panda_file_sharing_gui::operation_domain::{ReducedProfileState, ReducedShareState};
-use p2panda_file_sharing_gui::profile::ProfileStore;
+use p2panda_file_sharing_gui::profile::{DownloadedShareInput, ProfileStore};
 use p2panda_file_sharing_gui::share::{publish_share_metadata, share_directory};
 use p2panda_net::addrs::NodeInfo;
 use tempfile::tempdir;
@@ -48,15 +48,15 @@ async fn discover_second_degree_profile_browse_shares_and_download() -> Result<(
 
     alice_profile.follow_contact(bob_profile.profile().profile_id.clone())?;
     dana_profile.follow_contact(bob_profile.profile().profile_id.clone())?;
-    bob_profile.ensure_downloaded_share_record(
-        &bob_profile.profile().profile_id.clone(),
-        share.share_code.clone(),
-        share.collection_hash.to_string(),
-        share.manifest_bytes.clone(),
-        share.source_dir.clone(),
-        None,
-        None,
-    )?;
+    bob_profile.ensure_downloaded_share_record(DownloadedShareInput {
+        profile_id: bob_profile.profile().profile_id.clone(),
+        share_code: share.share_code.clone(),
+        collection_hash: share.collection_hash.to_string(),
+        manifest_bytes: share.manifest_bytes.clone(),
+        source_dir: share.source_dir.clone(),
+        source_contact_profile_id: None,
+        source_contact_display_name: None,
+    })?;
 
     let mut contacts = ContactsStore::load(charlie_dir.path())?;
     contacts.follow_contact(alice_profile.profile().profile_id.clone())?;

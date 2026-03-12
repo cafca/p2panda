@@ -94,6 +94,36 @@ jobs:
       - name: Run file-sharing lib tests
         run: cargo test -p p2panda-file-sharing-gui --lib --locked -- --nocapture
 
+  test-file-sharing-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Bevy system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            libasound2-dev \
+            libudev-dev \
+            libwayland-dev \
+            libx11-dev \
+            libxcursor-dev \
+            libxi-dev \
+            libxkbcommon-dev \
+            libxrandr-dev
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run file-sharing integration tests
+        run: cargo test -p p2panda-file-sharing-gui --tests --locked -- --nocapture
+
   audit:
     runs-on: ubuntu-latest
     timeout-minutes: 10

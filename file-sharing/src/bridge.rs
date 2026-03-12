@@ -30,7 +30,7 @@ use crate::persist::{
     resume_active_transfers, resume_share_record, DownloadRecord, RecoveredShare, ShareRecord,
     StateStore,
 };
-use crate::profile::ProfileStore;
+use crate::profile::{DownloadedShareInput, ProfileStore};
 use crate::profile_sync::ProfileSyncService;
 use crate::settings::load_settings;
 use crate::share::{share_directory_for_owner, share_pin_prefix, ShareSession};
@@ -649,15 +649,15 @@ async fn persist_contact_download_ownership(
 
     let mut profile_store = state.profile_store.lock().await;
     let local_profile_id = profile_store.profile().profile_id.clone();
-    profile_store.ensure_downloaded_share_record(
-        &local_profile_id,
-        session.share_code.encode()?,
-        session.collection_hash.to_string(),
-        session.manifest_bytes.clone(),
-        session.output_root.clone(),
-        Some(source_contact_profile_id.clone()),
-        record.source_contact_display_name.clone(),
-    )?;
+    profile_store.ensure_downloaded_share_record(DownloadedShareInput {
+        profile_id: local_profile_id,
+        share_code: session.share_code.encode()?,
+        collection_hash: session.collection_hash.to_string(),
+        manifest_bytes: session.manifest_bytes.clone(),
+        source_dir: session.output_root.clone(),
+        source_contact_profile_id: Some(source_contact_profile_id.clone()),
+        source_contact_display_name: record.source_contact_display_name.clone(),
+    })?;
     drop(profile_store);
 
     let mut profile_sync = state.profile_sync.lock().await;
