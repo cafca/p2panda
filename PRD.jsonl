@@ -1359,7 +1359,7 @@
     "`cargo test -p p2panda-file-sharing-gui --lib -- share_code::tests::share_codes_stay_compact` passes",
     "The test still catches a regression if the share code struct gains another large field"
   ],
-  "passes": false
+  "passes": true
 }
 {
   "id": 60,
@@ -1413,7 +1413,7 @@
     "File index 0 does not appear in `FileDownloadProgress` events during the resumed run",
     "`completed_files == {0, 1, 2}` still holds — all files are reported complete in the resumed run"
   ],
-  "passes": false
+  "passes": true
 }
 {
   "id": 63,

@@ -575,23 +575,21 @@ where
         .await
         .with_context(|| format!("failed to write {}", destination.display()))?;
 
+    persist_downloaded_blob(node, file_hash, blob_bytes.clone())
+        .await
+        .with_context(|| {
+            format!(
+                "failed to persist downloaded blob for {}",
+                manifest_file.relative_path
+            )
+        })?;
+
     mark_blob_completed(&node.data_dir, file_hash).with_context(|| {
         format!(
             "failed to record completed blob for {}",
             manifest_file.relative_path
         )
     })?;
-
-    node.blobs
-        .pins()
-        .set(download_blob_pin_name(file_hash), file_hash)
-        .await
-        .with_context(|| {
-            format!(
-                "failed to pin downloaded blob for {}",
-                manifest_file.relative_path
-            )
-        })?;
 
     on_event(DownloadEvent::FileCompleted { file_index });
 
@@ -605,6 +603,25 @@ where
 
 fn download_blob_pin_name(hash: BlobHash) -> String {
     format!("{DOWNLOAD_BLOB_PIN_PREFIX}{hash}")
+}
+
+async fn persist_downloaded_blob(
+    node: &AppNode,
+    expected_hash: BlobHash,
+    blob_bytes: bytes::Bytes,
+) -> Result<()> {
+    let persisted = node
+        .blobs
+        .add_bytes(blob_bytes)
+        .with_named_tag(download_blob_pin_name(expected_hash))
+        .await
+        .context("failed to import downloaded bytes back into the blob store")?;
+    ensure!(
+        persisted.hash == expected_hash,
+        "re-imported blob hash mismatch: expected {expected_hash}, got {}",
+        persisted.hash
+    );
+    Ok(())
 }
 
 fn completed_blobs_dir(data_dir: &Path) -> PathBuf {

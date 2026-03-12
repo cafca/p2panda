@@ -200,3 +200,13 @@ Added workflow permissions for GH PAT so Task 41 can continue.
 - `cargo test -p p2panda-file-sharing-gui --lib -- share_code::tests::share_codes_stay_compact`
 - additional verification note: `cargo test -p p2panda-file-sharing-gui --test recovery` still fails at `file-sharing/tests/recovery.rs:106` with `skipped file should not emit progress events during resumed run`; left Task 62 unchanged because that blocker is outside the single-feature scope of this run
 - marked Task 59 `passes: true` in `PRD.jsonl` because the acceptance test now passes and the revised limits remain close enough to current output to catch another large-field regression
+
+# Thu, 12 Mar 2026 14:57:59 GMT
+
+- picked Task 62 (`Fix recovery integration test: downloaded file blobs not skipped after node restart`) as the highest-priority unfinished task because it is a concrete crash-recovery regression in an executed integration test and it blocks the remaining CI task
+- updated `file-sharing/src/download.rs` so each downloaded file blob is re-imported with a named persistent tag before `mark_blob_completed` is written; this moves the completion marker behind a durable store write instead of relying on the transient post-download state alone
+- feedback loops passed in this run:
+- `cargo check -p p2panda-file-sharing-gui --tests`
+- `cargo test -p p2panda-file-sharing-gui --lib -- download::tests::skips_preexisting_blobs_without_re_downloading --nocapture`
+- `cargo test -p p2panda-file-sharing-gui --test recovery -- --nocapture`
+- marked Task 62 `passes: true` in `PRD.jsonl` because the recovery integration test now passes, file index 0 no longer emits resumed `FileDownloadProgress` events, and the resumed run still reports `completed_files == {0, 1, 2}`
