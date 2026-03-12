@@ -1393,7 +1393,7 @@
   "acceptance": [
     "`cargo test -p p2panda-file-sharing-gui --lib` runs all 130 lib tests and reports 0 failures across five consecutive runs"
   ],
-  "passes": false
+  "passes": true
 }
 {
   "id": 62,

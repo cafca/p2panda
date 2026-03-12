@@ -210,3 +210,13 @@ Added workflow permissions for GH PAT so Task 41 can continue.
 - `cargo test -p p2panda-file-sharing-gui --lib -- download::tests::skips_preexisting_blobs_without_re_downloading --nocapture`
 - `cargo test -p p2panda-file-sharing-gui --test recovery -- --nocapture`
 - marked Task 62 `passes: true` in `PRD.jsonl` because the recovery integration test now passes, file index 0 no longer emits resumed `FileDownloadProgress` events, and the resumed run still reports `completed_files == {0, 1, 2}`
+
+# Thu, 12 Mar 2026 15:04:58 GMT
+
+- picked Task 61 (`Fix profile_sync parallel-load flakiness`) as the highest-priority unfinished task because it directly blocks the remaining CI task and the failure mode was already narrowed to a specific lib test timeout under parallel suite load
+- updated `file-sharing/src/profile_sync.rs` to raise the test-only `wait_for_contact_label` phase deadline from 30 seconds to 60 seconds via a shared constant, matching the PRD's preferred fix without introducing `serial_test`
+- feedback loops passed in this run:
+- `cargo test -p p2panda-file-sharing-gui --lib profile_sync::tests::syncs_contact_profile_via_log_sync_with_catch_up_and_live_updates`
+- `cargo test -p p2panda-file-sharing-gui --lib` once
+- `cargo test -p p2panda-file-sharing-gui --lib --quiet` four more consecutive times
+- marked Task 61 `passes: true` in `PRD.jsonl` because the acceptance requirement was satisfied by five consecutive successful `--lib` runs (`130 passed; 0 failed` each)

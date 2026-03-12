@@ -685,6 +685,8 @@ mod tests {
     use crate::profile::ProfileStore;
     use crate::share::share_directory;
 
+    const CONTACT_PROFILE_PHASE_TIMEOUT_SECS: u64 = 60;
+
     #[tokio::test(flavor = "multi_thread")]
     async fn syncs_contact_profile_via_log_sync_with_catch_up_and_live_updates() -> Result<()> {
         setup_logging();
@@ -1084,7 +1086,7 @@ mod tests {
         expected_label: &str,
     ) -> Result<()> {
         let start = std::time::Instant::now();
-        tokio::time::timeout(Duration::from_secs(30), async {
+        tokio::time::timeout(Duration::from_secs(CONTACT_PROFILE_PHASE_TIMEOUT_SECS), async {
             loop {
                 let mut contacts = ContactsStore::load(data_dir)?;
                 contacts.refresh_contact(profile_id).ok();
