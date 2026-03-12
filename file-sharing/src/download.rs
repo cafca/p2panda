@@ -27,7 +27,8 @@ const DOWNLOAD_ATTEMPTS: usize = 5;
 const DOWNLOAD_RETRY_DELAY: Duration = Duration::from_millis(250);
 const DOWNLOAD_BLOB_PIN_PREFIX: &str = "downloaded/";
 const COMPLETED_BLOBS_DIR: &str = "completed_blobs";
-const SHARE_METADATA_SYNC_TIMEOUT: Duration = Duration::from_secs(10);
+const SHARE_METADATA_SYNC_TIMEOUT: Duration = Duration::from_secs(120);
+const SHARE_METADATA_SYNC_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 const SHARE_METADATA_BOOTSTRAP_SETTLE_DELAY: Duration = Duration::from_millis(750);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -285,32 +286,49 @@ async fn sync_share_metadata(node: &AppNode, share_code: &ShareCode) -> Result<R
     }
 
     let mut last_sync_error = None::<String>;
+    let mut retry_interval = tokio::time::interval(SHARE_METADATA_SYNC_RETRY_INTERVAL);
+    retry_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let result = tokio::time::timeout(SHARE_METADATA_SYNC_TIMEOUT, async {
-        while let Some(message) = subscription.next().await {
-            let message = message.context("share metadata LogSync subscription closed")?;
-            match message.event {
-                TopicLogSyncEvent::Operation(operation) => {
-                    domain.ingest_remote_operation(*operation).await?;
+        loop {
+            tokio::select! {
+                maybe_message = subscription.next() => {
+                    let Some(message) = maybe_message else {
+                        break;
+                    };
+                    let message = message.context("share metadata LogSync subscription closed")?;
+                    match message.event {
+                        TopicLogSyncEvent::Operation(operation) => {
+                            domain.ingest_remote_operation(*operation).await?;
+                            if let Some(share) =
+                                find_share_state(&domain, &owner_profile_id, &collection_hash).await?
+                            {
+                                return Ok(share);
+                            }
+                        }
+                        TopicLogSyncEvent::SyncFinished(_) | TopicLogSyncEvent::LiveModeStarted => {
+                            if let Some(share) =
+                                find_share_state(&domain, &owner_profile_id, &collection_hash).await?
+                            {
+                                return Ok(share);
+                            }
+                        }
+                        TopicLogSyncEvent::Failed { error } => {
+                            last_sync_error = Some(error.to_string());
+                        }
+                        TopicLogSyncEvent::SyncStarted(_)
+                        | TopicLogSyncEvent::SyncStatus(_)
+                        | TopicLogSyncEvent::LiveModeFinished(_)
+                        | TopicLogSyncEvent::Success => {}
+                    }
+                }
+                _ = retry_interval.tick() => {
+                    handle.initiate_session(sharer_node_id);
                     if let Some(share) =
                         find_share_state(&domain, &owner_profile_id, &collection_hash).await?
                     {
                         return Ok(share);
                     }
                 }
-                TopicLogSyncEvent::SyncFinished(_) | TopicLogSyncEvent::LiveModeStarted => {
-                    if let Some(share) =
-                        find_share_state(&domain, &owner_profile_id, &collection_hash).await?
-                    {
-                        return Ok(share);
-                    }
-                }
-                TopicLogSyncEvent::Failed { error } => {
-                    last_sync_error = Some(error.to_string());
-                }
-                TopicLogSyncEvent::SyncStarted(_)
-                | TopicLogSyncEvent::SyncStatus(_)
-                | TopicLogSyncEvent::LiveModeFinished(_)
-                | TopicLogSyncEvent::Success => {}
             }
         }
 

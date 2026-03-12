@@ -131,7 +131,7 @@ async fn global_pause_respects_individual_flags_and_toggle_during_pause() -> Res
         download_share_with_progress(&downloader, &share_two, output_b.path(), |_| {}).await;
     assert!(
         share_two_download.is_err(),
-        "individually paused share should remain paused after ResumeAll"
+        "individually paused share should remain paused after ResumeAll: {share_two_download:?}"
     );
 
     bridge.send(NetworkCommand::PauseAll)?;
@@ -150,7 +150,7 @@ async fn global_pause_respects_individual_flags_and_toggle_during_pause() -> Res
         download_share_with_progress(&downloader, &share_two, output_b.path(), |_| {}).await;
     assert!(
         share_two_while_global_paused.is_err(),
-        "global pause should still block share while per-share flag is toggled"
+        "global pause should still block share while per-share flag is toggled: {share_two_while_global_paused:?}"
     );
 
     // Phase 2: after toggling per-share resume while globally paused, ResumeAll should resume #102.
@@ -164,7 +164,7 @@ async fn global_pause_respects_individual_flags_and_toggle_during_pause() -> Res
         download_share_with_progress(&downloader, &share_two, output_b.path(), |_| {}).await;
     assert!(
         share_two_after_toggle.is_ok(),
-        "per-share toggle during global pause should apply after ResumeAll"
+        "per-share toggle during global pause should apply after ResumeAll: {share_two_after_toggle:?}"
     );
 
     Ok(())

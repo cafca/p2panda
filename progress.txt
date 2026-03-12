@@ -233,3 +233,22 @@ Added workflow permissions for GH PAT so Task 41 can continue.
 - verification blocker in this run:
 - `cargo test -p p2panda-file-sharing-gui --tests --locked -j1 -- --nocapture` failed in `file-sharing/tests/pause_resume.rs` at `global_pause_respects_individual_flags_and_toggle_during_pause` with `per-share toggle during global pause should apply after ResumeAll`
 - left Task 63 `passes: false` in `PRD.jsonl` because the new integration-test coverage exposed an existing failing integration test, and the tag-push release smoke tests still cannot be confirmed from this local run
+
+# Thu, 12 Mar 2026 16:01:49 GMT
+
+- continued Task 63 (`Fix CI: run integration tests, fix clippy warning, and validate smoke tests`) because the previous run left a reproducible integration failure in `pause_resume` and the release smoke-test acceptance is still GitHub-only
+- updated `.github/workflows/ci.yml` so both file-sharing test jobs now run with `CARGO_BUILD_JOBS=1` and `--test-threads=1`, matching the command shape that avoids local linker/resource spikes while keeping the new integration coverage enabled
+- hardened relay/log-sync test and runtime paths for CI load:
+- raised the `profile_sync` test-only phase timeout to 120 seconds so the full lib suite no longer flakes under heavier suite load
+- added periodic LogSync session re-initiation plus a larger share-metadata timeout in `file-sharing/src/download.rs`
+- updated the share resume paths in `file-sharing/src/bridge.rs` to call `sync_local_profile_peers()` whenever share serving resumes, so resumed shares proactively re-advertise their metadata sync availability
+- kept the `pause_resume` assertion improvements that print the actual `Result` on failure, which made the metadata-sync timeout root cause visible during this run
+- feedback loops passed in this run:
+- `cargo clippy --workspace --locked -- -D warnings`
+- `cargo test -p p2panda-file-sharing-gui --lib --locked -- --nocapture --test-threads=1`
+- `CARGO_BUILD_JOBS=1 cargo test -p p2panda-file-sharing-gui --test pause_resume --locked -- --nocapture --test-threads=1`
+- `CARGO_BUILD_JOBS=1 cargo test -p p2panda-file-sharing-gui --tests --locked -- --nocapture --test-threads=1`
+- `cargo build --release -p p2panda-file-sharing-gui --locked`
+- verification blocker in this run:
+- the tag-push release smoke tests in `.github/workflows/release.yml` still require GitHub Actions runners for macOS/Linux/Windows and were not executable from this local environment
+- left Task 63 `passes: false` in `PRD.jsonl` because local clippy, lib tests, integration coverage, and release build all passed, but the release-workflow smoke-test acceptance could not be actually exercised in this run

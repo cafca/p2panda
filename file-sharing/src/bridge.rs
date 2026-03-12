@@ -779,6 +779,10 @@ async fn resume_transfer(
             runtime.store.add_share(record.clone())?;
             runtime.recovered_shares.insert(transfer_id, recovered);
         }
+        {
+            let profile_sync = state.profile_sync.lock().await;
+            profile_sync.sync_local_profile_peers().await?;
+        }
         event_tx
             .send(NetworkEvent::TransferResumed { transfer_id })
             .context("failed to send TransferResumed event")?;
@@ -919,6 +923,7 @@ async fn resume_all_transfers(
     runtime.global_paused = false;
     runtime.store.set_global_paused(false)?;
 
+    let mut resumed_any_share = false;
     let globally_paused_share_ids: Vec<u64> =
         runtime.globally_paused_shares.keys().copied().collect();
     for transfer_id in globally_paused_share_ids {
@@ -943,6 +948,7 @@ async fn resume_all_transfers(
             record.paused = false;
             runtime.store.add_share(record.clone())?;
             runtime.recovered_shares.insert(transfer_id, recovered);
+            resumed_any_share = true;
             event_tx
                 .send(NetworkEvent::TransferResumed { transfer_id })
                 .context("failed to send TransferResumed event")?;
@@ -959,6 +965,13 @@ async fn resume_all_transfers(
         }
     }
 
+    drop(runtime);
+    if resumed_any_share {
+        let profile_sync = state.profile_sync.lock().await;
+        profile_sync.sync_local_profile_peers().await?;
+    }
+
+    let mut runtime = state.inner.lock().await;
     let globally_paused_download_ids: Vec<u64> =
         runtime.globally_paused_downloads.keys().copied().collect();
     for transfer_id in globally_paused_download_ids {

@@ -67,6 +67,8 @@ jobs:
   test-file-sharing:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      CARGO_BUILD_JOBS: 1
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -92,11 +94,13 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Run file-sharing lib tests
-        run: cargo test -p p2panda-file-sharing-gui --lib --locked -- --nocapture
+        run: cargo test -p p2panda-file-sharing-gui --lib --locked -- --nocapture --test-threads=1
 
   test-file-sharing-integration:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      CARGO_BUILD_JOBS: 1
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -122,7 +126,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Run file-sharing integration tests
-        run: cargo test -p p2panda-file-sharing-gui --tests --locked -- --nocapture
+        run: cargo test -p p2panda-file-sharing-gui --tests --locked -- --nocapture --test-threads=1
 
   audit:
     runs-on: ubuntu-latest

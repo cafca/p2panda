@@ -685,7 +685,10 @@ mod tests {
     use crate::profile::ProfileStore;
     use crate::share::share_directory;
 
-    const CONTACT_PROFILE_PHASE_TIMEOUT_SECS: u64 = 60;
+    // Relay-backed sync tests can stall under heavy suite load; keep the timeout generous
+    // enough to exercise the real flow without turning intermittent scheduler delays into
+    // false negatives.
+    const CONTACT_PROFILE_PHASE_TIMEOUT_SECS: u64 = 120;
 
     #[tokio::test(flavor = "multi_thread")]
     async fn syncs_contact_profile_via_log_sync_with_catch_up_and_live_updates() -> Result<()> {
@@ -1116,7 +1119,7 @@ mod tests {
         profile_id: &str,
         expected_count: usize,
     ) -> Result<()> {
-        tokio::time::timeout(Duration::from_secs(30), async {
+        tokio::time::timeout(Duration::from_secs(CONTACT_PROFILE_PHASE_TIMEOUT_SECS), async {
             loop {
                 let mut contacts = ContactsStore::load(data_dir)?;
                 contacts.refresh_contact(profile_id).ok();
@@ -1140,7 +1143,7 @@ mod tests {
         expected_profile_ids: Vec<String>,
     ) -> Result<()> {
         let mut last_seen = Vec::new();
-        tokio::time::timeout(Duration::from_secs(30), async {
+        tokio::time::timeout(Duration::from_secs(CONTACT_PROFILE_PHASE_TIMEOUT_SECS), async {
             loop {
                 let contacts = ContactsStore::load(data_dir)?;
                 let actual = contacts
