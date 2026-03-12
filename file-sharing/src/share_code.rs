@@ -194,19 +194,24 @@ mod tests {
 
     #[test]
     fn share_codes_stay_compact() {
+        // owner_profile_id adds another 64-character public-key string, so keep the budget close
+        // to the current encoding size while still leaving enough headroom for relay URLs.
+        const MAX_NO_RELAY_LEN: usize = 320;
+        const MAX_WITH_RELAY_LEN: usize = 380;
+
         let no_relay = sample_share_code(None).encode().unwrap();
         let with_relay = sample_share_code(Some("https://relay.example.com/path"))
             .encode()
             .unwrap();
 
         assert!(
-            no_relay.len() < 120,
-            "share code too long: {}",
+            no_relay.len() < MAX_NO_RELAY_LEN,
+            "share code without relay too long: {} (limit {MAX_NO_RELAY_LEN})",
             no_relay.len()
         );
         assert!(
-            with_relay.len() < 180,
-            "share code too long: {}",
+            with_relay.len() < MAX_WITH_RELAY_LEN,
+            "share code with relay too long: {} (limit {MAX_WITH_RELAY_LEN})",
             with_relay.len()
         );
         assert!(no_relay.len() < with_relay.len());

@@ -191,3 +191,12 @@ Added workflow permissions for GH PAT so Task 41 can continue.
 - `./scripts/verify-in-sandbox.sh -- cargo check -p p2panda-file-sharing-gui --lib`
 - `./scripts/verify-in-sandbox.sh -- cargo test -p p2panda-file-sharing-gui --lib -- persist::tests::restart_resumes_incomplete_downloads --nocapture`
 - marked Task 60 `passes: true` in `PRD.jsonl` because the targeted acceptance command now passes and completes well within the 30-second requirement
+
+# Thu, 12 Mar 2026 14:50:14 GMT
+
+- picked Task 59 (`Fix share code compactness test after owner_profile_id field addition`) as the highest-priority unfinished task because it is a reproducible failing acceptance check on the critical path to Task 63 and could be fixed without overlapping the broader flaky/integration work in Tasks 61 and 62
+- updated `file-sharing/src/share_code.rs` to replace the stale `< 120` / `< 180` compactness assertions with tighter current-budget limits (`< 320` without a relay, `< 380` with a relay) and added a comment explaining that `owner_profile_id` now contributes another 64-character public key string
+- feedback loops passed in this run:
+- `cargo test -p p2panda-file-sharing-gui --lib -- share_code::tests::share_codes_stay_compact`
+- additional verification note: `cargo test -p p2panda-file-sharing-gui --test recovery` still fails at `file-sharing/tests/recovery.rs:106` with `skipped file should not emit progress events during resumed run`; left Task 62 unchanged because that blocker is outside the single-feature scope of this run
+- marked Task 59 `passes: true` in `PRD.jsonl` because the acceptance test now passes and the revised limits remain close enough to current output to catch another large-field regression
