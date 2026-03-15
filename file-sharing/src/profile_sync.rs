@@ -1089,23 +1089,26 @@ mod tests {
         expected_label: &str,
     ) -> Result<()> {
         let start = std::time::Instant::now();
-        tokio::time::timeout(Duration::from_secs(CONTACT_PROFILE_PHASE_TIMEOUT_SECS), async {
-            loop {
-                let mut contacts = ContactsStore::load(data_dir)?;
-                contacts.refresh_contact(profile_id).ok();
-                let actual = contacts
-                    .get(profile_id)
-                    .and_then(|contact| contact.display_name().map(String::from));
-                if actual.as_deref() == Some(expected_label) {
-                    println!(
-                        "  wait_for_contact_label({expected_label:?}): ok in {:.1}s",
-                        start.elapsed().as_secs_f64()
-                    );
-                    return Ok::<(), anyhow::Error>(());
+        tokio::time::timeout(
+            Duration::from_secs(CONTACT_PROFILE_PHASE_TIMEOUT_SECS),
+            async {
+                loop {
+                    let mut contacts = ContactsStore::load(data_dir)?;
+                    contacts.refresh_contact(profile_id).ok();
+                    let actual = contacts
+                        .get(profile_id)
+                        .and_then(|contact| contact.display_name().map(String::from));
+                    if actual.as_deref() == Some(expected_label) {
+                        println!(
+                            "  wait_for_contact_label({expected_label:?}): ok in {:.1}s",
+                            start.elapsed().as_secs_f64()
+                        );
+                        return Ok::<(), anyhow::Error>(());
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
                 }
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-        })
+            },
+        )
         .await
         .context(format!(
             "timed out after {:.1}s waiting for contact label {expected_label:?}",
@@ -1119,20 +1122,23 @@ mod tests {
         profile_id: &str,
         expected_count: usize,
     ) -> Result<()> {
-        tokio::time::timeout(Duration::from_secs(CONTACT_PROFILE_PHASE_TIMEOUT_SECS), async {
-            loop {
-                let mut contacts = ContactsStore::load(data_dir)?;
-                contacts.refresh_contact(profile_id).ok();
-                if contacts
-                    .get(profile_id)
-                    .map(|contact| contact.cached_shares.len())
-                    == Some(expected_count)
-                {
-                    return Ok::<(), anyhow::Error>(());
+        tokio::time::timeout(
+            Duration::from_secs(CONTACT_PROFILE_PHASE_TIMEOUT_SECS),
+            async {
+                loop {
+                    let mut contacts = ContactsStore::load(data_dir)?;
+                    contacts.refresh_contact(profile_id).ok();
+                    if contacts
+                        .get(profile_id)
+                        .map(|contact| contact.cached_shares.len())
+                        == Some(expected_count)
+                    {
+                        return Ok::<(), anyhow::Error>(());
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
                 }
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-        })
+            },
+        )
         .await
         .context("timed out waiting for synced contact share count")??;
         Ok(())
@@ -1143,21 +1149,24 @@ mod tests {
         expected_profile_ids: Vec<String>,
     ) -> Result<()> {
         let mut last_seen = Vec::new();
-        tokio::time::timeout(Duration::from_secs(CONTACT_PROFILE_PHASE_TIMEOUT_SECS), async {
-            loop {
-                let contacts = ContactsStore::load(data_dir)?;
-                let actual = contacts
-                    .contacts()
-                    .iter()
-                    .map(|contact| contact.profile_id.clone())
-                    .collect::<Vec<_>>();
-                last_seen = actual.clone();
-                if actual == expected_profile_ids {
-                    return Ok::<(), anyhow::Error>(());
+        tokio::time::timeout(
+            Duration::from_secs(CONTACT_PROFILE_PHASE_TIMEOUT_SECS),
+            async {
+                loop {
+                    let contacts = ContactsStore::load(data_dir)?;
+                    let actual = contacts
+                        .contacts()
+                        .iter()
+                        .map(|contact| contact.profile_id.clone())
+                        .collect::<Vec<_>>();
+                    last_seen = actual.clone();
+                    if actual == expected_profile_ids {
+                        return Ok::<(), anyhow::Error>(());
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
                 }
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-        })
+            },
+        )
         .await
         .with_context(|| {
             format!(

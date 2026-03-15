@@ -290,7 +290,9 @@ mod tests {
         let relay_url = settings
             .relay_url_for_node()?
             .expect("testing relay should be configured");
-        assert!(relay_url.to_string().contains(iroh::defaults::prod::EU_RELAY_HOSTNAME.trim_end_matches('.')));
+        assert!(relay_url
+            .to_string()
+            .contains(iroh::defaults::prod::EU_RELAY_HOSTNAME.trim_end_matches('.')));
 
         settings.relay_mode = RelayMode::Disabled;
         assert!(settings.relay_url_for_node()?.is_none());

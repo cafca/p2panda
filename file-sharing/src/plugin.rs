@@ -743,7 +743,9 @@ mod tests {
         let relay = options
             .relay_url
             .expect("testing relay should be configured");
-        assert!(relay.to_string().contains(iroh::defaults::prod::EU_RELAY_HOSTNAME.trim_end_matches('.')));
+        assert!(relay
+            .to_string()
+            .contains(iroh::defaults::prod::EU_RELAY_HOSTNAME.trim_end_matches('.')));
         assert!(options.mdns_enabled);
         Ok(())
     }
