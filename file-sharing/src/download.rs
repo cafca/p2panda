@@ -543,6 +543,8 @@ where
     let skipped_download = present_now && previously_completed;
 
     if !present_now {
+        // If previously completed, the blob may have been lost from the store due to an unclean
+        // shutdown. Re-download silently — from the user's perspective this file is already done.
         retry_download_progress(
             "file blob",
             DownloadProgressTarget::File {
@@ -550,7 +552,11 @@ where
                 relative_path: &manifest_file.relative_path,
             },
             || download_blob_with_progress_from_providers(node, file_hash, providers),
-            on_event,
+            &mut |event| {
+                if !previously_completed {
+                    on_event(event);
+                }
+            },
         )
         .await
         .with_context(|| {
