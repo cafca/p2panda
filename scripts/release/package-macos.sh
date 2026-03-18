@@ -50,9 +50,19 @@ EOF
 
 codesign --force --deep --sign - "$APP_DIR"
 
+# Log disk usage before freeing space so we have data if hdiutil fails again.
+echo "=== Disk space before cleanup ==="
+df -h .
+echo "Target dir size: $(du -sh "$TARGET_DIR" 2>/dev/null | cut -f1)"
+echo "Cargo registry size: $(du -sh "${CARGO_HOME:-$HOME/.cargo}/registry" 2>/dev/null | cut -f1)"
+echo "Dist dir size: $(du -sh "$DIST_DIR" 2>/dev/null | cut -f1)"
+
 # Free disk space before creating the DMG; the target directory is large
 # (several GB for a Bevy release build) and the macOS runner has limited space.
 rm -rf "$TARGET_DIR"
+
+echo "=== Disk space after cleanup ==="
+df -h .
 
 DMG_NAME="p2panda-file-sharing-${VERSION}-macos.dmg"
 ZIP_NAME="p2panda-file-sharing-${VERSION}-macos.zip"
