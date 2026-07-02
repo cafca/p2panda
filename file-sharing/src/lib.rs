@@ -1,5 +1,6 @@
 pub mod bridge;
 pub mod contacts;
+pub mod data_schema;
 pub mod diagnostics;
 pub mod download;
 pub mod manifest;
