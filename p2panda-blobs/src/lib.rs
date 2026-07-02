@@ -2,4 +2,14 @@
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-// TODO: Needs refactoring since p2panda-net refactor.
+mod blobs;
+mod pins;
+
+pub use blobs::Blobs;
+pub use iroh_blobs::Hash;
+pub use iroh_blobs::api::downloader::{DownloadProgress, DownloadProgressItem};
+pub use iroh_blobs::store::mem::MemStore;
+pub use pins::Pins;
+
+#[cfg(feature = "fs-store")]
+pub use iroh_blobs::store::fs::FsStore;
