@@ -2408,7 +2408,7 @@ mod tests {
 
     use anyhow::Result;
     use flume::Sender;
-    use p2panda_core::PrivateKey;
+    use p2panda_core::SigningKey;
     use tempfile::tempdir;
 
     use super::*;
@@ -2444,7 +2444,7 @@ mod tests {
         }
     }
 
-    fn write_node_key(data_dir: &std::path::Path, private_key: &PrivateKey) -> Result<()> {
+    fn write_node_key(data_dir: &std::path::Path, private_key: &SigningKey) -> Result<()> {
         fs::create_dir_all(data_dir)?;
         fs::write(data_dir.join("node.key"), private_key.as_bytes())?;
         Ok(())
@@ -2714,14 +2714,14 @@ mod tests {
     #[test]
     fn discovery_follow_action_updates_local_contacts_and_profile_graph() -> Result<()> {
         let data_dir = tempdir()?;
-        let local_key = PrivateKey::new();
-        let discovered_key = PrivateKey::new();
+        let local_key = SigningKey::generate();
+        let discovered_key = SigningKey::generate();
         write_node_key(data_dir.path(), &local_key)?;
 
         let mut contacts = ContactsStore::load(data_dir.path())?;
         let mut profile_store = ProfileStore::load_or_create(data_dir.path())?;
 
-        let discovered_profile_id = discovered_key.public_key().to_string();
+        let discovered_profile_id = discovered_key.verifying_key().to_string();
         let bridge = spawn_test_bridge({
             let expected_profile_id = discovered_profile_id.clone();
             move |_, command, _| {
@@ -2760,13 +2760,13 @@ mod tests {
     #[test]
     fn remove_contact_action_rebuilds_contacts_from_profile_graph() -> Result<()> {
         let data_dir = tempdir()?;
-        let local_key = PrivateKey::new();
-        let contact_key = PrivateKey::new();
+        let local_key = SigningKey::generate();
+        let contact_key = SigningKey::generate();
         write_node_key(data_dir.path(), &local_key)?;
 
         let mut contacts = ContactsStore::load(data_dir.path())?;
         let mut profile_store = ProfileStore::load_or_create(data_dir.path())?;
-        let contact_profile_id = contact_key.public_key().to_string();
+        let contact_profile_id = contact_key.verifying_key().to_string();
 
         profile_store.follow_contact(contact_profile_id.clone())?;
         reconcile_contacts_projection_from_profile(&mut contacts, &profile_store)?;

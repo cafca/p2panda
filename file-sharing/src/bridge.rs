@@ -15,7 +15,7 @@ use p2panda_blobs::Hash as BlobHash;
 use p2panda_net::addrs::{NodeTransportInfo, TransportAddress};
 use p2panda_net::discovery::{DiscoveryEvent, SessionRole};
 use p2panda_net::gossip::GossipEvent;
-use p2panda_net::iroh_endpoint::from_public_key;
+use p2panda_net::utils::from_verifying_key;
 use p2panda_net::supervisor::SupervisorEvent;
 use tracing::warn;
 
@@ -1331,7 +1331,7 @@ async fn collect_diagnostics_snapshot(state: &RuntimeState) -> Result<Diagnostic
 
         let peer_id_string = peer_id.to_string();
         let remotely_connected = endpoint
-            .remote_info(from_public_key(peer_id))
+            .remote_info(from_verifying_key(peer_id))
             .await
             .is_some();
         let connected = remotely_connected || connected_peer_ids.contains(&peer_id_string);
@@ -1375,7 +1375,7 @@ async fn collect_diagnostics_snapshot(state: &RuntimeState) -> Result<Diagnostic
 
     let mut gossip_topics = Vec::new();
     for topic_id in active_topic_ids {
-        let topic_id_str = bytes_to_hex(&topic_id);
+        let topic_id_str = bytes_to_hex(topic_id.as_bytes());
         let peer_count = topic_peer_counts
             .get(&topic_id_str)
             .map(HashSet::len)
@@ -1544,7 +1544,7 @@ fn drain_gossip_events(diagnostics: &mut RuntimeDiagnostics) {
                 let at_unix_ms = now_unix_ms();
                 match event {
                     GossipEvent::Joined { topic, nodes } => {
-                        let topic_id = bytes_to_hex(&topic);
+                        let topic_id = bytes_to_hex(topic.as_bytes());
                         let peers = diagnostics.topic_peers.entry(topic_id.clone()).or_default();
                         peers.clear();
                         for node in nodes {
@@ -1566,7 +1566,7 @@ fn drain_gossip_events(diagnostics: &mut RuntimeDiagnostics) {
                         );
                     }
                     GossipEvent::NeighbourUp { node, topic } => {
-                        let topic_id = bytes_to_hex(&topic);
+                        let topic_id = bytes_to_hex(topic.as_bytes());
                         let node_id = node.to_string();
                         diagnostics
                             .topic_peers
@@ -1588,7 +1588,7 @@ fn drain_gossip_events(diagnostics: &mut RuntimeDiagnostics) {
                         );
                     }
                     GossipEvent::NeighbourDown { node, topic } => {
-                        let topic_id = bytes_to_hex(&topic);
+                        let topic_id = bytes_to_hex(topic.as_bytes());
                         let node_id = node.to_string();
                         if let Some(peers) = diagnostics.topic_peers.get_mut(&topic_id) {
                             peers.remove(&node_id);
@@ -1605,7 +1605,7 @@ fn drain_gossip_events(diagnostics: &mut RuntimeDiagnostics) {
                         );
                     }
                     GossipEvent::Left { topic } => {
-                        let topic_id = bytes_to_hex(&topic);
+                        let topic_id = bytes_to_hex(topic.as_bytes());
                         diagnostics.topic_peers.remove(&topic_id);
                         push_bounded_history(
                             &mut diagnostics.connection_history,

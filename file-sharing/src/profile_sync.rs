@@ -5,12 +5,14 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use futures_util::StreamExt;
 use p2panda_core::cbor::encode_cbor;
-use p2panda_core::{Body, Operation, PrivateKey, PublicKey};
+use p2panda_core::{Body, Operation, SigningKey, VerifyingKey};
 use p2panda_net::addrs::NodeInfo;
-use p2panda_net::iroh_endpoint::{from_public_key, EndpointAddr, RelayUrl};
+use p2panda_net::iroh_endpoint::{EndpointAddr, RelayUrl};
+use p2panda_net::utils::from_verifying_key;
 use p2panda_net::sync::{SyncHandle, SyncSubscription};
-use p2panda_net::{LogSync, TopicId};
-use p2panda_store::MemoryStore;
+use p2panda_core::Topic;
+use p2panda_net::LogSync;
+use p2panda_store::SqliteStore;
 use p2panda_sync::protocols::TopicLogSyncEvent;
 use serde::{Deserialize, Serialize};
 
@@ -29,8 +31,8 @@ const CONTACT_PROFILE_SYNC_RETRY_INTERVAL_MILLIS: u64 = 1_000;
 const LOCAL_PROFILE_SYNC_OPERATIONS_KEY: &str = "local_profile_sync_operations";
 const DOMAIN_OPERATION_CACHE_VERSION: u8 = 1;
 
-type DomainStore = MemoryStore<DomainLogId, DomainExtensions>;
-type DomainSync = LogSync<DomainStore, DomainLogId, DomainExtensions, FileSharingTopicMap>;
+type DomainStore = SqliteStore;
+type DomainSync = LogSync<DomainStore, DomainLogId, DomainExtensions>;
 type DomainSyncHandle =
     SyncHandle<Operation<DomainExtensions>, TopicLogSyncEvent<DomainExtensions>>;
 type DomainSyncSubscription = SyncSubscription<TopicLogSyncEvent<DomainExtensions>>;
@@ -57,14 +59,14 @@ pub(crate) struct ProfileSyncService {
     data_dir: PathBuf,
     store: DomainStore,
     topic_map: FileSharingTopicMap,
-    domain: FileSharingOperationDomain<DomainStore>,
+    domain: FileSharingOperationDomain,
     log_sync: DomainSync,
     local_handle: DomainSyncHandle,
-    local_topic: TopicId,
+    local_topic: Topic,
     address_book: p2panda_net::AddressBook,
     relay_url: Option<RelayUrl>,
     local_profile_id: String,
-    local_private_key: PrivateKey,
+    local_private_key: SigningKey,
     local_record_count: usize,
     contact_streams: HashMap<String, ContactProfileSync>,
     _local_task: tokio::task::JoinHandle<()>,
@@ -74,30 +76,28 @@ impl ProfileSyncService {
     pub(crate) async fn new(node: &AppNode, local_profile_id: impl Into<String>) -> Result<Self> {
         let local_profile_id = local_profile_id.into();
         let local_private_key = load_private_key_from_data_dir(&node.data_dir)?;
-        let store = DomainStore::new();
-        let topic_map = FileSharingTopicMap::default();
-        let mut domain = FileSharingOperationDomain::new(store.clone(), topic_map.clone());
+        let store = p2panda_store::SqliteStoreBuilder::new()
+            .build()
+            .await
+            .context("failed to open in-memory domain operation store")?;
+        let topic_map = FileSharingTopicMap::new(store.clone());
+        let mut domain = FileSharingOperationDomain::new(store.clone());
         let local_record_count =
             migrate_local_profile_records(&mut domain, &local_private_key, &node.data_dir).await?;
         load_local_profile_sync_cache(&mut domain, &node.data_dir).await?;
 
         let topic = topic_map
-            .register_profile_author(&local_profile_id, local_private_key.public_key())
+            .register_profile_author(&local_profile_id, local_private_key.verifying_key())
             .await;
         node.address_book
             .add_topic(node.node_id(), topic)
             .await
             .context("failed to register local profile sync topic")?;
 
-        let log_sync = LogSync::builder(
-            store.clone(),
-            topic_map.clone(),
-            node.endpoint.clone(),
-            node.gossip.clone(),
-        )
-        .spawn()
-        .await
-        .context("failed to spawn LogSync for profile sync")?;
+        let log_sync = LogSync::builder(store.clone(), node.endpoint.clone(), node.gossip.clone())
+            .spawn()
+            .await
+            .context("failed to spawn LogSync for profile sync")?;
         let local_handle = log_sync
             .stream(topic, true)
             .await
@@ -109,10 +109,9 @@ impl ProfileSyncService {
         let local_task = spawn_local_profile_task(
             local_subscription,
             store.clone(),
-            topic_map.clone(),
             node.data_dir.clone(),
             local_profile_id.clone(),
-            local_private_key.public_key(),
+            local_private_key.verifying_key(),
         );
 
         reconcile_local_contacts_projection(&node.data_dir, &domain, &local_profile_id).await?;
@@ -155,11 +154,10 @@ impl ProfileSyncService {
             let operation =
                 append_profile_record(&mut self.domain, &self.local_private_key, record).await?;
             self.topic_map
-                .register_profile_author(&self.local_profile_id, operation.header.public_key)
+                .register_profile_author(&self.local_profile_id, operation.header.verifying_key)
                 .await;
             self.local_handle
                 .publish(operation)
-                .await
                 .context("failed to publish local profile operation to LogSync live mode")?;
         }
 
@@ -200,7 +198,7 @@ impl ProfileSyncService {
         let peer_ids = node_infos
             .into_iter()
             .map(|node_info| node_info.node_id)
-            .filter(|node_id| *node_id != self.local_private_key.public_key())
+            .filter(|node_id| *node_id != self.local_private_key.verifying_key())
             .collect::<Vec<_>>();
         if peer_ids.is_empty() {
             return Ok(0);
@@ -235,7 +233,7 @@ impl ProfileSyncService {
             .register_profile_author(profile_id, public_key)
             .await;
         self.address_book
-            .add_topic(self.local_private_key.public_key(), topic)
+            .add_topic(self.local_private_key.verifying_key(), topic)
             .await
             .with_context(|| {
                 format!("failed to register local interest in profile topic for {profile_id}")
@@ -259,7 +257,6 @@ impl ProfileSyncService {
             let task = spawn_contact_profile_task(
                 subscription,
                 self.store.clone(),
-                self.topic_map.clone(),
                 self.data_dir.clone(),
                 profile_id.to_owned(),
             );
@@ -300,13 +297,13 @@ impl ProfileSyncService {
         Ok(started)
     }
 
-    async fn seed_contact_bootstrap(&self, public_key: PublicKey) -> Result<()> {
+    async fn seed_contact_bootstrap(&self, public_key: VerifyingKey) -> Result<()> {
         let Some(relay_url) = self.relay_url.clone() else {
             return Ok(());
         };
 
         let endpoint_addr =
-            EndpointAddr::new(from_public_key(public_key)).with_relay_url(relay_url);
+            EndpointAddr::new(from_verifying_key(public_key)).with_relay_url(relay_url);
         self.address_book
             .insert_node_info(NodeInfo::from(endpoint_addr).bootstrap())
             .await
@@ -316,8 +313,8 @@ impl ProfileSyncService {
 }
 
 async fn migrate_local_profile_records(
-    domain: &mut FileSharingOperationDomain<DomainStore>,
-    private_key: &PrivateKey,
+    domain: &mut FileSharingOperationDomain,
+    private_key: &SigningKey,
     data_dir: &Path,
 ) -> Result<usize> {
     let records = load_profile_records(data_dir)
@@ -329,8 +326,8 @@ async fn migrate_local_profile_records(
 }
 
 async fn append_profile_record(
-    domain: &mut FileSharingOperationDomain<DomainStore>,
-    private_key: &PrivateKey,
+    domain: &mut FileSharingOperationDomain,
+    private_key: &SigningKey,
     record: &ProfileRecord,
 ) -> Result<Operation<DomainExtensions>> {
     let domain_operation = domain_operation_from_profile_record(record);
@@ -389,12 +386,11 @@ fn domain_operation_from_profile_record(record: &ProfileRecord) -> DomainOperati
 fn spawn_contact_profile_task(
     mut subscription: DomainSyncSubscription,
     store: DomainStore,
-    topic_map: FileSharingTopicMap,
     data_dir: std::path::PathBuf,
     profile_id: String,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut domain = FileSharingOperationDomain::new(store, topic_map.clone());
+        let mut domain = FileSharingOperationDomain::new(store);
 
         while let Some(message) = subscription.next().await {
             let Ok(message) = message else {
@@ -402,7 +398,7 @@ fn spawn_contact_profile_task(
             };
 
             match message.event {
-                TopicLogSyncEvent::Operation(operation) => {
+                TopicLogSyncEvent::OperationReceived { operation, .. } => {
                     if let Err(err) = domain.ingest_remote_operation(*operation).await {
                         tracing::warn!(
                             remote_profile_id = %profile_id,
@@ -417,7 +413,9 @@ fn spawn_contact_profile_task(
                         );
                     }
                 }
-                TopicLogSyncEvent::SyncFinished(_) | TopicLogSyncEvent::LiveModeStarted => {
+                TopicLogSyncEvent::SyncFinished { .. }
+                | TopicLogSyncEvent::LiveModeStarted
+                | TopicLogSyncEvent::SessionFinished { .. } => {
                     if let Err(err) = persist_contact_cache(&domain, &data_dir, &profile_id).await {
                         tracing::warn!(
                             remote_profile_id = %profile_id,
@@ -431,10 +429,8 @@ fn spawn_contact_profile_task(
                         "LogSync profile replication failed: {error}"
                     );
                 }
-                TopicLogSyncEvent::SyncStarted(_)
-                | TopicLogSyncEvent::SyncStatus(_)
-                | TopicLogSyncEvent::LiveModeFinished(_)
-                | TopicLogSyncEvent::Success => {}
+                TopicLogSyncEvent::SessionStarted
+                | TopicLogSyncEvent::SyncStarted { .. } => {}
             }
         }
     })
@@ -443,13 +439,12 @@ fn spawn_contact_profile_task(
 fn spawn_local_profile_task(
     mut subscription: DomainSyncSubscription,
     store: DomainStore,
-    topic_map: FileSharingTopicMap,
     data_dir: PathBuf,
     profile_id: String,
-    local_author: PublicKey,
+    local_author: VerifyingKey,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut domain = FileSharingOperationDomain::new(store, topic_map.clone());
+        let mut domain = FileSharingOperationDomain::new(store);
 
         while let Some(message) = subscription.next().await {
             let Ok(message) = message else {
@@ -457,7 +452,7 @@ fn spawn_local_profile_task(
             };
 
             match message.event {
-                TopicLogSyncEvent::Operation(operation) => {
+                TopicLogSyncEvent::OperationReceived { operation, .. } => {
                     if let Err(err) = domain.ingest_remote_operation(*operation).await {
                         tracing::warn!(
                             local_profile_id = %profile_id,
@@ -479,7 +474,9 @@ fn spawn_local_profile_task(
                         );
                     }
                 }
-                TopicLogSyncEvent::SyncFinished(_) | TopicLogSyncEvent::LiveModeStarted => {
+                TopicLogSyncEvent::SyncFinished { .. }
+                | TopicLogSyncEvent::LiveModeStarted
+                | TopicLogSyncEvent::SessionFinished { .. } => {
                     if let Err(err) = persist_local_profile_sync_state(
                         &domain,
                         &data_dir,
@@ -500,17 +497,15 @@ fn spawn_local_profile_task(
                         "LogSync local profile replication failed: {error}"
                     );
                 }
-                TopicLogSyncEvent::SyncStarted(_)
-                | TopicLogSyncEvent::SyncStatus(_)
-                | TopicLogSyncEvent::LiveModeFinished(_)
-                | TopicLogSyncEvent::Success => {}
+                TopicLogSyncEvent::SessionStarted
+                | TopicLogSyncEvent::SyncStarted { .. } => {}
             }
         }
     })
 }
 
 async fn persist_contact_cache(
-    domain: &FileSharingOperationDomain<DomainStore>,
+    domain: &FileSharingOperationDomain,
     data_dir: &Path,
     profile_id: &str,
 ) -> Result<()> {
@@ -522,10 +517,10 @@ async fn persist_contact_cache(
 }
 
 async fn persist_local_profile_sync_state(
-    domain: &FileSharingOperationDomain<DomainStore>,
+    domain: &FileSharingOperationDomain,
     data_dir: &Path,
     profile_id: &str,
-    local_author: PublicKey,
+    local_author: VerifyingKey,
 ) -> Result<()> {
     let operations = domain
         .operations_for_profile(profile_id)
@@ -551,7 +546,7 @@ async fn persist_local_profile_sync_state(
 
 async fn reconcile_local_contacts_projection(
     data_dir: &Path,
-    domain: &FileSharingOperationDomain<DomainStore>,
+    domain: &FileSharingOperationDomain,
     profile_id: &str,
 ) -> Result<()> {
     let follows = domain.read_followed_contact_state(profile_id).await?;
@@ -564,7 +559,7 @@ async fn reconcile_local_contacts_projection(
 }
 
 async fn load_local_profile_sync_cache(
-    domain: &mut FileSharingOperationDomain<DomainStore>,
+    domain: &mut FileSharingOperationDomain,
     data_dir: &Path,
 ) -> Result<()> {
     let operations = load_local_profile_sync_operations(data_dir)
@@ -638,8 +633,8 @@ fn write_local_profile_sync_operations(
 
 async fn wait_for_topic_registration(
     address_book: &p2panda_net::AddressBook,
-    topic: TopicId,
-    public_key: PublicKey,
+    topic: Topic,
+    public_key: VerifyingKey,
     profile_id: &str,
 ) -> Result<()> {
     let timeout = tokio::time::sleep(Duration::from_secs(5));
@@ -663,7 +658,7 @@ async fn wait_for_topic_registration(
     }
 }
 
-fn normalize_profile_id(profile_id: &str) -> Result<PublicKey> {
+fn normalize_profile_id(profile_id: &str) -> Result<VerifyingKey> {
     profile_id
         .parse()
         .with_context(|| format!("invalid profile ID {profile_id}"))
@@ -675,7 +670,7 @@ mod tests {
 
     use anyhow::Result;
     use iroh::test_utils::run_relay_server;
-    use p2panda_net::test_utils::setup_logging;
+    use p2panda_core::test_utils::setup_logging;
     use tempfile::tempdir;
 
     use super::*;
@@ -849,7 +844,7 @@ mod tests {
         let mut sync = ProfileSyncService::new(&node, profile_id.clone()).await?;
         sync.refresh_local_profile().await?;
 
-        let reduced = FileSharingOperationDomain::new(sync.store.clone(), sync.topic_map.clone())
+        let reduced = FileSharingOperationDomain::new(sync.store.clone())
             .read_profile_state(&profile_id)
             .await?
             .expect("local profile state to exist");
@@ -901,9 +896,9 @@ mod tests {
         .await?;
         let mut profile = ProfileStore::load_or_create(dir.path())?;
         let profile_id = profile.profile().profile_id.clone();
-        let stale_contact_id = PrivateKey::new().public_key().to_string();
-        let kept_contact_id = PrivateKey::new().public_key().to_string();
-        let removed_contact_id = PrivateKey::new().public_key().to_string();
+        let stale_contact_id = SigningKey::generate().verifying_key().to_string();
+        let kept_contact_id = SigningKey::generate().verifying_key().to_string();
+        let removed_contact_id = SigningKey::generate().verifying_key().to_string();
 
         {
             let mut contacts = ContactsStore::load(dir.path())?;
@@ -926,7 +921,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(profile_ids, vec![kept_contact_id.as_str()]);
 
-        let reduced = FileSharingOperationDomain::new(sync.store.clone(), sync.topic_map.clone())
+        let reduced = FileSharingOperationDomain::new(sync.store.clone())
             .read_profile_state(&profile_id)
             .await?
             .expect("local profile state to exist");
@@ -1060,7 +1055,7 @@ mod tests {
         first_sync.sync_local_profile_peers().await?;
         second_sync.sync_local_profile_peers().await?;
 
-        let followed_contact_id = PrivateKey::new().public_key().to_string();
+        let followed_contact_id = SigningKey::generate().verifying_key().to_string();
         {
             let mut first_profile = ProfileStore::load_or_create(first_dir.path())?;
             assert!(first_profile.follow_contact(followed_contact_id.clone())?);
@@ -1177,8 +1172,8 @@ mod tests {
         Ok(())
     }
 
-    fn relay_bootstrap_node_info(node_id: PublicKey, relay_url: RelayUrl) -> NodeInfo {
-        NodeInfo::from(EndpointAddr::new(from_public_key(node_id)).with_relay_url(relay_url))
+    fn relay_bootstrap_node_info(node_id: VerifyingKey, relay_url: RelayUrl) -> NodeInfo {
+        NodeInfo::from(EndpointAddr::new(from_verifying_key(node_id)).with_relay_url(relay_url))
             .bootstrap()
     }
 }

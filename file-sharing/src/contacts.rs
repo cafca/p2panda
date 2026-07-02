@@ -1,10 +1,10 @@
 use std::path::{Path, PathBuf};
 
-use p2panda_net::timestamp::Timestamp;
-use p2panda_store::sqlite::store::Pool;
+use p2panda_core::Timestamp;
+use p2panda_store::sqlite::SqlitePool;
 
 use anyhow::{Context, Result};
-use p2panda_core::PublicKey;
+use p2panda_core::VerifyingKey;
 use serde::{Deserialize, Serialize};
 
 use crate::operation_domain::{ReducedContactFollowState, ReducedProfileState, ReducedShareState};
@@ -116,7 +116,7 @@ struct PersistedContacts {
 #[derive(Debug, bevy::prelude::Resource)]
 pub struct ContactsStore {
     path: PathBuf,
-    pool: Pool,
+    pool: SqlitePool,
     state: PersistedContacts,
 }
 
@@ -491,7 +491,7 @@ impl ContactSnapshot {
     }
 }
 
-fn load_contact_cache_from_pool(pool: &Pool, profile_id: &str) -> Result<ContactSnapshot> {
+fn load_contact_cache_from_pool(pool: &SqlitePool, profile_id: &str) -> Result<ContactSnapshot> {
     let state: ReducedProfileState = load_contact_cache_entry(pool, profile_id)?
         .ok_or_else(|| anyhow::anyhow!("missing reduced profile cache for {profile_id}"))?;
     ContactSnapshot::from_reduced_state(profile_id, state)
@@ -520,7 +520,7 @@ fn normalize_profile_id(profile_id: String) -> Result<String> {
     if profile_id.is_empty() {
         anyhow::bail!("profile ID cannot be empty");
     }
-    let _: PublicKey = profile_id
+    let _: VerifyingKey = profile_id
         .parse()
         .with_context(|| format!("invalid profile ID {profile_id}"))?;
     Ok(profile_id)
@@ -536,7 +536,7 @@ mod tests {
 
     use anyhow::Result;
     use p2panda_blobs::Hash as BlobHash;
-    use p2panda_core::PrivateKey;
+    use p2panda_core::SigningKey;
     use tempfile::tempdir;
 
     use super::*;
@@ -544,7 +544,7 @@ mod tests {
     use crate::persist::ShareRecord;
     use crate::profile::ProfileStore;
 
-    fn write_node_key(data_dir: &Path, private_key: &PrivateKey) -> Result<()> {
+    fn write_node_key(data_dir: &Path, private_key: &SigningKey) -> Result<()> {
         fs::create_dir_all(data_dir)?;
         fs::write(data_dir.join("node.key"), private_key.as_bytes())?;
         Ok(())
@@ -587,8 +587,8 @@ mod tests {
     #[test]
     fn follow_persists_and_rejects_invalid_ids_or_duplicates() -> Result<()> {
         let dir = tempdir()?;
-        let private_key = PrivateKey::new();
-        let profile_id = private_key.public_key().to_string();
+        let private_key = SigningKey::generate();
+        let profile_id = private_key.verifying_key().to_string();
         let mut store = ContactsStore::load(dir.path())?;
 
         assert!(store.follow_contact("not-a-key").is_err());
@@ -610,7 +610,7 @@ mod tests {
     #[test]
     fn contacts_store_persists_without_legacy_json_files() -> Result<()> {
         let dir = tempdir()?;
-        let profile_id = PrivateKey::new().public_key().to_string();
+        let profile_id = SigningKey::generate().verifying_key().to_string();
         let mut store = ContactsStore::load(dir.path())?;
         store.follow_contact(profile_id)?;
 
@@ -626,8 +626,8 @@ mod tests {
     fn refresh_reads_reduced_profile_cache_and_lists_shares() -> Result<()> {
         let sharer_dir = tempdir()?;
         let follower_dir = tempdir()?;
-        let sharer_key = PrivateKey::new();
-        let follower_key = PrivateKey::new();
+        let sharer_key = SigningKey::generate();
+        let follower_key = SigningKey::generate();
         write_node_key(sharer_dir.path(), &sharer_key)?;
         write_node_key(follower_dir.path(), &follower_key)?;
 
@@ -673,8 +673,8 @@ mod tests {
     fn refresh_ignores_inactive_share_tombstones_in_reduced_profile_cache() -> Result<()> {
         let sharer_dir = tempdir()?;
         let follower_dir = tempdir()?;
-        let sharer_key = PrivateKey::new();
-        let follower_key = PrivateKey::new();
+        let sharer_key = SigningKey::generate();
+        let follower_key = SigningKey::generate();
         write_node_key(sharer_dir.path(), &sharer_key)?;
         write_node_key(follower_dir.path(), &follower_key)?;
 
@@ -708,8 +708,8 @@ mod tests {
     #[test]
     fn refresh_reports_offline_contacts_clearly() -> Result<()> {
         let dir = tempdir()?;
-        let private_key = PrivateKey::new();
-        let profile_id = private_key.public_key().to_string();
+        let private_key = SigningKey::generate();
+        let profile_id = private_key.verifying_key().to_string();
         let mut store = ContactsStore::load(dir.path())?;
         store.follow_contact(profile_id.clone())?;
 
@@ -729,7 +729,7 @@ mod tests {
     #[test]
     fn refresh_reads_reduced_profile_state_cache() -> Result<()> {
         let dir = tempdir()?;
-        let profile_id = PrivateKey::new().public_key().to_string();
+        let profile_id = SigningKey::generate().verifying_key().to_string();
         write_contact_cache(
             dir.path(),
             &profile_id,
@@ -744,7 +744,7 @@ mod tests {
                 source_contact_profile_id: None,
                 source_contact_display_name: None,
             }],
-            vec![PrivateKey::new().public_key().to_string()],
+            vec![SigningKey::generate().verifying_key().to_string()],
         )?;
 
         let mut contacts = ContactsStore::load(dir.path())?;
@@ -762,8 +762,8 @@ mod tests {
     #[test]
     fn removing_contact_does_not_touch_downloaded_files() -> Result<()> {
         let dir = tempdir()?;
-        let private_key = PrivateKey::new();
-        let profile_id = private_key.public_key().to_string();
+        let private_key = SigningKey::generate();
+        let profile_id = private_key.verifying_key().to_string();
         let downloaded_file = dir.path().join("downloads").join("kept.txt");
         fs::create_dir_all(downloaded_file.parent().unwrap())?;
         fs::write(&downloaded_file, b"keep me")?;
@@ -780,9 +780,9 @@ mod tests {
     #[test]
     fn reconcile_followed_contacts_rebuilds_projection_from_operation_state() -> Result<()> {
         let dir = tempdir()?;
-        let first_profile_id = PrivateKey::new().public_key().to_string();
-        let second_profile_id = PrivateKey::new().public_key().to_string();
-        let third_profile_id = PrivateKey::new().public_key().to_string();
+        let first_profile_id = SigningKey::generate().verifying_key().to_string();
+        let second_profile_id = SigningKey::generate().verifying_key().to_string();
+        let third_profile_id = SigningKey::generate().verifying_key().to_string();
         let mut contacts = ContactsStore::load(dir.path())?;
 
         contacts.follow_contact(first_profile_id.clone())?;
@@ -847,13 +847,13 @@ mod tests {
     #[test]
     fn reconcile_followed_contacts_from_records_rebuilds_projection() -> Result<()> {
         let dir = tempdir()?;
-        let local_key = PrivateKey::new();
+        let local_key = SigningKey::generate();
         write_node_key(dir.path(), &local_key)?;
 
         let mut profile = ProfileStore::load_or_create(dir.path())?;
         let local_profile_id = profile.profile().profile_id.clone();
-        let kept_contact_id = PrivateKey::new().public_key().to_string();
-        let removed_contact_id = PrivateKey::new().public_key().to_string();
+        let kept_contact_id = SigningKey::generate().verifying_key().to_string();
+        let removed_contact_id = SigningKey::generate().verifying_key().to_string();
 
         profile.follow_contact(kept_contact_id.clone())?;
         profile.follow_contact(removed_contact_id.clone())?;
@@ -884,11 +884,11 @@ mod tests {
         let bob_dir = tempdir()?;
         let erin_dir = tempdir()?;
 
-        let viewer_key = PrivateKey::new();
-        let alice_key = PrivateKey::new();
-        let dana_key = PrivateKey::new();
-        let bob_key = PrivateKey::new();
-        let erin_key = PrivateKey::new();
+        let viewer_key = SigningKey::generate();
+        let alice_key = SigningKey::generate();
+        let dana_key = SigningKey::generate();
+        let bob_key = SigningKey::generate();
+        let erin_key = SigningKey::generate();
 
         write_node_key(viewer_dir.path(), &viewer_key)?;
         write_node_key(alice_dir.path(), &alice_key)?;
@@ -1008,8 +1008,8 @@ mod tests {
     fn malformed_second_degree_graph_data_is_ignored_without_crashing() -> Result<()> {
         let viewer_dir = tempdir()?;
         let source_dir = tempdir()?;
-        let viewer_key = PrivateKey::new();
-        let source_key = PrivateKey::new();
+        let viewer_key = SigningKey::generate();
+        let source_key = SigningKey::generate();
         write_node_key(viewer_dir.path(), &viewer_key)?;
         write_node_key(source_dir.path(), &source_key)?;
 

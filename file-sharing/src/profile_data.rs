@@ -5,8 +5,8 @@ use std::sync::mpsc;
 use std::thread;
 
 use anyhow::{Context, Result};
-use p2panda_net::timestamp::Timestamp;
-use p2panda_store::sqlite::store::{run_pending_migrations, Pool};
+use p2panda_core::Timestamp;
+use p2panda_store::sqlite::{run_pending_migrations, SqlitePool};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use sqlx::query;
@@ -19,7 +19,7 @@ const CONTACT_CACHE_TABLE: &str = "profile_store_contact_caches_v1";
 
 pub(crate) struct ProfileDataStore {
     pub(crate) path: PathBuf,
-    pub(crate) pool: Pool,
+    pub(crate) pool: SqlitePool,
     pub(crate) load_warning: Option<String>,
 }
 
@@ -51,7 +51,7 @@ pub(crate) fn profile_data_store_path(data_dir: &Path) -> PathBuf {
     data_dir.join(PROFILE_DB_FILE_NAME)
 }
 
-pub(crate) fn load_json_key<T>(pool: &Pool, key: &str) -> Result<Option<T>>
+pub(crate) fn load_json_key<T>(pool: &SqlitePool, key: &str) -> Result<Option<T>>
 where
     T: DeserializeOwned + Send + 'static,
 {
@@ -73,7 +73,7 @@ where
         .transpose()
 }
 
-pub(crate) fn write_json_key<T>(pool: &Pool, key: &str, value: &T) -> Result<()>
+pub(crate) fn write_json_key<T>(pool: &SqlitePool, key: &str, value: &T) -> Result<()>
 where
     T: Serialize + Send + Sync,
 {
@@ -95,7 +95,7 @@ where
     })
 }
 
-pub(crate) fn load_contact_cache<T>(pool: &Pool, profile_id: &str) -> Result<Option<T>>
+pub(crate) fn load_contact_cache<T>(pool: &SqlitePool, profile_id: &str) -> Result<Option<T>>
 where
     T: DeserializeOwned + Send + 'static,
 {
@@ -117,7 +117,7 @@ where
         .transpose()
 }
 
-pub(crate) fn write_contact_cache<T>(pool: &Pool, profile_id: &str, value: &T) -> Result<()>
+pub(crate) fn write_contact_cache<T>(pool: &SqlitePool, profile_id: &str, value: &T) -> Result<()>
 where
     T: Serialize + Send + Sync,
 {
@@ -139,7 +139,7 @@ where
     })
 }
 
-pub(crate) fn has_contact_cache(pool: &Pool, profile_id: &str) -> Result<bool> {
+pub(crate) fn has_contact_cache(pool: &SqlitePool, profile_id: &str) -> Result<bool> {
     let pool = pool.clone();
     let profile_id = profile_id.to_owned();
     block_on_db(async move {
@@ -155,7 +155,7 @@ pub(crate) fn has_contact_cache(pool: &Pool, profile_id: &str) -> Result<bool> {
     })
 }
 
-fn try_open_profile_data_store(path: &Path) -> Result<Pool> {
+fn try_open_profile_data_store(path: &Path) -> Result<SqlitePool> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).with_context(|| {
             format!(
@@ -186,7 +186,7 @@ fn try_open_profile_data_store(path: &Path) -> Result<Pool> {
     })
 }
 
-async fn ensure_profile_tables(pool: &Pool) -> Result<()> {
+async fn ensure_profile_tables(pool: &SqlitePool) -> Result<()> {
     query(&format!(
         "CREATE TABLE IF NOT EXISTS {KV_TABLE} (
             key TEXT PRIMARY KEY NOT NULL,

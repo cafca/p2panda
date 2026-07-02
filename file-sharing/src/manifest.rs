@@ -1,7 +1,7 @@
 use anyhow::{anyhow, ensure, Context, Result};
 use p2panda_core::cbor::{decode_cbor, encode_cbor};
-use p2panda_core::{validate_operation, Body, Header, Operation, PrivateKey, PublicKey};
-use p2panda_net::timestamp::HybridTimestamp;
+use p2panda_core::{validate_operation, Body, Header, Operation, SigningKey, VerifyingKey};
+use p2panda_core::timestamp::HybridTimestamp;
 use serde::{Deserialize, Serialize};
 
 const HEADER_LENGTH_PREFIX_SIZE: usize = 4;
@@ -43,7 +43,7 @@ pub struct SignedManifest {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedManifest {
-    pub public_key: PublicKey,
+    pub verifying_key: VerifyingKey,
     pub data: ManifestData,
     pub metadata: ManifestHeaderMetadata,
     pub ordering_timestamp: HybridTimestamp,
@@ -110,22 +110,19 @@ impl ManifestHeaderMetadata {
 }
 
 impl SignedManifest {
-    pub fn new(private_key: &PrivateKey, data: &ManifestData) -> Result<Self> {
+    pub fn new(private_key: &SigningKey, data: &ManifestData) -> Result<Self> {
         let body_bytes = data.encode()?;
         let body = Body::from(body_bytes);
         let ordering_timestamp = HybridTimestamp::now();
-        let timestamp = hybrid_timestamp_unix_micros(ordering_timestamp);
 
         let mut header = Header {
             version: 1,
-            public_key: private_key.public_key(),
+            verifying_key: private_key.verifying_key(),
             signature: None,
             payload_size: body.size(),
             payload_hash: Some(body.hash()),
-            timestamp,
             seq_num: 0,
             backlink: None,
-            previous: vec![],
             extensions: ManifestHeaderExtensions {
                 metadata: ManifestHeaderMetadata::from_manifest(data),
                 ordering_timestamp,
@@ -198,22 +195,14 @@ impl SignedManifest {
         metadata.validate_against(&data)?;
 
         let ordering_timestamp = self.header.extensions.ordering_timestamp;
-        ensure!(
-            hybrid_timestamp_unix_micros(ordering_timestamp) == self.header.timestamp,
-            "manifest ordering timestamp does not match header timestamp"
-        );
 
         Ok(VerifiedManifest {
-            public_key: self.header.public_key,
+            verifying_key: self.header.verifying_key,
             data,
             metadata,
             ordering_timestamp,
         })
     }
-}
-
-fn hybrid_timestamp_unix_micros(timestamp: HybridTimestamp) -> u64 {
-    u64::from(timestamp.timestamp())
 }
 
 pub fn encode_manifest_data(data: &ManifestData) -> Result<Vec<u8>> {
@@ -224,7 +213,7 @@ pub fn decode_manifest_data(bytes: &[u8]) -> Result<ManifestData> {
     ManifestData::decode(bytes)
 }
 
-pub fn sign_manifest(private_key: &PrivateKey, data: &ManifestData) -> Result<SignedManifest> {
+pub fn sign_manifest(private_key: &SigningKey, data: &ManifestData) -> Result<SignedManifest> {
     SignedManifest::new(private_key, data)
 }
 
@@ -266,14 +255,14 @@ mod tests {
 
     #[test]
     fn signed_manifest_roundtrips() {
-        let private_key = PrivateKey::new();
+        let private_key = SigningKey::generate();
         let manifest = sample_manifest();
 
         let signed = sign_manifest(&private_key, &manifest).unwrap();
         let bytes = serialize_manifest(&signed).unwrap();
         let verified = verify_manifest(&bytes).unwrap();
 
-        assert_eq!(verified.public_key, private_key.public_key());
+        assert_eq!(verified.verifying_key, private_key.verifying_key());
         assert_eq!(verified.data, manifest);
         assert_eq!(
             verified.metadata,
@@ -284,7 +273,7 @@ mod tests {
 
     #[test]
     fn tampered_body_fails_verification() {
-        let private_key = PrivateKey::new();
+        let private_key = SigningKey::generate();
         let manifest = sample_manifest();
 
         let signed = sign_manifest(&private_key, &manifest).unwrap();
@@ -318,35 +307,30 @@ mod tests {
 
     #[test]
     fn manifest_metadata_is_available_from_header_extensions() {
-        let private_key = PrivateKey::new();
+        let private_key = SigningKey::generate();
         let manifest = sample_manifest();
 
         let signed = sign_manifest(&private_key, &manifest).unwrap();
         let expected_metadata = ManifestHeaderMetadata::from_manifest(&manifest);
 
         assert_eq!(signed.metadata(), &expected_metadata);
-        assert_eq!(
-            u64::from(signed.ordering_timestamp().timestamp()),
-            signed.header.timestamp
-        );
+        assert!(u64::from(signed.ordering_timestamp().to_parts().0) > 0);
     }
 
     #[test]
     fn invalid_extension_metadata_fails_verification() {
-        let private_key = PrivateKey::new();
+        let private_key = SigningKey::generate();
         let manifest = sample_manifest();
         let body = Body::from(manifest.encode().unwrap());
         let ordering_timestamp = HybridTimestamp::now();
         let mut header = Header {
             version: 1,
-            public_key: private_key.public_key(),
+            verifying_key: private_key.verifying_key(),
             signature: None,
             payload_size: body.size(),
             payload_hash: Some(body.hash()),
-            timestamp: u64::from(ordering_timestamp.timestamp()),
             seq_num: 0,
             backlink: None,
-            previous: vec![],
             extensions: ManifestHeaderExtensions {
                 metadata: ManifestHeaderMetadata {
                     manifest_version: MANIFEST_VERSION,
@@ -373,20 +357,18 @@ mod tests {
             ordering_timestamp: String,
         }
 
-        let private_key = PrivateKey::new();
+        let private_key = SigningKey::generate();
         let manifest = sample_manifest();
         let body_bytes = manifest.encode().unwrap();
         let body = Body::from(body_bytes.clone());
         let mut malformed_header = Header {
             version: 1,
-            public_key: private_key.public_key(),
+            verifying_key: private_key.verifying_key(),
             signature: None,
             payload_size: body.size(),
             payload_hash: Some(body.hash()),
-            timestamp: 0,
             seq_num: 0,
             backlink: None,
-            previous: vec![],
             extensions: MalformedManifestHeaderExtensions {
                 metadata: "not-a-manifest-metadata-map".to_string(),
                 ordering_timestamp: "not-a-hybrid-timestamp".to_string(),

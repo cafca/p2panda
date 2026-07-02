@@ -7,8 +7,8 @@ use std::thread;
 use anyhow::{Context, Result};
 use p2panda_blobs::Hash as BlobHash;
 use p2panda_net::gossip::GossipHandle;
-use p2panda_net::TopicId;
-use p2panda_store::sqlite::store::{run_pending_migrations, Pool};
+use p2panda_core::Topic;
+use p2panda_store::sqlite::{run_pending_migrations, SqlitePool};
 use serde::{Deserialize, Serialize};
 use sqlx::query;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
@@ -155,7 +155,7 @@ impl From<&ShareSession> for ShareRecord {
 
 pub struct RecoveredShare {
     pub record: ShareRecord,
-    pub topic_id: TopicId,
+    pub topic_id: Topic,
     pub handle: GossipHandle,
 }
 
@@ -167,7 +167,7 @@ pub struct RecoveryState {
 #[derive(Debug, Clone)]
 pub struct StateStore {
     path: PathBuf,
-    pool: Pool,
+    pool: SqlitePool,
     state: PersistedState,
 }
 
@@ -360,7 +360,7 @@ fn state_db_path(data_dir: &Path) -> PathBuf {
     data_dir.join(STATE_DB_FILE_NAME)
 }
 
-fn open_state_pool(path: &Path) -> Result<Pool> {
+fn open_state_pool(path: &Path) -> Result<SqlitePool> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create state directory {}", parent.display()))?;
@@ -387,7 +387,7 @@ fn open_state_pool(path: &Path) -> Result<Pool> {
     })
 }
 
-async fn ensure_state_tables(pool: &Pool) -> Result<()> {
+async fn ensure_state_tables(pool: &SqlitePool) -> Result<()> {
     query(
         "CREATE TABLE IF NOT EXISTS transfer_state_meta_v1 (
             key TEXT PRIMARY KEY NOT NULL,
@@ -451,7 +451,7 @@ async fn ensure_state_tables(pool: &Pool) -> Result<()> {
     Ok(())
 }
 
-fn load_state_from_sqlite(pool: &Pool) -> Result<PersistedState> {
+fn load_state_from_sqlite(pool: &SqlitePool) -> Result<PersistedState> {
     let pool = pool.clone();
     block_on_db(async move {
         let global_paused = query("SELECT value FROM transfer_state_meta_v1 WHERE key = ?")
@@ -535,7 +535,7 @@ fn load_state_from_sqlite(pool: &Pool) -> Result<PersistedState> {
     })
 }
 
-fn write_state_snapshot(pool: &Pool, state: &PersistedState) -> Result<()> {
+fn write_state_snapshot(pool: &SqlitePool, state: &PersistedState) -> Result<()> {
     let pool = pool.clone();
     let snapshot = state.clone();
     block_on_db(async move {
@@ -591,7 +591,7 @@ fn write_state_snapshot(pool: &Pool, state: &PersistedState) -> Result<()> {
     })
 }
 
-fn set_global_paused_in_sqlite(pool: &Pool, paused: bool) -> Result<()> {
+fn set_global_paused_in_sqlite(pool: &SqlitePool, paused: bool) -> Result<()> {
     let pool = pool.clone();
     block_on_db(async move {
         query(
@@ -608,7 +608,7 @@ fn set_global_paused_in_sqlite(pool: &Pool, paused: bool) -> Result<()> {
     })
 }
 
-fn upsert_share_in_sqlite(pool: &Pool, record: &ShareRecord) -> Result<()> {
+fn upsert_share_in_sqlite(pool: &SqlitePool, record: &ShareRecord) -> Result<()> {
     let pool = pool.clone();
     let record = record.clone();
     block_on_db(async move {
@@ -650,7 +650,7 @@ fn upsert_share_in_sqlite(pool: &Pool, record: &ShareRecord) -> Result<()> {
     })
 }
 
-fn attach_profile_to_shares_in_sqlite(pool: &Pool, profile_id: &str) -> Result<usize> {
+fn attach_profile_to_shares_in_sqlite(pool: &SqlitePool, profile_id: &str) -> Result<usize> {
     let pool = pool.clone();
     let profile_id = profile_id.to_owned();
     block_on_db(async move {
@@ -668,7 +668,7 @@ fn attach_profile_to_shares_in_sqlite(pool: &Pool, profile_id: &str) -> Result<u
     })
 }
 
-fn upsert_download_in_sqlite(pool: &Pool, record: &DownloadRecord) -> Result<()> {
+fn upsert_download_in_sqlite(pool: &SqlitePool, record: &DownloadRecord) -> Result<()> {
     let pool = pool.clone();
     let record = record.clone();
     block_on_db(async move {
@@ -700,7 +700,7 @@ fn upsert_download_in_sqlite(pool: &Pool, record: &DownloadRecord) -> Result<()>
     })
 }
 
-fn delete_share_from_sqlite(pool: &Pool, share_code: &str) -> Result<bool> {
+fn delete_share_from_sqlite(pool: &SqlitePool, share_code: &str) -> Result<bool> {
     let pool = pool.clone();
     let share_code = share_code.to_owned();
     block_on_db(async move {
@@ -713,7 +713,7 @@ fn delete_share_from_sqlite(pool: &Pool, share_code: &str) -> Result<bool> {
     })
 }
 
-fn delete_download_from_sqlite(pool: &Pool, share_code: &str, output_dir: &Path) -> Result<bool> {
+fn delete_download_from_sqlite(pool: &SqlitePool, share_code: &str, output_dir: &Path) -> Result<bool> {
     let pool = pool.clone();
     let share_code = share_code.to_owned();
     let output_dir = path_to_string(output_dir);
@@ -758,7 +758,7 @@ fn insert_share_query<'a>(
     .bind(sqlite_bool_int(record.paused))
 }
 
-async fn ensure_share_manifest_column(pool: &Pool) -> Result<()> {
+async fn ensure_share_manifest_column(pool: &SqlitePool) -> Result<()> {
     let columns = query("PRAGMA table_info(transfer_active_shares_v1)")
         .fetch_all(pool)
         .await

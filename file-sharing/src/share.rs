@@ -4,7 +4,7 @@ use std::path::{Component, Path, PathBuf};
 use anyhow::{bail, ensure, Context, Result};
 use p2panda_blobs::Hash as BlobHash;
 use p2panda_net::gossip::GossipHandle;
-use p2panda_net::TopicId;
+use p2panda_core::Topic;
 use tracing::warn;
 
 use crate::manifest::{serialize_manifest, sign_manifest, ManifestData, ManifestFile};
@@ -29,7 +29,7 @@ pub struct ShareSession {
     pub total_bytes: u64,
     pub files: Vec<SharedFile>,
     pub owner_profile_id: Option<String>,
-    topic_id: TopicId,
+    topic_id: Topic,
     _gossip_handle: GossipHandle,
 }
 
@@ -38,7 +38,7 @@ struct ShareMetadataPublisher {
 }
 
 impl ShareSession {
-    pub fn topic_id(&self) -> TopicId {
+    pub fn topic_id(&self) -> Topic {
         self.topic_id
     }
 
@@ -112,7 +112,7 @@ pub async fn share_directory_for_owner(
 
     pin_shared_blobs(node, collection_hash, &imported_files).await?;
 
-    let topic_id: TopicId = crate::share_code::derive_topic(*collection_hash.as_bytes());
+    let topic_id: Topic = crate::share_code::derive_topic(*collection_hash.as_bytes());
     let gossip_handle = node
         .join_topic(topic_id)
         .await
@@ -149,7 +149,7 @@ fn sign_manifest_from_node(
     let key_bytes: [u8; 32] = key_bytes
         .try_into()
         .map_err(|_| anyhow::anyhow!("invalid persisted node key length"))?;
-    let private_key = p2panda_core::PrivateKey::from_bytes(&key_bytes);
+    let private_key = p2panda_core::SigningKey::from_bytes(&key_bytes);
     sign_manifest(&private_key, manifest)
 }
 

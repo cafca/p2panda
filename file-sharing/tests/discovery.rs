@@ -2,7 +2,7 @@ use std::fs;
 use std::path::Path;
 
 use anyhow::Result;
-use p2panda_core::PrivateKey;
+use p2panda_core::SigningKey;
 use p2panda_file_sharing_gui::contacts::{write_contact_cache, ContactsStore, DiscoverySort};
 use p2panda_file_sharing_gui::download::download_share;
 use p2panda_file_sharing_gui::node::{AppNode, NodeOptions};
@@ -21,8 +21,8 @@ async fn discover_second_degree_profile_browse_shares_and_download() -> Result<(
     let source_dir = tempdir()?;
     let output_dir = tempdir()?;
 
-    write_node_key(alice_dir.path(), &PrivateKey::new())?;
-    write_node_key(dana_dir.path(), &PrivateKey::new())?;
+    write_node_key(alice_dir.path(), &SigningKey::generate())?;
+    write_node_key(dana_dir.path(), &SigningKey::generate())?;
 
     let source_root = source_dir.path().join("photos");
     fs::create_dir_all(source_root.join("nested"))?;
@@ -127,7 +127,7 @@ fn assert_tree_matches(expected_root: &Path, actual_root: &Path) -> Result<()> {
     assert_tree_matches_recursive(expected_root, expected_root, actual_root)
 }
 
-fn write_node_key(data_dir: &Path, private_key: &PrivateKey) -> Result<()> {
+fn write_node_key(data_dir: &Path, private_key: &SigningKey) -> Result<()> {
     fs::create_dir_all(data_dir)?;
     fs::write(data_dir.join("node.key"), private_key.as_bytes())?;
     Ok(())
