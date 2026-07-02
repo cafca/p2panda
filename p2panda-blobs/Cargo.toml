@@ -20,3 +20,21 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [lints]
 workspace = true
+
+[features]
+default = ["fs-store"]
+fs-store = ["iroh-blobs/fs-store"]
+
+[dependencies]
+anyhow = "1"
+futures-util = { workspace = true }
+iroh-blobs = { version = "0.103", default-features = false }
+p2panda-net = { workspace = true, default-features = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true, features = ["rt"] }
+
+[dev-dependencies]
+p2panda-core = { workspace = true, default-features = true, features = ["test_utils"] }
+p2panda-net = { workspace = true, default-features = true, features = ["test_utils"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
