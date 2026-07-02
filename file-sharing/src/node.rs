@@ -12,11 +12,15 @@ use p2panda_net::iroh_endpoint::RelayUrl;
 use p2panda_net::iroh_mdns::MdnsDiscoveryMode;
 use p2panda_net::supervisor::SupervisorEvent;
 use p2panda_net::{AddressBook, Discovery, Endpoint, Gossip, MdnsDiscovery, Supervisor};
+use p2panda_store::sqlite::run_pending_migrations;
+use p2panda_store::SqliteStore;
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use tokio::sync::broadcast;
 
 const APP_NAME: &str = "p2panda-file-sharing";
 const NODE_KEY_FILE: &str = "node.key";
 const BLOBS_DIR: &str = "blobs";
+const ADDRESS_BOOK_DB_FILE: &str = "address-book.sqlite3";
 
 #[derive(Clone, Debug)]
 pub struct NodeOptions {
@@ -65,7 +69,11 @@ impl AppNode {
 
         let private_key = load_or_create_private_key(&data_dir)?;
         let supervisor = Supervisor::builder().spawn().await?;
-        let address_book = AddressBook::builder().spawn_linked(&supervisor).await?;
+        let address_book_store = open_address_book_store(&data_dir).await?;
+        let address_book = AddressBook::builder()
+            .store(address_book_store)
+            .spawn_linked(&supervisor)
+            .await?;
 
         let mut endpoint_builder = Endpoint::builder(address_book.clone()).signing_key(private_key);
 
@@ -135,6 +143,30 @@ impl AppNode {
 }
 
 pub type FileSharingNode = AppNode;
+
+/// Opens the file-backed SQLite store used by the address book.
+///
+/// A file-backed database is required for correctness: with the default in-memory URL every
+/// pooled connection would receive its own empty database, so the address book tables vanish as
+/// soon as the pool opens a second connection. Persistence across restarts is a welcome side
+/// effect.
+async fn open_address_book_store(data_dir: &Path) -> Result<SqliteStore> {
+    let db_path = data_dir.join(ADDRESS_BOOK_DB_FILE);
+    let options = SqliteConnectOptions::new()
+        .filename(&db_path)
+        .create_if_missing(true)
+        .journal_mode(SqliteJournalMode::Wal);
+    let pool = SqlitePoolOptions::new()
+        .connect_with(options)
+        .await
+        .with_context(|| format!("failed to open address book database {}", db_path.display()))?;
+
+    run_pending_migrations(&pool)
+        .await
+        .context("failed to run p2panda-store migrations on address book database")?;
+
+    Ok(SqliteStore::from_pool(pool))
+}
 
 fn app_data_dir() -> Result<PathBuf> {
     let project_dirs = ProjectDirs::from("", "", APP_NAME)

@@ -1933,109 +1933,52 @@ fn truncate_hash(hash: &str) -> String {
     format!("{}...{}", &hash[..PREFIX], &hash[hash.len() - SUFFIX..])
 }
 
-fn truncate_copyable_id(value: &str) -> String {
-    const VISIBLE_CHARS: usize = 8;
-
-    let mut truncated = String::new();
-    for ch in value.chars().take(VISIBLE_CHARS) {
-        truncated.push(ch);
-    }
-
-    if value.chars().count() > VISIBLE_CHARS {
-        truncated.push_str("...");
-    }
-
-    truncated
-}
-
-fn blend_color(base: egui::Color32, highlight: egui::Color32, weight: f32) -> egui::Color32 {
-    let weight = weight.clamp(0.0, 1.0);
-    let mix = |from: u8, to: u8| -> u8 {
-        ((from as f32 * (1.0 - weight)) + (to as f32 * weight)).round() as u8
-    };
-
-    egui::Color32::from_rgba_premultiplied(
-        mix(base.r(), highlight.r()),
-        mix(base.g(), highlight.g()),
-        mix(base.b(), highlight.b()),
-        mix(base.a(), highlight.a()),
-    )
-}
-
+/// A read-only, selectable pill showing an ID/code in full.
+///
+/// The value is rendered inside a frameless single-line [`egui::TextEdit`] backed by an
+/// immutable `&str` buffer, so it cannot be edited but can be selected (double-click for a
+/// word, drag / triple-click / Ctrl+A for all) and copied with the usual shortcut or the
+/// right-click menu. `bevy_egui`'s `manage_clipboard` feature routes the copy to the OS
+/// clipboard.
 fn copyable_id_pill(ui: &mut egui::Ui, id_source: impl Hash, full_id: &str) -> egui::Response {
-    const COPY_BUTTON_WIDTH: f32 = 42.0;
-    const COPY_FLASH_SECS: f64 = 2.0;
+    const MAX_PILL_WIDTH: f32 = 260.0;
 
     let widget_id = ui.make_persistent_id(("copyable-id-pill", id_source));
-    let hover_id = widget_id.with("hover");
-    let copied_at_id = widget_id.with("copied-at");
-    let now = ui.ctx().input(|input| input.time);
-    let copied_at = ui
-        .ctx()
-        .data(|data| data.get_temp::<f64>(copied_at_id))
-        .unwrap_or(f64::NEG_INFINITY);
-    let flash = ((COPY_FLASH_SECS - (now - copied_at)).max(0.0) / COPY_FLASH_SECS) as f32;
-    let was_hovered = ui
-        .ctx()
-        .data(|data| data.get_temp::<bool>(hover_id))
-        .unwrap_or(false);
-    let show_copy = was_hovered || flash > 0.0;
-    let outline_color = blend_color(
-        egui::Color32::from_rgb(76, 88, 103),
-        egui::Color32::from_rgb(107, 206, 168),
-        flash,
-    );
+    let font_id = egui::TextStyle::Monospace.resolve(ui.style());
+    // Monospace: every glyph is the same width, so '0' is representative. Size the pill to
+    // the content up to a cap; longer IDs clip and scroll within the field.
+    let char_width = ui.fonts(|fonts| fonts.glyph_width(&font_id, '0'));
+    let desired_width = (char_width * full_id.chars().count() as f32).min(MAX_PILL_WIDTH);
 
-    if flash > 0.0 {
-        ui.ctx()
-            .request_repaint_after(std::time::Duration::from_millis(16));
-    }
-
-    let frame = egui::Frame::new()
+    egui::Frame::new()
         .fill(egui::Color32::from_rgb(24, 29, 36))
-        .stroke(egui::Stroke::new(1.0 + flash, outline_color))
+        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(76, 88, 103)))
         .corner_radius(egui::CornerRadius::same(16))
         .inner_margin(egui::Margin::symmetric(10, 6))
         .show(ui, |ui| {
-            ui.scope(|ui| {
-                ui.spacing_mut().item_spacing.x = 6.0;
-                ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new(truncate_copyable_id(full_id))
-                            .monospace()
-                            .color(egui::Color32::from_rgb(226, 232, 240)),
-                    );
-                    if show_copy {
-                        let response = ui.add_sized(
-                            [COPY_BUTTON_WIDTH, 20.0],
-                            egui::Button::new(
-                                egui::RichText::new("Copy")
-                                    .size(11.0)
-                                    .color(egui::Color32::from_rgb(154, 201, 242)),
-                            )
-                            .frame(false),
-                        );
-                        if response.clicked() {
-                            copy_text(ui.ctx(), full_id);
-                            ui.ctx()
-                                .data_mut(|data| data.insert_temp(copied_at_id, now));
-                        }
-                        response
-                    } else {
-                        ui.add_space(COPY_BUTTON_WIDTH);
-                        ui.label("")
-                    }
-                })
-                .response
-            })
-            .inner
-        });
+            let mut text = full_id; // `&mut &str` -> read-only TextBuffer.
+            let mut output = egui::TextEdit::singleline(&mut text)
+                .id(widget_id)
+                .font(egui::TextStyle::Monospace)
+                .text_color(egui::Color32::from_rgb(226, 232, 240))
+                .desired_width(desired_width)
+                .frame(false)
+                .show(ui);
 
-    let hovered = frame.response.hovered() || frame.inner.hovered();
-    ui.ctx()
-        .data_mut(|data| data.insert_temp(hover_id, hovered));
+            // Select the whole value the moment the field gains focus, so a single
+            // click (or Tab) primes it for an immediate copy.
+            if output.response.gained_focus() {
+                let select_all = egui::text::CCursorRange::two(
+                    egui::text::CCursor::new(0),
+                    egui::text::CCursor::new(full_id.chars().count()),
+                );
+                output.state.cursor.set_char_range(Some(select_all));
+                output.state.store(ui.ctx(), output.response.id);
+            }
 
-    frame.response.on_hover_text(full_id)
+            output.response
+        })
+        .inner
 }
 
 fn status_label(transfer: &Transfer, globally_paused: bool) -> &'static str {
@@ -2384,13 +2327,6 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
-fn copy_text(ctx: &egui::Context, text: &str) {
-    ctx.copy_text(text.to_owned());
-    if let Ok(mut clipboard) = arboard::Clipboard::new() {
-        let _ = clipboard.set_text(text.to_owned());
-    }
-}
-
 fn paste_into_text(target: &mut String) {
     if let Ok(mut clipboard) = arboard::Clipboard::new() {
         if let Ok(contents) = clipboard.get_text() {
@@ -2532,12 +2468,6 @@ mod tests {
     fn hash_truncation_keeps_prefix_and_suffix() {
         let hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
         assert_eq!(truncate_hash(hash), "0123456789...6789abcdef");
-    }
-
-    #[test]
-    fn copyable_id_truncation_keeps_first_eight_chars() {
-        assert_eq!(truncate_copyable_id("12345678"), "12345678");
-        assert_eq!(truncate_copyable_id("1234567890abcdef"), "12345678...");
     }
 
     #[test]

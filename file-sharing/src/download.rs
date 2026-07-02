@@ -253,7 +253,10 @@ async fn sync_share_metadata(node: &AppNode, share_code: &ShareCode) -> Result<R
     let sharer_node_id = share_code.node_id()?;
     let collection_hash = share_code.collection_hash().to_string();
 
+    // In-memory SQLite must use a single connection: every further pooled connection would
+    // receive its own empty database without the migrated tables.
     let store = p2panda_store::SqliteStoreBuilder::new()
+        .max_connections(1)
         .build()
         .await
         .context("failed to open in-memory share metadata store")?;

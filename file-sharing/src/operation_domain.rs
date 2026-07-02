@@ -214,7 +214,10 @@ impl FileSharingTopicMap {
 
     pub async fn register_profile_author(&self, profile_id: &str, author: VerifyingKey) -> Topic {
         let topic = profile_sync_topic(profile_id);
-        if let Err(err) = self.associate_profile_logs(profile_id, &topic, &author).await {
+        if let Err(err) = self
+            .associate_profile_logs(profile_id, &topic, &author)
+            .await
+        {
             warn!("failed to associate domain logs with topic: {err}");
         }
         topic

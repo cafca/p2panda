@@ -1,5 +1,6 @@
+use std::collections::HashMap;
 use std::process::Command;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use bevy::prelude::Resource;
@@ -7,6 +8,10 @@ use tracing::warn;
 
 use crate::bridge::NetworkEvent;
 use crate::state::{Direction, TransferRegistry, TransferStatus};
+
+/// Identical notifications within this window are suppressed so a repeating failure does not
+/// produce a barrage of toasts.
+const NOTIFICATION_DEDUP_WINDOW: Duration = Duration::from_secs(60);
 
 trait NotificationSender: Send + Sync {
     fn send(&self, summary: &str, body: &str) -> Result<()>;
@@ -95,6 +100,7 @@ fn escape_xml(input: &str) -> String {
 pub struct NotificationState {
     sender: Box<dyn NotificationSender>,
     warned_unavailable: bool,
+    recently_sent: HashMap<String, Instant>,
 }
 
 impl Default for NotificationState {
@@ -102,6 +108,7 @@ impl Default for NotificationState {
         Self {
             sender: Box::new(SystemNotificationSender),
             warned_unavailable: false,
+            recently_sent: HashMap::new(),
         }
     }
 }
@@ -112,7 +119,7 @@ impl NotificationState {
         event: &NetworkEvent,
         transfers: &TransferRegistry,
         app_focused: bool,
-        _now: Instant,
+        now: Instant,
     ) {
         if app_focused {
             return;
@@ -131,7 +138,7 @@ impl NotificationState {
                     file_count,
                     format_bytes(*total_bytes)
                 );
-                self.send_notification("Share ready", &body);
+                self.send_notification("Share ready", &body, now);
             }
             NetworkEvent::Error {
                 transfer_id,
@@ -142,7 +149,7 @@ impl NotificationState {
                     .map(|transfer| transfer.name.as_str())
                     .unwrap_or("Transfer");
                 let body = format!("'{}' failed: {}", name, error_message);
-                self.send_notification("Transfer failed", &body);
+                self.send_notification("Transfer failed", &body, now);
             }
             NetworkEvent::TransferCompleted { transfer_id } => {
                 if let Some(transfer) = transfers.get(*transfer_id) {
@@ -155,7 +162,7 @@ impl NotificationState {
                             transfer.file_count(),
                             format_bytes(transfer.total_bytes)
                         );
-                        self.send_notification("Download completed", &body);
+                        self.send_notification("Download completed", &body, now);
                     }
                 }
             }
@@ -165,7 +172,15 @@ impl NotificationState {
 
     pub fn flush_due(&mut self, _app_focused: bool, _now: Instant) {}
 
-    fn send_notification(&mut self, summary: &str, body: &str) {
+    fn send_notification(&mut self, summary: &str, body: &str, now: Instant) {
+        let dedup_key = format!("{summary}\u{1f}{body}");
+        self.recently_sent
+            .retain(|_, sent_at| now.duration_since(*sent_at) < NOTIFICATION_DEDUP_WINDOW);
+        if self.recently_sent.contains_key(&dedup_key) {
+            return;
+        }
+        self.recently_sent.insert(dedup_key, now);
+
         if let Err(err) = self.sender.send(summary, body) {
             if !self.warned_unavailable {
                 warn!("failed to send system notification: {err:#}");
@@ -231,6 +246,7 @@ mod tests {
         NotificationState {
             sender: Box::new(sender),
             warned_unavailable: false,
+            recently_sent: HashMap::new(),
         }
     }
 
@@ -362,6 +378,38 @@ mod tests {
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].0, "Download completed");
         assert!(messages[0].1.contains("'notes' finished downloading"));
+    }
+
+    #[test]
+    fn identical_notifications_are_deduplicated_within_window() {
+        let sender = RecordingSender::default();
+        let mut state = test_state(sender.clone());
+        let transfers = TransferRegistry::default();
+        let now = Instant::now();
+        let error_event = NetworkEvent::Error {
+            transfer_id: 9,
+            error_message: "failed to access endpoint for diagnostics".into(),
+        };
+
+        // A repeating failure fires the same notification every second.
+        for tick in 0..10 {
+            state.on_event(
+                &error_event,
+                &transfers,
+                false,
+                now + Duration::from_secs(tick),
+            );
+        }
+        assert_eq!(sender.messages().len(), 1);
+
+        // After the dedup window has passed the notification may be shown again.
+        state.on_event(
+            &error_event,
+            &transfers,
+            false,
+            now + NOTIFICATION_DEDUP_WINDOW + Duration::from_secs(1),
+        );
+        assert_eq!(sender.messages().len(), 2);
     }
 
     #[test]

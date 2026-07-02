@@ -95,6 +95,23 @@ impl NetworkCommand {
             | Self::ResumeTransfer { transfer_id } => *transfer_id,
         }
     }
+
+    /// Returns true when the command acts on a specific transfer shown in the UI.
+    ///
+    /// Failures of these commands are reported as transfer errors; failures of background
+    /// commands (diagnostics polling, profile sync, startup recovery) only go to the log and
+    /// the diagnostics error list.
+    fn is_transfer_scoped(&self) -> bool {
+        matches!(
+            self,
+            Self::ShareDirectory { .. }
+                | Self::StartDownload { .. }
+                | Self::CancelTransfer { .. }
+                | Self::RemoveShare { .. }
+                | Self::PauseTransfer { .. }
+                | Self::ResumeTransfer { .. }
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -316,6 +333,7 @@ async fn run_network_loop<State, Worker>(
         let active_transfer_commands = Arc::clone(&active_transfer_commands);
         let active_transfer_commands_for_task = Arc::clone(&active_transfer_commands);
         let transfer_id = command.transfer_id();
+        let transfer_scoped = command.is_transfer_scoped();
         let track_command = matches!(
             command,
             NetworkCommand::ShareDirectory { .. } | NetworkCommand::StartDownload { .. }
@@ -323,10 +341,16 @@ async fn run_network_loop<State, Worker>(
 
         let handle = tokio::spawn(async move {
             if let Err(err) = worker(state, command, event_tx.clone()).await {
-                let _ = event_tx.send(NetworkEvent::Error {
-                    transfer_id,
-                    error_message: err.to_string(),
-                });
+                if transfer_scoped {
+                    let _ = event_tx.send(NetworkEvent::Error {
+                        transfer_id,
+                        error_message: err.to_string(),
+                    });
+                } else {
+                    // Background commands (diagnostics polling, profile sync, startup
+                    // recovery) must not surface as transfer failures in the UI.
+                    warn!("background network command failed: {err:#}");
+                }
             }
 
             if track_command {
@@ -455,10 +479,18 @@ async fn default_handle_command(
             Ok(())
         }
         NetworkCommand::RequestDiagnostics => {
-            let snapshot = collect_diagnostics_snapshot(&state).await?;
-            event_tx
-                .send(NetworkEvent::DiagnosticsSnapshot { snapshot })
-                .context("failed to send DiagnosticsSnapshot event")?;
+            match collect_diagnostics_snapshot(&state).await {
+                Ok(snapshot) => {
+                    event_tx
+                        .send(NetworkEvent::DiagnosticsSnapshot { snapshot })
+                        .context("failed to send DiagnosticsSnapshot event")?;
+                }
+                Err(err) => {
+                    // Recorded in the diagnostics error list instead of failing the command;
+                    // diagnostics polling repeats and must not spam transfer errors.
+                    state.push_error(format!("diagnostics: {err:#}")).await;
+                }
+            }
             Ok(())
         }
         NetworkCommand::ShareDirectory {
