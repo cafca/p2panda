@@ -10,13 +10,7 @@ use crate::supervisor::{ChildActor, ChildActorFut, Supervisor};
 impl Builder {
     pub async fn spawn_linked(self, supervisor: &Supervisor) -> Result<Gossip, GossipError> {
         let args = self.build_args();
-        let gossip = Gossip::new(
-            None,
-            args.2.node_id(),
-            args.1.clone(),
-            args.0.clone(),
-            args,
-        );
+        let gossip = Gossip::new(None, args.2.node_id(), args.1.clone(), args.0.clone(), args);
         supervisor.start_child_actor(gossip.clone()).await?;
         Ok(gossip)
     }

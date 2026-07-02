@@ -9,8 +9,8 @@ use p2panda_blobs::{DownloadProgress, DownloadProgressItem, Hash as BlobHash};
 use p2panda_core::VerifyingKey;
 use p2panda_net::addrs::NodeInfo;
 use p2panda_net::iroh_endpoint::EndpointAddr;
-use p2panda_net::utils::from_verifying_key;
 use p2panda_net::sync::SyncSubscription;
+use p2panda_net::utils::from_verifying_key;
 use p2panda_net::LogSync;
 use p2panda_store::SqliteStore;
 use p2panda_sync::protocols::TopicLogSyncEvent;
@@ -216,7 +216,10 @@ async fn bootstrap_sharer(node: &AppNode, share_code: &ShareCode) -> Result<()> 
     Ok(())
 }
 
-async fn download_providers(node: &AppNode, sharer_node_id: VerifyingKey) -> Result<Vec<VerifyingKey>> {
+async fn download_providers(
+    node: &AppNode,
+    sharer_node_id: VerifyingKey,
+) -> Result<Vec<VerifyingKey>> {
     let mut providers = node
         .address_book
         .node_ids()
@@ -270,11 +273,10 @@ async fn sync_share_metadata(node: &AppNode, share_code: &ShareCode) -> Result<R
             format!("failed to register share metadata topic for {owner_profile_id}")
         })?;
 
-    let log_sync: DomainSync =
-        LogSync::builder(store, node.endpoint.clone(), node.gossip.clone())
-            .spawn()
-            .await
-            .context("failed to spawn LogSync for share metadata lookup")?;
+    let log_sync: DomainSync = LogSync::builder(store, node.endpoint.clone(), node.gossip.clone())
+        .spawn()
+        .await
+        .context("failed to spawn LogSync for share metadata lookup")?;
     let handle = log_sync
         .stream(topic, true)
         .await

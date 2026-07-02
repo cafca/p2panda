@@ -3,8 +3,8 @@ use std::path::{Component, Path, PathBuf};
 
 use anyhow::{bail, ensure, Context, Result};
 use p2panda_blobs::Hash as BlobHash;
-use p2panda_net::gossip::GossipHandle;
 use p2panda_core::Topic;
+use p2panda_net::gossip::GossipHandle;
 use tracing::warn;
 
 use crate::manifest::{serialize_manifest, sign_manifest, ManifestData, ManifestFile};

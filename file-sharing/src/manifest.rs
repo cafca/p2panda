@@ -1,7 +1,7 @@
 use anyhow::{anyhow, ensure, Context, Result};
 use p2panda_core::cbor::{decode_cbor, encode_cbor};
-use p2panda_core::{validate_operation, Body, Header, Operation, SigningKey, VerifyingKey};
 use p2panda_core::timestamp::HybridTimestamp;
+use p2panda_core::{validate_operation, Body, Header, Operation, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
 const HEADER_LENGTH_PREFIX_SIZE: usize = 4;

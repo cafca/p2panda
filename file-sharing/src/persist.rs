@@ -6,8 +6,8 @@ use std::thread;
 
 use anyhow::{Context, Result};
 use p2panda_blobs::Hash as BlobHash;
-use p2panda_net::gossip::GossipHandle;
 use p2panda_core::Topic;
+use p2panda_net::gossip::GossipHandle;
 use p2panda_store::sqlite::{run_pending_migrations, SqlitePool};
 use serde::{Deserialize, Serialize};
 use sqlx::query;
@@ -713,7 +713,11 @@ fn delete_share_from_sqlite(pool: &SqlitePool, share_code: &str) -> Result<bool>
     })
 }
 
-fn delete_download_from_sqlite(pool: &SqlitePool, share_code: &str, output_dir: &Path) -> Result<bool> {
+fn delete_download_from_sqlite(
+    pool: &SqlitePool,
+    share_code: &str,
+    output_dir: &Path,
+) -> Result<bool> {
     let pool = pool.clone();
     let share_code = share_code.to_owned();
     let output_dir = path_to_string(output_dir);

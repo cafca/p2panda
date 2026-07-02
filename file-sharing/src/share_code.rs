@@ -1,8 +1,8 @@
 use anyhow::{ensure, Context, Result};
 use data_encoding::BASE32_NOPAD;
 use p2panda_blobs::Hash as BlobHash;
-use p2panda_core::{Hash as CoreHash, VerifyingKey};
 use p2panda_core::Topic;
+use p2panda_core::{Hash as CoreHash, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
 const SHARE_CODE_PREFIX: &str = "p2p-";

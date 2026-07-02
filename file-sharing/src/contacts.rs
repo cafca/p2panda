@@ -163,7 +163,7 @@ impl ContactsStore {
         });
         self.state
             .followed_contacts
-            .sort_by(|left, right| left.followed_at.cmp(&right.followed_at));
+            .sort_by_key(|contact| contact.followed_at);
         self.save()
     }
 
