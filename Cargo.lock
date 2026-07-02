@@ -6533,6 +6533,7 @@ dependencies = [
  "futures-util",
  "iroh",
  "iroh-blobs",
+ "mock_instant",
  "p2panda-blobs",
  "p2panda-core",
  "p2panda-net",

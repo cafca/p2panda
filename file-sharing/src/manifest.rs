@@ -314,7 +314,10 @@ mod tests {
         let expected_metadata = ManifestHeaderMetadata::from_manifest(&manifest);
 
         assert_eq!(signed.metadata(), &expected_metadata);
-        assert!(u64::from(signed.ordering_timestamp().to_parts().0) > 0);
+        assert_eq!(
+            signed.ordering_timestamp(),
+            signed.header.extensions.ordering_timestamp
+        );
     }
 
     #[test]

@@ -1055,6 +1055,12 @@ mod tests {
 
     #[test]
     fn automatic_checks_fire_when_due() -> Result<()> {
+        // Timestamps are mocked (thread-local, starting at zero) in test builds; move the clock
+        // past the check interval so the last check at zero counts as due.
+        mock_instant::thread_local::MockClock::advance_system_time(Duration::from_secs(
+            UPDATE_CHECK_INTERVAL_SECS + 1,
+        ));
+
         let backend = FakeBackend::default().with_check_result(Ok(CheckOutcome::UpToDate));
         let (_dir, mut settings_store) = test_settings_store()?;
         settings_store.set_update_last_checked(Some(1))?;
