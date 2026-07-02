@@ -15,6 +15,13 @@ ignore = [
       id = "RUSTSEC-2026-0173",
       reason = "Advisory is notice / INFO",
     },
+
+    # rsa Marvin attack; pulled in transitively via sqlx's macro support, this
+    # workspace uses SQLite only.
+    {
+      id = "RUSTSEC-2023-0071",
+      reason = "MySQL-only code path, unused with SQLite",
+    },
 ]
 
 [licenses]
