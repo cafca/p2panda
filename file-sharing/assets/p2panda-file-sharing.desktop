@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=p2panda File Sharing
+Comment=Peer-to-peer directory sharing with p2panda
+Exec=p2panda-file-sharing-gui
+Icon=p2panda-file-sharing
+Terminal=false
+Categories=Network;FileTransfer;
