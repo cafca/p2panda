@@ -76,7 +76,10 @@ impl ProfileSyncService {
     pub(crate) async fn new(node: &AppNode, local_profile_id: impl Into<String>) -> Result<Self> {
         let local_profile_id = local_profile_id.into();
         let local_private_key = load_private_key_from_data_dir(&node.data_dir)?;
+        // In-memory SQLite must use a single connection: every further pooled connection would
+        // receive its own empty database without the migrated tables.
         let store = p2panda_store::SqliteStoreBuilder::new()
+            .max_connections(1)
             .build()
             .await
             .context("failed to open in-memory domain operation store")?;

@@ -16,6 +16,9 @@ const SCHEMA_VERSION_FILE: &str = "schema.version";
 
 /// Store files owned by the app which are wiped on schema mismatch.
 const STORE_FILES: &[&str] = &[
+    "address-book.sqlite3",
+    "address-book.sqlite3-wal",
+    "address-book.sqlite3-shm",
     "profile-store.sqlite3",
     "profile-store.sqlite3-wal",
     "profile-store.sqlite3-shm",
