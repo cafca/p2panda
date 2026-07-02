@@ -9,7 +9,7 @@ use p2panda_core::Topic;
 use p2panda_core::{Body, Extension, Hash, Header, Operation, SigningKey, VerifyingKey};
 use p2panda_store::logs::LogStore;
 use p2panda_store::topics::TopicStore;
-use p2panda_store::SqliteStore;
+use p2panda_store::{SqliteError, SqliteStore, Transaction};
 use p2panda_stream::ingest::ingest_operation;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
@@ -214,19 +214,35 @@ impl FileSharingTopicMap {
 
     pub async fn register_profile_author(&self, profile_id: &str, author: VerifyingKey) -> Topic {
         let topic = profile_sync_topic(profile_id);
+        if let Err(err) = self.associate_profile_logs(profile_id, &topic, &author).await {
+            warn!("failed to associate domain logs with topic: {err}");
+        }
+        topic
+    }
+
+    /// Associates all domain logs of a profile with its sync topic in one store transaction.
+    async fn associate_profile_logs(
+        &self,
+        profile_id: &str,
+        topic: &Topic,
+        author: &VerifyingKey,
+    ) -> Result<(), SqliteError> {
+        let permit = self.store.begin().await?;
         for log_id in DomainLogId::all_for_profile(profile_id) {
             if let Err(err) = TopicStore::<Topic, VerifyingKey, DomainLogId>::associate(
                 &self.store,
-                &topic,
-                &author,
+                topic,
+                author,
                 &log_id,
             )
             .await
             {
-                warn!("failed to associate domain log with topic: {err}");
+                self.store.rollback(permit).await?;
+                return Err(err);
             }
         }
-        topic
+        self.store.commit(permit).await?;
+        Ok(())
     }
 
     pub async fn known_authors(&self, profile_id: &str) -> Vec<VerifyingKey> {
@@ -279,7 +295,16 @@ impl FileSharingOperationDomain {
             .map(|operation| (operation.header.seq_num + 1, Some(operation.hash)))
             .unwrap_or((0, None));
 
-        let ordering_timestamp = HybridTimestamp::now();
+        // Chain the ordering timestamp off the newest operation known for this profile (from any
+        // author and device) so new operations always sort after everything they were created in
+        // response to, even when wall clocks are skewed or frozen.
+        let previous_ordering = self
+            .operations_for_profile(&profile_id)
+            .await?
+            .into_iter()
+            .map(|operation| operation.header.extensions.ordering_timestamp)
+            .max();
+        let ordering_timestamp = next_ordering_timestamp(previous_ordering);
         let mut header = Header {
             version: 1,
             verifying_key: private_key.verifying_key(),
@@ -600,6 +625,22 @@ fn profile_sync_topic(profile_id: &str) -> Topic {
     bytes.push(b'/');
     bytes.extend_from_slice(profile_id.as_bytes());
     Hash::digest(&bytes).into()
+}
+
+/// Returns a hybrid timestamp strictly after `previous` (when given) and never behind the local
+/// wall clock.
+///
+/// Unlike `HybridTimestamp::increment` this never moves backwards when the local clock lags
+/// behind a previously observed timestamp; the logical clock component is bumped instead.
+fn next_ordering_timestamp(previous: Option<HybridTimestamp>) -> HybridTimestamp {
+    let now = HybridTimestamp::now();
+    match previous {
+        Some(previous) if now <= previous => {
+            let (wall, logical) = previous.to_parts();
+            HybridTimestamp::from_parts(wall, logical.increment())
+        }
+        _ => now,
+    }
 }
 
 pub fn write_reduced_profile_state_to_path(
