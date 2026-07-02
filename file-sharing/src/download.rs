@@ -6,12 +6,13 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use futures_util::StreamExt;
 use p2panda_blobs::{DownloadProgress, DownloadProgressItem, Hash as BlobHash};
-use p2panda_core::PublicKey;
+use p2panda_core::VerifyingKey;
 use p2panda_net::addrs::NodeInfo;
-use p2panda_net::iroh_endpoint::{from_public_key, EndpointAddr};
+use p2panda_net::iroh_endpoint::EndpointAddr;
+use p2panda_net::utils::from_verifying_key;
 use p2panda_net::sync::SyncSubscription;
 use p2panda_net::LogSync;
-use p2panda_store::MemoryStore;
+use p2panda_store::SqliteStore;
 use p2panda_sync::protocols::TopicLogSyncEvent;
 
 use crate::diagnostics::DownloadProviderStatus;
@@ -74,7 +75,7 @@ pub struct DownloadSession {
     pub output_root: PathBuf,
     pub directory_name: String,
     pub total_bytes: u64,
-    pub sharer_public_key: PublicKey,
+    pub sharer_public_key: VerifyingKey,
     pub files: Vec<DownloadedFile>,
 }
 
@@ -117,7 +118,7 @@ where
     let manifest_bytes = reduced_share.manifest_bytes.clone();
     let verified_manifest = verify_manifest(&manifest_bytes)?;
     ensure!(
-        verified_manifest.public_key == share_code.node_id()?,
+        verified_manifest.verifying_key == share_code.node_id()?,
         "manifest signer does not match share code node id"
     );
 
@@ -187,7 +188,7 @@ where
         output_root,
         directory_name: verified_manifest.data.name,
         total_bytes,
-        sharer_public_key: verified_manifest.public_key,
+        sharer_public_key: verified_manifest.verifying_key,
         files: downloaded_files,
     })
 }
@@ -202,7 +203,7 @@ async fn bootstrap_sharer(node: &AppNode, share_code: &ShareCode) -> Result<()> 
         return Ok(());
     }
 
-    let mut endpoint_addr = EndpointAddr::new(from_public_key(sharer_node_id));
+    let mut endpoint_addr = EndpointAddr::new(from_verifying_key(sharer_node_id));
     if let Some(relay_url) = &share_code.relay_url {
         endpoint_addr = endpoint_addr.with_relay_url(relay_url.parse()?);
     }
@@ -215,7 +216,7 @@ async fn bootstrap_sharer(node: &AppNode, share_code: &ShareCode) -> Result<()> 
     Ok(())
 }
 
-async fn download_providers(node: &AppNode, sharer_node_id: PublicKey) -> Result<Vec<PublicKey>> {
+async fn download_providers(node: &AppNode, sharer_node_id: VerifyingKey) -> Result<Vec<VerifyingKey>> {
     let mut providers = node
         .address_book
         .node_ids()
@@ -231,7 +232,7 @@ async fn download_providers(node: &AppNode, sharer_node_id: PublicKey) -> Result
 async fn download_blob_with_progress_from_providers(
     node: &AppNode,
     hash: BlobHash,
-    _providers: &[PublicKey],
+    _providers: &[VerifyingKey],
 ) -> Result<DownloadProgress> {
     node.blobs
         .download_with_progress(hash)
@@ -241,17 +242,20 @@ async fn download_blob_with_progress_from_providers(
 }
 
 async fn sync_share_metadata(node: &AppNode, share_code: &ShareCode) -> Result<ReducedShareState> {
-    type DomainStore = MemoryStore<DomainLogId, DomainExtensions>;
-    type DomainSync = LogSync<DomainStore, DomainLogId, DomainExtensions, FileSharingTopicMap>;
+    type DomainStore = SqliteStore;
+    type DomainSync = LogSync<DomainStore, DomainLogId, DomainExtensions>;
     type DomainSubscription = SyncSubscription<TopicLogSyncEvent<DomainExtensions>>;
 
     let owner_profile_id = share_code.owner_profile_id()?;
     let sharer_node_id = share_code.node_id()?;
     let collection_hash = share_code.collection_hash().to_string();
 
-    let store = DomainStore::new();
-    let topic_map = FileSharingTopicMap::default();
-    let mut domain = FileSharingOperationDomain::new(store.clone(), topic_map.clone());
+    let store = p2panda_store::SqliteStoreBuilder::new()
+        .build()
+        .await
+        .context("failed to open in-memory share metadata store")?;
+    let topic_map = FileSharingTopicMap::new(store.clone());
+    let mut domain = FileSharingOperationDomain::new(store.clone());
     let topic = topic_map
         .register_profile_author(&owner_profile_id, sharer_node_id)
         .await;
@@ -267,7 +271,7 @@ async fn sync_share_metadata(node: &AppNode, share_code: &ShareCode) -> Result<R
         })?;
 
     let log_sync: DomainSync =
-        LogSync::builder(store, topic_map, node.endpoint.clone(), node.gossip.clone())
+        LogSync::builder(store, node.endpoint.clone(), node.gossip.clone())
             .spawn()
             .await
             .context("failed to spawn LogSync for share metadata lookup")?;
@@ -297,7 +301,7 @@ async fn sync_share_metadata(node: &AppNode, share_code: &ShareCode) -> Result<R
                     };
                     let message = message.context("share metadata LogSync subscription closed")?;
                     match message.event {
-                        TopicLogSyncEvent::Operation(operation) => {
+                        TopicLogSyncEvent::OperationReceived { operation, .. } => {
                             domain.ingest_remote_operation(*operation).await?;
                             if let Some(share) =
                                 find_share_state(&domain, &owner_profile_id, &collection_hash).await?
@@ -305,7 +309,9 @@ async fn sync_share_metadata(node: &AppNode, share_code: &ShareCode) -> Result<R
                                 return Ok(share);
                             }
                         }
-                        TopicLogSyncEvent::SyncFinished(_) | TopicLogSyncEvent::LiveModeStarted => {
+                        TopicLogSyncEvent::SyncFinished { .. }
+                        | TopicLogSyncEvent::LiveModeStarted
+                        | TopicLogSyncEvent::SessionFinished { .. } => {
                             if let Some(share) =
                                 find_share_state(&domain, &owner_profile_id, &collection_hash).await?
                             {
@@ -315,10 +321,8 @@ async fn sync_share_metadata(node: &AppNode, share_code: &ShareCode) -> Result<R
                         TopicLogSyncEvent::Failed { error } => {
                             last_sync_error = Some(error.to_string());
                         }
-                        TopicLogSyncEvent::SyncStarted(_)
-                        | TopicLogSyncEvent::SyncStatus(_)
-                        | TopicLogSyncEvent::LiveModeFinished(_)
-                        | TopicLogSyncEvent::Success => {}
+                        TopicLogSyncEvent::SessionStarted
+                        | TopicLogSyncEvent::SyncStarted { .. } => {}
                     }
                 }
                 _ = retry_interval.tick() => {
@@ -357,7 +361,7 @@ async fn sync_share_metadata(node: &AppNode, share_code: &ShareCode) -> Result<R
 }
 
 async fn find_share_state(
-    domain: &FileSharingOperationDomain<MemoryStore<DomainLogId, DomainExtensions>>,
+    domain: &FileSharingOperationDomain,
     profile_id: &str,
     collection_hash: &str,
 ) -> Result<Option<ReducedShareState>> {
@@ -530,7 +534,7 @@ async fn download_one_file<F>(
     file_index: usize,
     manifest_file: &crate::manifest::ManifestFile,
     output_root: &Path,
-    providers: &[PublicKey],
+    providers: &[VerifyingKey],
     completed_blobs: &HashSet<BlobHash>,
     on_event: &mut F,
 ) -> Result<DownloadedFile>
@@ -710,8 +714,8 @@ mod tests {
 
     use anyhow::Result;
     use iroh_blobs::protocol::GetRequest;
-    use p2panda_core::PrivateKey;
-    use p2panda_net::iroh_endpoint::from_public_key;
+    use p2panda_core::SigningKey;
+    use p2panda_net::utils::from_verifying_key;
     use tempfile::tempdir;
 
     use super::*;
@@ -890,8 +894,8 @@ mod tests {
 
     #[test]
     fn provider_progress_items_emit_diagnostics_and_keep_file_progress() -> Result<()> {
-        let provider_a = from_public_key(PrivateKey::new().public_key());
-        let provider_b = from_public_key(PrivateKey::new().public_key());
+        let provider_a = from_verifying_key(SigningKey::generate().verifying_key());
+        let provider_b = from_verifying_key(SigningKey::generate().verifying_key());
         let request = Arc::new(GetRequest::blob(BlobHash::from_bytes([7; 32])));
         let target = DownloadProgressTarget::File {
             file_index: 2,

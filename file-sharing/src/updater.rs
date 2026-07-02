@@ -10,7 +10,7 @@ use semver::Version;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-use p2panda_net::timestamp::Timestamp;
+use p2panda_core::Timestamp;
 
 use crate::settings::{AppSettings, SettingsStore, UpdateChannel};
 use crate::time_format::format_optional_unix_timestamp_secs;

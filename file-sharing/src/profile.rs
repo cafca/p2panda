@@ -2,14 +2,14 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use p2panda_net::timestamp::Timestamp;
-use p2panda_store::sqlite::store::Pool;
+use p2panda_core::Timestamp;
+use p2panda_store::sqlite::SqlitePool;
 
 use anyhow::{Context, Result};
 use p2panda_core::cbor::{decode_cbor, encode_cbor};
-use p2panda_core::identity::PRIVATE_KEY_LEN;
+use p2panda_core::identity::SIGNING_KEY_LEN;
 use p2panda_core::{
-    validate_operation, Body, Hash, Header, Operation, PrivateKey, PublicKey, RawOperation,
+    validate_operation, Body, Hash, Header, Operation, SigningKey, VerifyingKey, RawOperation,
 };
 use serde::{Deserialize, Serialize};
 
@@ -57,7 +57,7 @@ pub struct UserProfile {
 }
 
 impl UserProfile {
-    fn new(public_key: PublicKey) -> Self {
+    fn new(public_key: VerifyingKey) -> Self {
         let timestamp = u64::from(Timestamp::now());
         let profile_id = public_key.to_string();
         Self {
@@ -72,7 +72,7 @@ impl UserProfile {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProfileMetadataRecord {
-    pub author: PublicKey,
+    pub author: VerifyingKey,
     pub profile_id: String,
     pub display_name: String,
     pub created_at: u64,
@@ -81,7 +81,7 @@ pub struct ProfileMetadataRecord {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShareOwnershipRecord {
-    pub author: PublicKey,
+    pub author: VerifyingKey,
     pub profile_id: String,
     pub collection_hash: String,
     pub share_code: String,
@@ -95,7 +95,7 @@ pub struct ShareOwnershipRecord {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContactFollowRecord {
-    pub author: PublicKey,
+    pub author: VerifyingKey,
     pub profile_id: String,
     pub followed_profile_id: String,
     pub recorded_at: u64,
@@ -181,11 +181,11 @@ struct PersistedProfileRecords {
 
 #[derive(Debug, bevy::prelude::Resource)]
 pub struct ProfileStore {
-    pool: Pool,
+    pool: SqlitePool,
     profile: UserProfile,
     records: PersistedProfileRecords,
     load_warning: Option<String>,
-    private_key: PrivateKey,
+    private_key: SigningKey,
 }
 
 impl ProfileStore {
@@ -196,7 +196,7 @@ impl ProfileStore {
         })?;
 
         let private_key = load_private_key(data_dir)?;
-        let public_key = private_key.public_key();
+        let public_key = private_key.verifying_key();
         let store_data = open_profile_data_store(data_dir)?;
         let profile = load_or_create_profile(&store_data.pool, public_key)?;
         let records = load_or_create_records(&store_data.pool)?;
@@ -468,25 +468,22 @@ impl ProfileStore {
             .operations
             .iter()
             .rev()
-            .find(|operation| operation.header.public_key == self.private_key.public_key())
+            .find(|operation| operation.header.verifying_key == self.private_key.verifying_key())
             .map(|operation| operation.header.hash());
         let seq_num = self
             .records
             .operations
             .iter()
-            .filter(|operation| operation.header.public_key == self.private_key.public_key())
-            .count() as u64;
-        let timestamp = u64::from(Timestamp::now());
+            .filter(|operation| operation.header.verifying_key == self.private_key.verifying_key())
+            .count() as u32;
         let mut header = Header {
             version: 1,
-            public_key: self.private_key.public_key(),
+            verifying_key: self.private_key.verifying_key(),
             signature: None,
             payload_size: body.size(),
             payload_hash: Some(body.hash()),
-            timestamp,
             seq_num,
             backlink: previous_hash,
-            previous: previous_hash.into_iter().collect(),
             extensions: (),
         };
         header.sign(&self.private_key);
@@ -551,7 +548,7 @@ pub fn write_raw_profile_operations(
     write_json_key(&store.pool, PROFILE_STORE_RECORDS_KEY, &records)
 }
 
-pub(crate) fn load_private_key_from_data_dir(data_dir: &Path) -> Result<PrivateKey> {
+pub(crate) fn load_private_key_from_data_dir(data_dir: &Path) -> Result<SigningKey> {
     load_private_key(data_dir)
 }
 
@@ -592,7 +589,7 @@ fn decode_stored_operation(operation: &StoredOperation) -> Result<ProfileRecord>
     };
     validate_operation(&validated).context("profile record operation validation failed")?;
 
-    let author = operation.header.public_key;
+    let author = operation.header.verifying_key;
     let body: ProfileRecordBody =
         decode_cbor(operation.body.as_slice()).context("failed to decode profile record body")?;
     Ok(match body {
@@ -645,7 +642,7 @@ fn decode_stored_operation(operation: &StoredOperation) -> Result<ProfileRecord>
     })
 }
 
-fn load_or_create_profile(pool: &Pool, public_key: PublicKey) -> Result<UserProfile> {
+fn load_or_create_profile(pool: &SqlitePool, public_key: VerifyingKey) -> Result<UserProfile> {
     if let Some(profile) = load_json_key(pool, PROFILE_STORE_PROFILE_KEY)? {
         return Ok(profile);
     }
@@ -655,7 +652,7 @@ fn load_or_create_profile(pool: &Pool, public_key: PublicKey) -> Result<UserProf
     Ok(profile)
 }
 
-fn load_or_create_records(pool: &Pool) -> Result<PersistedProfileRecords> {
+fn load_or_create_records(pool: &SqlitePool) -> Result<PersistedProfileRecords> {
     Ok(load_json_key(pool, PROFILE_STORE_RECORDS_KEY)?.unwrap_or_default())
 }
 
@@ -687,30 +684,30 @@ fn normalize_profile_id(profile_id: String) -> Result<String> {
     if profile_id.is_empty() {
         anyhow::bail!("profile ID cannot be empty");
     }
-    let _: PublicKey = profile_id
+    let _: VerifyingKey = profile_id
         .parse()
         .with_context(|| format!("invalid profile ID {profile_id}"))?;
     Ok(profile_id)
 }
 
-fn load_private_key(data_dir: &Path) -> Result<PrivateKey> {
+fn load_private_key(data_dir: &Path) -> Result<SigningKey> {
     let key_path = data_dir.join(NODE_KEY_FILE_NAME);
     let bytes = fs::read(&key_path)
         .with_context(|| format!("failed to read node private key {}", key_path.display()))?;
     let byte_len = bytes.len();
-    let key_bytes: [u8; PRIVATE_KEY_LEN] = bytes.try_into().map_err(|_| {
+    let key_bytes: [u8; SIGNING_KEY_LEN] = bytes.try_into().map_err(|_| {
         anyhow::anyhow!(
             "invalid private key length in {}: expected {} bytes, got {}",
             key_path.display(),
-            PRIVATE_KEY_LEN,
+            SIGNING_KEY_LEN,
             byte_len
         )
     })?;
-    Ok(PrivateKey::from_bytes(&key_bytes))
+    Ok(SigningKey::from_bytes(&key_bytes))
 }
 
 fn default_display_name(profile_id: &str) -> String {
-    let seed = Hash::new(profile_id.as_bytes());
+    let seed = Hash::digest(profile_id.as_bytes());
     let bytes = seed.as_bytes();
     let adjective = ADJECTIVES[bytes[0] as usize % ADJECTIVES.len()];
     let fruit = FRUITS[bytes[1] as usize % FRUITS.len()];
@@ -737,7 +734,7 @@ mod tests {
 
     use super::*;
 
-    fn write_node_key(data_dir: &Path, private_key: &PrivateKey) -> Result<()> {
+    fn write_node_key(data_dir: &Path, private_key: &SigningKey) -> Result<()> {
         fs::create_dir_all(data_dir)?;
         fs::write(data_dir.join(NODE_KEY_FILE_NAME), private_key.as_bytes())?;
         Ok(())
@@ -761,13 +758,13 @@ mod tests {
     #[test]
     fn first_load_creates_stable_profile_and_metadata_record() -> Result<()> {
         let dir = tempdir()?;
-        let private_key = PrivateKey::new();
+        let private_key = SigningKey::generate();
         write_node_key(dir.path(), &private_key)?;
 
         let store = ProfileStore::load_or_create(dir.path())?;
         assert_eq!(
             store.profile().profile_id,
-            private_key.public_key().to_string()
+            private_key.verifying_key().to_string()
         );
         assert!(store.profile().display_name.contains(' '));
 
@@ -777,7 +774,7 @@ mod tests {
         let metadata = reloaded.metadata_records()?;
         assert_eq!(metadata.len(), 1);
         assert_eq!(metadata[0].profile_id, store.profile().profile_id);
-        assert_eq!(metadata[0].author, private_key.public_key());
+        assert_eq!(metadata[0].author, private_key.verifying_key());
 
         Ok(())
     }
@@ -785,7 +782,7 @@ mod tests {
     #[test]
     fn display_name_updates_persist_and_append_metadata_record() -> Result<()> {
         let dir = tempdir()?;
-        let private_key = PrivateKey::new();
+        let private_key = SigningKey::generate();
         write_node_key(dir.path(), &private_key)?;
 
         let mut store = ProfileStore::load_or_create(dir.path())?;
@@ -800,7 +797,7 @@ mod tests {
             metadata.last().unwrap().display_name,
             "Whimsical Watermelon"
         );
-        assert_eq!(metadata.last().unwrap().author, private_key.public_key());
+        assert_eq!(metadata.last().unwrap().author, private_key.verifying_key());
 
         Ok(())
     }
@@ -808,7 +805,7 @@ mod tests {
     #[test]
     fn corrupt_profile_file_recovers_from_node_identity() -> Result<()> {
         let dir = tempdir()?;
-        let private_key = PrivateKey::new();
+        let private_key = SigningKey::generate();
         write_node_key(dir.path(), &private_key)?;
         fs::write(
             dir.path().join("profile-store.sqlite3"),
@@ -819,7 +816,7 @@ mod tests {
 
         assert_eq!(
             store.profile().profile_id,
-            private_key.public_key().to_string()
+            private_key.verifying_key().to_string()
         );
         assert!(store.load_warning().is_some());
         assert!(fs::read_dir(dir.path())?
@@ -832,7 +829,7 @@ mod tests {
     #[test]
     fn share_ownership_records_are_queryable_from_p2panda_operations() -> Result<()> {
         let dir = tempdir()?;
-        let private_key = PrivateKey::new();
+        let private_key = SigningKey::generate();
         write_node_key(dir.path(), &private_key)?;
 
         let mut store = ProfileStore::load_or_create(dir.path())?;
@@ -843,7 +840,7 @@ mod tests {
         assert_eq!(ownerships.len(), 1);
         assert_eq!(ownerships[0].profile_id, store.profile().profile_id);
         assert_eq!(ownerships[0].share_code, "p2p-SHARE");
-        assert_eq!(ownerships[0].author, private_key.public_key());
+        assert_eq!(ownerships[0].author, private_key.verifying_key());
         assert!(ownerships[0].active);
         assert!(ownerships[0].source_contact_profile_id.is_none());
 
@@ -853,7 +850,7 @@ mod tests {
     #[test]
     fn downloaded_share_records_can_store_contact_provenance() -> Result<()> {
         let dir = tempdir()?;
-        let private_key = PrivateKey::new();
+        let private_key = SigningKey::generate();
         write_node_key(dir.path(), &private_key)?;
 
         let mut store = ProfileStore::load_or_create(dir.path())?;
@@ -883,7 +880,7 @@ mod tests {
     #[test]
     fn share_removal_records_append_tombstone_and_allow_republish() -> Result<()> {
         let dir = tempdir()?;
-        let private_key = PrivateKey::new();
+        let private_key = SigningKey::generate();
         write_node_key(dir.path(), &private_key)?;
 
         let mut store = ProfileStore::load_or_create(dir.path())?;
@@ -904,13 +901,13 @@ mod tests {
     #[test]
     fn follow_records_roundtrip_and_track_latest_active_state() -> Result<()> {
         let dir = tempdir()?;
-        let private_key = PrivateKey::new();
-        let followed_key = PrivateKey::new();
+        let private_key = SigningKey::generate();
+        let followed_key = SigningKey::generate();
         write_node_key(dir.path(), &private_key)?;
 
         let mut store = ProfileStore::load_or_create(dir.path())?;
-        assert!(store.follow_contact(followed_key.public_key().to_string())?);
-        assert!(store.unfollow_contact(followed_key.public_key().to_string())?);
+        assert!(store.follow_contact(followed_key.verifying_key().to_string())?);
+        assert!(store.unfollow_contact(followed_key.verifying_key().to_string())?);
 
         let records = store.contact_follow_records()?;
         assert_eq!(records.len(), 2);
@@ -927,8 +924,8 @@ mod tests {
     #[test]
     fn shared_profile_id_can_be_adopted_and_persisted() -> Result<()> {
         let dir = tempdir()?;
-        let private_key = PrivateKey::new();
-        let shared_profile_id = PrivateKey::new().public_key().to_string();
+        let private_key = SigningKey::generate();
+        let shared_profile_id = SigningKey::generate().verifying_key().to_string();
         write_node_key(dir.path(), &private_key)?;
 
         let mut store = ProfileStore::load_or_create(dir.path())?;
@@ -943,7 +940,7 @@ mod tests {
         );
         assert_ne!(
             reloaded.profile().profile_id,
-            private_key.public_key().to_string()
+            private_key.verifying_key().to_string()
         );
 
         Ok(())
@@ -952,8 +949,8 @@ mod tests {
     #[test]
     fn local_profile_state_survives_restart_without_legacy_json_files() -> Result<()> {
         let dir = tempdir()?;
-        let private_key = PrivateKey::new();
-        let followed_key = PrivateKey::new();
+        let private_key = SigningKey::generate();
+        let followed_key = SigningKey::generate();
         write_node_key(dir.path(), &private_key)?;
 
         let share = {
@@ -961,7 +958,7 @@ mod tests {
             store.update_display_name("Restart Persisted")?;
             let share = sample_share_record(&store.profile().profile_id);
             assert!(store.ensure_share_ownership_record(&share)?);
-            assert!(store.follow_contact(followed_key.public_key().to_string())?);
+            assert!(store.follow_contact(followed_key.verifying_key().to_string())?);
             share
         };
 

@@ -5,12 +5,13 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use directories::ProjectDirs;
 use p2panda_blobs::{Blobs, FsStore};
-use p2panda_core::identity::PRIVATE_KEY_LEN;
-use p2panda_core::PrivateKey;
+use p2panda_core::identity::SIGNING_KEY_LEN;
+use p2panda_core::SigningKey;
 use p2panda_net::iroh_endpoint::RelayUrl;
 use p2panda_net::iroh_mdns::MdnsDiscoveryMode;
 use p2panda_net::supervisor::SupervisorEvent;
-use p2panda_net::{AddressBook, Discovery, Endpoint, Gossip, MdnsDiscovery, Supervisor, TopicId};
+use p2panda_core::Topic;
+use p2panda_net::{AddressBook, Discovery, Endpoint, Gossip, MdnsDiscovery, Supervisor};
 use tokio::sync::broadcast;
 
 const APP_NAME: &str = "p2panda-file-sharing";
@@ -66,7 +67,7 @@ impl AppNode {
         let supervisor = Supervisor::builder().spawn().await?;
         let address_book = AddressBook::builder().spawn_linked(&supervisor).await?;
 
-        let mut endpoint_builder = Endpoint::builder(address_book.clone()).private_key(private_key);
+        let mut endpoint_builder = Endpoint::builder(address_book.clone()).signing_key(private_key);
 
         if let Some(relay_url) = opts.relay_url.clone() {
             endpoint_builder = endpoint_builder.relay_url(relay_url);
@@ -120,11 +121,11 @@ impl AppNode {
         })
     }
 
-    pub fn node_id(&self) -> p2panda_core::PublicKey {
+    pub fn node_id(&self) -> p2panda_core::VerifyingKey {
         self.endpoint.node_id()
     }
 
-    pub async fn join_topic(&self, topic: TopicId) -> Result<p2panda_net::gossip::GossipHandle> {
+    pub async fn join_topic(&self, topic: Topic) -> Result<p2panda_net::gossip::GossipHandle> {
         Ok(self.gossip.stream(topic).await?)
     }
 
@@ -141,13 +142,13 @@ fn app_data_dir() -> Result<PathBuf> {
     Ok(project_dirs.data_dir().to_path_buf())
 }
 
-fn load_or_create_private_key(data_dir: &Path) -> Result<PrivateKey> {
+fn load_or_create_private_key(data_dir: &Path) -> Result<SigningKey> {
     let key_path = data_dir.join(NODE_KEY_FILE);
 
     match fs::read(&key_path) {
         Ok(bytes) => private_key_from_bytes(&key_path, &bytes),
         Err(err) if err.kind() == io::ErrorKind::NotFound => {
-            let private_key = PrivateKey::new();
+            let private_key = SigningKey::generate();
             fs::write(&key_path, private_key.as_bytes()).with_context(|| {
                 format!("failed to write node private key to {}", key_path.display())
             })?;
@@ -162,17 +163,17 @@ fn load_or_create_private_key(data_dir: &Path) -> Result<PrivateKey> {
     }
 }
 
-fn private_key_from_bytes(key_path: &Path, bytes: &[u8]) -> Result<PrivateKey> {
-    let key_bytes: [u8; PRIVATE_KEY_LEN] = bytes.try_into().map_err(|_| {
+fn private_key_from_bytes(key_path: &Path, bytes: &[u8]) -> Result<SigningKey> {
+    let key_bytes: [u8; SIGNING_KEY_LEN] = bytes.try_into().map_err(|_| {
         anyhow::anyhow!(
             "invalid private key length in {}: expected {} bytes, got {}",
             key_path.display(),
-            PRIVATE_KEY_LEN,
+            SIGNING_KEY_LEN,
             bytes.len()
         )
     })?;
 
-    Ok(PrivateKey::from_bytes(&key_bytes))
+    Ok(SigningKey::from_bytes(&key_bytes))
 }
 
 #[cfg(test)]
@@ -216,8 +217,8 @@ mod tests {
         let temp_dir = tempdir()?;
         let node = AppNode::with_data_dir(temp_dir.path(), NodeOptions::default()).await?;
 
-        let topic_a: TopicId = Hash::new(b"topic-a").into();
-        let topic_b: TopicId = Hash::new(b"topic-b").into();
+        let topic_a: Topic = Hash::digest(b"topic-a").into();
+        let topic_b: Topic = Hash::digest(b"topic-b").into();
 
         let _handle_a = node.join_topic(topic_a).await?;
         let _handle_b = node.join_topic(topic_b).await?;
@@ -326,7 +327,7 @@ mod tests {
         assert!(saw_failure, "expected Gossip failure event");
         assert!(saw_restart, "expected Gossip restart event");
 
-        let topic: TopicId = Hash::new(b"supervised-gossip-recovery").into();
+        let topic: Topic = Hash::digest(b"supervised-gossip-recovery").into();
         timeout(Duration::from_secs(5), async {
             loop {
                 if node.join_topic(topic).await.is_ok() {

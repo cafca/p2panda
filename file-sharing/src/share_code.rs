@@ -1,8 +1,8 @@
 use anyhow::{ensure, Context, Result};
 use data_encoding::BASE32_NOPAD;
 use p2panda_blobs::Hash as BlobHash;
-use p2panda_core::{Hash as CoreHash, PublicKey};
-use p2panda_net::TopicId;
+use p2panda_core::{Hash as CoreHash, VerifyingKey};
+use p2panda_core::Topic;
 use serde::{Deserialize, Serialize};
 
 const SHARE_CODE_PREFIX: &str = "p2p-";
@@ -30,7 +30,7 @@ struct EncodedShareCode {
 impl ShareCode {
     pub fn new(
         collection_hash: BlobHash,
-        node_id: PublicKey,
+        node_id: VerifyingKey,
         relay_url: Option<String>,
         owner_profile_id: Option<String>,
     ) -> Self {
@@ -72,8 +72,8 @@ impl ShareCode {
         BlobHash::from_bytes(self.collection_hash)
     }
 
-    pub fn node_id(&self) -> Result<PublicKey> {
-        PublicKey::from_bytes(&self.node_id).context("invalid node_id public key in share code")
+    pub fn node_id(&self) -> Result<VerifyingKey> {
+        VerifyingKey::from_bytes(&self.node_id).context("invalid node_id public key in share code")
     }
 
     pub fn owner_profile_id(&self) -> Result<String> {
@@ -81,24 +81,24 @@ impl ShareCode {
             .owner_profile_id
             .clone()
             .unwrap_or_else(|| self.node_id().map(|node_id| node_id.to_string()).unwrap());
-        let _: PublicKey = profile_id
+        let _: VerifyingKey = profile_id
             .parse()
             .with_context(|| format!("invalid owner profile ID {profile_id} in share code"))?;
         Ok(profile_id)
     }
 
-    pub fn topic_id(&self) -> TopicId {
+    pub fn topic_id(&self) -> Topic {
         derive_topic(self.collection_hash)
     }
 }
 
-pub fn derive_topic(collection_hash: [u8; 32]) -> TopicId {
-    CoreHash::new(collection_hash).into()
+pub fn derive_topic(collection_hash: [u8; 32]) -> Topic {
+    CoreHash::digest(collection_hash).into()
 }
 
 pub fn encode_share_code(
     collection_hash: BlobHash,
-    node_id: PublicKey,
+    node_id: VerifyingKey,
     relay_url: Option<String>,
     owner_profile_id: Option<String>,
 ) -> Result<String> {
@@ -145,14 +145,14 @@ impl TryFrom<EncodedShareCode> for ShareCode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use p2panda_core::PrivateKey;
+    use p2panda_core::SigningKey;
 
     fn sample_share_code(relay_url: Option<&str>) -> ShareCode {
         ShareCode::new(
             BlobHash::new(b"collection-root"),
-            PrivateKey::from_bytes(&[7; 32]).public_key(),
+            SigningKey::from_bytes(&[7; 32]).verifying_key(),
             relay_url.map(str::to_owned),
-            Some(PrivateKey::from_bytes(&[9; 32]).public_key().to_string()),
+            Some(SigningKey::from_bytes(&[9; 32]).verifying_key().to_string()),
         )
     }
 
@@ -221,7 +221,7 @@ mod tests {
     fn derived_topic_is_deterministic() {
         let share_code = sample_share_code(None);
 
-        let expected_topic: TopicId = CoreHash::new(share_code.collection_hash).into();
+        let expected_topic: Topic = CoreHash::digest(share_code.collection_hash).into();
         assert_eq!(share_code.topic_id(), expected_topic);
     }
 }

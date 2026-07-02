@@ -11,7 +11,8 @@ use p2panda_file_sharing_gui::node::{AppNode, NodeOptions};
 use p2panda_file_sharing_gui::persist::load_state;
 use p2panda_file_sharing_gui::share::{publish_share_metadata, share_directory};
 use p2panda_net::addrs::NodeInfo;
-use p2panda_net::iroh_endpoint::{from_public_key, EndpointAddr, RelayUrl};
+use p2panda_net::iroh_endpoint::{EndpointAddr, RelayUrl};
+use p2panda_net::utils::from_verifying_key;
 use tempfile::tempdir;
 use tokio::time::timeout;
 
@@ -403,8 +404,8 @@ async fn wait_for_transfer_cancelled(bridge: &AsyncBridge, transfer_id: u64) -> 
     }
 }
 
-fn relay_bootstrap_node_info(node_id: p2panda_core::PublicKey, relay_url: RelayUrl) -> NodeInfo {
-    let endpoint_addr = EndpointAddr::new(from_public_key(node_id)).with_relay_url(relay_url);
+fn relay_bootstrap_node_info(node_id: p2panda_core::VerifyingKey, relay_url: RelayUrl) -> NodeInfo {
+    let endpoint_addr = EndpointAddr::new(from_verifying_key(node_id)).with_relay_url(relay_url);
     NodeInfo::from(endpoint_addr).bootstrap()
 }
 
