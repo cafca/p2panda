@@ -78,6 +78,9 @@ pub enum ToGossipManager {
 
     /// Gracefully shut down the gossip actor, cleaning up connection state.
     Shutdown,
+
+    #[cfg(any(test, feature = "test_utils"))]
+    PanicForTest,
 }
 
 /// Mapping of topic to the associated sender channels for getting messages into and out of the
@@ -104,6 +107,8 @@ pub struct GossipManagerState {
     events_tx: broadcast::Sender<GossipEvent>,
 }
 
+pub type GossipManagerArgs = (GossipConfig, AddressBook, Endpoint);
+
 impl GossipManagerState {
     fn drop_topic_state(&mut self, actor_id: &ActorId, topic: &Topic) {
         self.sessions.sessions_by_actor_id.remove(actor_id);
@@ -122,7 +127,7 @@ impl ThreadLocalActor for GossipManager {
 
     type Msg = ToGossipManager;
 
-    type Arguments = (GossipConfig, AddressBook, Endpoint);
+    type Arguments = GossipManagerArgs;
 
     async fn pre_start(
         &self,
@@ -369,6 +374,10 @@ impl ThreadLocalActor for GossipManager {
                 {
                     warn!("failed to gracefully shut down iroh gossip: {err:?}");
                 }
+            }
+            #[cfg(any(test, feature = "test_utils"))]
+            ToGossipManager::PanicForTest => {
+                panic!("gossip manager crash requested by test");
             }
         }
 

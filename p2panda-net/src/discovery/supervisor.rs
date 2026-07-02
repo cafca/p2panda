@@ -16,6 +16,10 @@ impl Builder {
 }
 
 impl ChildActor for Discovery {
+    fn label(&self) -> &'static str {
+        "Discovery"
+    }
+
     fn on_start(
         &self,
         supervisor: ActorCell,

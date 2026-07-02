@@ -66,6 +66,7 @@ test_utils = [
   "p2panda-core/test_utils",
   "p2panda-store/test_utils",
   "p2panda-discovery/test_utils",
+  "iroh/test-utils",
 ]
 
 [dependencies]

@@ -19,6 +19,10 @@ impl Builder {
 }
 
 impl ChildActor for MdnsDiscovery {
+    fn label(&self) -> &'static str {
+        "MdnsDiscovery"
+    }
+
     fn on_start(
         &self,
         supervisor: ActorCell,

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use p2panda_store::SqliteStoreBuilder;
 use ractor::thread_local::{ThreadLocalActor, ThreadLocalActorSpawner};
 use ractor::{ActorCell, SpawnErr};
 
@@ -12,13 +13,21 @@ impl Builder {
         self,
         supervisor: &Supervisor,
     ) -> Result<AddressBook, AddressBookError> {
-        let address_book = AddressBook::new(None);
+        let store = match self.store {
+            Some(store) => store,
+            None => SqliteStoreBuilder::new().build().await?,
+        };
+        let address_book = AddressBook::new(None, Some(store));
         supervisor.start_child_actor(address_book.clone()).await?;
         Ok(address_book)
     }
 }
 
 impl ChildActor for AddressBook {
+    fn label(&self) -> &'static str {
+        "AddressBook"
+    }
+
     fn on_start(
         &self,
         supervisor: ActorCell,
