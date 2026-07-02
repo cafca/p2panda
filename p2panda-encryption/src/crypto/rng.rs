@@ -13,9 +13,9 @@ pub struct Rng {
 
 impl Default for Rng {
     fn default() -> Self {
-        Self {
-            rng: Mutex::new(rand_chacha::ChaCha20Rng::from_os_rng()),
-        }
+        let mut seed = [0u8; 32];
+        getrandom::fill(&mut seed).expect("os randomness for ChaCha20Rng seed");
+        Self::from_seed(seed)
     }
 }
 
