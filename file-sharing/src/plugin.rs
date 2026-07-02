@@ -81,6 +81,8 @@ impl Plugin for FileSharingPlugin {
 
 fn initialize_plugin_resources() -> Result<PluginResources> {
     let data_dir = resolve_data_dir().context("failed to resolve file-sharing data directory")?;
+    crate::data_schema::ensure_data_schema(&data_dir)
+        .context("failed to verify on-disk data schema version")?;
     let settings_store =
         SettingsStore::load(&data_dir).context("failed to load app settings from disk")?;
     let settings = settings_store.settings().clone();
