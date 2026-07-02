@@ -66,12 +66,34 @@ df -h .
 
 DMG_NAME="p2panda-file-sharing-${VERSION}-macos.dmg"
 ZIP_NAME="p2panda-file-sharing-${VERSION}-macos.zip"
-hdiutil create \
-  -volname "$APP_NAME" \
-  -srcfolder "$APP_DIR" \
-  -ov \
-  -format UDZO \
-  "$DIST_DIR/$DMG_NAME"
+
+# hdiutil stages a temporary read-write image in TMPDIR, which on GitHub macOS
+# runners lives on the small root volume and intermittently runs out of space
+# ("hdiutil: create failed - No space left on device" despite a mostly-empty
+# workspace volume). Stage on the workspace volume instead, give the temporary
+# image explicit headroom, and retry the known flake a few times.
+DMG_TMPDIR="$DIST_DIR/hdiutil-tmp"
+mkdir -p "$DMG_TMPDIR"
+APP_SIZE_MB="$(du -sm "$APP_DIR" | cut -f1)"
+DMG_SIZE_MB="$((APP_SIZE_MB * 2 + 100))"
+for attempt in 1 2 3; do
+  if TMPDIR="$DMG_TMPDIR" hdiutil create \
+    -volname "$APP_NAME" \
+    -srcfolder "$APP_DIR" \
+    -ov \
+    -format UDZO \
+    -size "${DMG_SIZE_MB}m" \
+    "$DIST_DIR/$DMG_NAME"; then
+    break
+  fi
+  if [[ "$attempt" == 3 ]]; then
+    echo "hdiutil create failed after $attempt attempts" >&2
+    exit 1
+  fi
+  echo "hdiutil create failed (attempt $attempt), retrying..." >&2
+  sleep 10
+done
+rm -rf "$DMG_TMPDIR"
 
 ditto -c -k --sequesterRsrc --keepParent "$APP_DIR" "$DIST_DIR/$ZIP_NAME"
 
