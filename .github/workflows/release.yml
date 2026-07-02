@@ -227,3 +227,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*
+          # Tags with a pre-release identifier (e.g. v0.1.0-experimental.binaries.10)
+          # are published as GitHub prereleases.
+          prerelease: ${{ contains(github.ref_name, '-') }}

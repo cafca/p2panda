@@ -3,6 +3,7 @@ name = "p2panda-file-sharing-gui"
 version = "0.1.0"
 edition = "2021"
 authors = ["p2panda contributors"]
+license = "MIT OR Apache-2.0"
 
 [[bin]]
 name = "p2panda-file-sharing-gui"
