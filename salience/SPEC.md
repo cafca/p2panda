@@ -177,21 +177,29 @@ scores; the app defines the mapping.
 Behind a trait, so implementations can be swapped:
 
 ```rust
-trait Predictor<I, S> {
-    fn predict(&self, attrs: &ItemAttrs<S>, ctx: &PredictCtx) -> RatePosterior;
+trait Predictor {
+    fn prior(&self, evidence: &[ScopeEvidence], global: &RatePosterior,
+             config: &PredictorConfig) -> Prior;
 }
 ```
 
 v1 implementation — **hierarchical rate back-off + optional embedding
 affinity**:
 
-1. **Hierarchical shrinkage.** Each scope's posterior is shrunk toward the
-   global rate. An unseen item's prior is the precision-weighted blend of its
-   scopes' posteriors (per-`ScopeClass` blend weights configurable). As the
-   item accrues its own exposure, its own posterior takes over — the same
-   smoothing formula of §5, with the attribute blend as `prior_rate`.
-   Fully interpretable: "ranked up because you convert 4× baseline on this
-   author."
+1. **Hierarchical back-off via evidence-weighted pooling.** An unseen item's
+   prior rate pools its scopes' decayed pseudo-counts, weighted per
+   `ScopeClass`, anchored by the global rate at fixed strength:
+   `(global_rate · strength + Σ w_c · attention_s) / (strength + Σ w_c ·
+   exposure_s)`. A scope's influence grows with its own evidence; barely-seen
+   scopes regress to the global rate. (Deliberately *not* precision-weighted
+   against the global posterior — the global aggregate is backed by all data
+   and would drown every scope signal.) Scope evidence and the global anchor
+   decay with a dedicated **taste half-life** (default 30 days), independent
+   of the query's half-life: a feed scoring with a 2-day horizon must not
+   forget what the user likes at that pace. As the item accrues its own
+   exposure, its own posterior takes over — the same smoothing formula of §5,
+   with the attribute blend as `prior_rate`. Fully interpretable: "ranked up
+   because you convert 4× baseline on this author."
 2. **Interest centroids (optional).** The engine maintains K (default 4)
    attention-weighted, slowly-decaying centroids over the embeddings of items
    the user converted on (online nearest-centroid EMA update; no training
@@ -230,7 +238,11 @@ struct ScoringProfile {
 - **Exploration:** with `ThompsonSample`, ranking sorts by a sample from each
   item's rate posterior instead of its mean, giving uncertain (new) items a
   principled chance at exposure. Sampling APIs take `&mut impl rand::Rng`;
-  `Off` involves no randomness.
+  `Off` involves no randomness. Posterior sampling alone cannot escape an
+  informative-but-wrong prior once a feedback loop has starved an item class
+  of exposure — apps should pair it with an exploration floor (e.g. reserve a
+  feed slot for a random/low-evidence candidate), which is the app's half of
+  the explore/exploit deal (validated in the simulation test).
 - **Search integration:** relevance stays outside the crate; the app combines
   our score with its relevance score (optionally via a per-candidate boost
   multiplier parameter on `rank`).
