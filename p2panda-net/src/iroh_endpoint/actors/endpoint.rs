@@ -91,6 +91,8 @@ pub struct IrohState {
     signing_key: SigningKey,
     config: IrohConfig,
     relay_map: iroh::RelayMap,
+    #[cfg_attr(not(feature = "test_utils"), allow(dead_code))]
+    insecure_skip_relay_cert_verify: bool,
     address_book: AddressBook,
     endpoint: Option<iroh::Endpoint>,
     protocols: ProtocolMap,
@@ -104,6 +106,7 @@ pub type IrohEndpointArgs = (
     SigningKey,
     IrohConfig,
     iroh::RelayMap,
+    bool,
     AddressBook,
 );
 
@@ -122,7 +125,14 @@ impl ThreadLocalActor for IrohEndpoint {
         myself: ActorRef<Self::Msg>,
         args: Self::Arguments,
     ) -> Result<Self::State, ActorProcessingErr> {
-        let (network_id, signing_key, config, relay_map, address_book) = args;
+        let (
+            network_id,
+            signing_key,
+            config,
+            relay_map,
+            insecure_skip_relay_cert_verify,
+            address_book,
+        ) = args;
 
         // Automatically bind iroh endpoint after actor start.
         myself.send_message(ToIrohEndpoint::Bind)?;
@@ -132,6 +142,7 @@ impl ThreadLocalActor for IrohEndpoint {
             signing_key,
             config,
             relay_map,
+            insecure_skip_relay_cert_verify,
             address_book,
             endpoint: None,
             protocols: Arc::default(),
@@ -199,13 +210,25 @@ impl ThreadLocalActor for IrohEndpoint {
                 );
 
                 // Create and bind the endpoint to the socket.
-                let endpoint = iroh::Endpoint::builder(presets::Minimal)
+                let builder = iroh::Endpoint::builder(presets::Minimal)
                     .relay_mode(relay_mode)
                     .address_lookup(address_book_discovery)
                     .secret_key(from_signing_key(state.signing_key.clone()))
                     .transport_config(quic_transport_config)
                     .bind_addr(socket_address_v4)?
-                    .bind_addr(socket_address_v6)?
+                    .bind_addr(socket_address_v6)?;
+
+                // Skipping relay TLS verification is only available when the test_utils
+                // feature is enabled (it enables iroh/test-utils which unlocks the
+                // insecure CaTlsConfig constructor).
+                #[cfg(feature = "test_utils")]
+                let builder = if state.insecure_skip_relay_cert_verify {
+                    builder.ca_tls_config(iroh::tls::CaTlsConfig::insecure_skip_verify())
+                } else {
+                    builder
+                };
+
+                let endpoint = builder
                     .bind()
                     .await
                     // In the event of failure, this error is not included
