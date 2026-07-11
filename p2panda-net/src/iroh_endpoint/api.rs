@@ -142,6 +142,25 @@ impl Endpoint {
         Ok(())
     }
 
+    /// Register protocol handler for a given ALPN without hashing it with the network ID.
+    ///
+    /// Use this for protocols (like iroh-blobs) where the ALPN must remain fixed so that
+    /// standard clients using that ALPN can connect without knowing the network ID.
+    pub async fn accept_raw<P: ProtocolHandler>(
+        &self,
+        protocol_id: impl AsRef<[u8]>,
+        protocol_handler: P,
+    ) -> Result<(), EndpointError> {
+        let protocol_id = protocol_id.as_ref().to_vec();
+        let inner = self.inner.read().await;
+        cast!(
+            inner.actor_ref.as_ref().expect("actor spawned in builder"),
+            ToIrohEndpoint::RegisterRawProtocol(protocol_id, Box::new(protocol_handler))
+        )
+        .map_err(Box::new)?;
+        Ok(())
+    }
+
     /// Starts a connection attempt to a remote iroh endpoint and returns a future which can be
     /// awaited for establishing the final connection.
     ///
