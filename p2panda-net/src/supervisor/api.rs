@@ -5,11 +5,12 @@ use std::sync::Arc;
 use ractor::thread_local::{ThreadLocalActor, ThreadLocalActorSpawner};
 use ractor::{ActorRef, call};
 use thiserror::Error;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, broadcast};
 
 use crate::supervisor::ChildActorFut;
 use crate::supervisor::actor::{SupervisorActor, SupervisorActorArgs, ToSupervisorActor};
 use crate::supervisor::builder::Builder;
+use crate::supervisor::events::SupervisorEvent;
 use crate::supervisor::traits::ChildActor;
 
 /// Monitor system with supervisors and restart modules on critical failure.
@@ -73,6 +74,16 @@ impl Supervisor {
         )
         .map_err(Box::new)?;
         Ok(())
+    }
+
+    pub async fn events(&self) -> Result<broadcast::Receiver<SupervisorEvent>, SupervisorError> {
+        let inner = self.inner.read().await;
+        let result = call!(
+            inner.actor_ref.as_ref().expect("actor spawned in builder"),
+            ToSupervisorActor::Events
+        )
+        .map_err(Box::new)?;
+        Ok(result)
     }
 
     pub(crate) fn thread_pool(&self) -> ThreadLocalActorSpawner {

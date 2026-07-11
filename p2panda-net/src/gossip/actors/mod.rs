@@ -8,4 +8,5 @@ mod receiver;
 mod sender;
 mod session;
 
+pub use manager::GossipManagerArgs;
 pub use manager::{GossipManager, ToGossipManager};

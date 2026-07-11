@@ -7,6 +7,8 @@ mod api;
 mod builder;
 mod config;
 mod events;
+#[cfg(feature = "supervisor")]
+mod supervisor;
 #[cfg(test)]
 mod tests;
 

@@ -7,7 +7,7 @@ use p2panda_core::Topic;
 use p2panda_store::{SqliteError, SqliteStore};
 use ractor::{ActorRef, call, cast};
 use thiserror::Error;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
 use crate::NodeId;
 use crate::address_book::Builder;
@@ -63,6 +63,7 @@ use crate::watchers::{UpdatesOnly, WatcherReceiver};
 ///    random-walk strategy, exploring the network.
 #[derive(Clone, Debug)]
 pub struct AddressBook {
+    pub(super) bootstrap_store: Arc<Mutex<Option<SqliteStore>>>,
     pub(super) inner: Arc<RwLock<Inner>>,
 }
 
@@ -72,8 +73,12 @@ pub(super) struct Inner {
 }
 
 impl AddressBook {
-    pub(crate) fn new(actor_ref: Option<ActorRef<ToAddressBookActor>>) -> Self {
+    pub(crate) fn new(
+        actor_ref: Option<ActorRef<ToAddressBookActor>>,
+        bootstrap_store: Option<SqliteStore>,
+    ) -> Self {
         Self {
+            bootstrap_store: Arc::new(Mutex::new(bootstrap_store)),
             inner: Arc::new(RwLock::new(Inner { actor_ref })),
         }
     }
@@ -263,14 +268,30 @@ impl AddressBook {
         Ok(())
     }
 
-    pub(crate) async fn store(&self) -> Result<SqliteStore, AddressBookError> {
+    /// Returns the node IDs of all known peers in the address book.
+    pub async fn node_ids(&self) -> Result<Vec<NodeId>, AddressBookError> {
         let inner = self.inner.read().await;
         let result = call!(
             inner.actor_ref.as_ref().expect("actor spawned in builder"),
-            ToAddressBookActor::Store
+            ToAddressBookActor::AllNodeIds
         )
         .map_err(Box::new)?;
         Ok(result)
+    }
+
+    pub(crate) async fn store(&self) -> Result<SqliteStore, AddressBookError> {
+        let inner = self.inner.read().await;
+        if let Some(actor_ref) = inner.actor_ref.as_ref() {
+            let result = call!(actor_ref, ToAddressBookActor::Store).map_err(Box::new)?;
+            return Ok(result);
+        }
+        drop(inner);
+
+        let bootstrap_store = self.bootstrap_store.lock().await;
+        bootstrap_store
+            .as_ref()
+            .map(|store| store.clone())
+            .ok_or(AddressBookError::StoreUnavailable)
     }
 }
 
@@ -300,6 +321,10 @@ pub enum AddressBookError {
     /// Address book store failed.
     #[error(transparent)]
     Store(#[from] SqliteError),
+
+    /// Address book store was accessed before the actor started.
+    #[error("address book store unavailable before actor startup")]
+    StoreUnavailable,
 
     /// Invalid node info provided.
     #[error(transparent)]

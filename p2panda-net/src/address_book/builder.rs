@@ -22,7 +22,7 @@ impl Builder {
     }
 
     pub async fn spawn(self) -> Result<AddressBook, AddressBookError> {
-        // Use in-memory address book store by default.
+        // Use SQLite address book store (in-memory by default).
         let store = match self.store {
             Some(store) => store,
             None => SqliteStoreBuilder::new().build().await?,
@@ -30,10 +30,10 @@ impl Builder {
 
         let (actor_ref, _) = {
             let thread_pool = ThreadLocalActorSpawner::new();
-            let args = (store,);
+            let args = (store.clone(),);
             AddressBookActor::spawn(None, args, thread_pool).await?
         };
 
-        Ok(AddressBook::new(Some(actor_ref)))
+        Ok(AddressBook::new(Some(actor_ref), None))
     }
 }
