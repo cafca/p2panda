@@ -21,6 +21,13 @@ use crate::space::Space;
 use crate::test_utils::{TestPeer, TestSpaceError};
 use crate::types::AuthGroupAction;
 
+/// Unwraps the single space message produced by adding an individual member
+/// to a space (adding a group additionally yields history pointers).
+fn single_message<M: std::fmt::Debug>(mut messages: Vec<M>) -> M {
+    assert_eq!(messages.len(), 1, "expected exactly one space message");
+    messages.pop().unwrap()
+}
+
 #[tokio::test]
 async fn create_space() {
     let alice = TestPeer::new(0).await;
@@ -206,10 +213,11 @@ async fn add_member_to_space() {
     // ~~~~~~~~~~~~
 
     let space = manager.space(space_id).await.unwrap().unwrap();
-    let (message_03, message_04) = space
+    let (message_03, space_messages) = space
         .add_persisted(bob.manager.id(), Access::read())
         .await
         .unwrap();
+    let message_04 = single_message(space_messages);
     let members = space.members().await.unwrap();
     drop(space);
 
@@ -333,10 +341,11 @@ async fn send_and_receive_after_add() {
         .unwrap();
     let message_01 = messages[0].clone();
     let message_02 = messages[1].clone();
-    let (message_03, message_04) = alice_space
+    let (message_03, space_messages) = alice_space
         .add_persisted(bob_id, Access::read())
         .await
         .unwrap();
+    let message_04 = single_message(space_messages);
     let message_05 = alice_space.publish_persisted(b"Hello bob").await.unwrap();
 
     // Bob processes all of Alice's messages.
@@ -386,10 +395,11 @@ async fn add_pull_member_to_space() {
     // ~~~~~~~~~~~~
 
     let space = manager.space(space_id).await.unwrap().unwrap();
-    let (message_03, message_04) = space
+    let (message_03, space_messages) = space
         .add_persisted(bob.manager.id(), Access::pull())
         .await
         .unwrap();
+    let message_04 = single_message(space_messages);
     let members = space.members().await.unwrap();
 
     let SpacesArgs::Auth {
@@ -529,10 +539,11 @@ async fn receive_control_messages() {
     // Alice: Add new member to Space
     // ~~~~~~~~~~~~
 
-    let (message_04, message_05) = space
+    let (message_04, space_messages) = space
         .add_persisted(bob.manager.id(), Access::read())
         .await
         .unwrap();
+    let message_05 = single_message(space_messages);
     drop(space);
 
     // Bob: Receive Message 03, 04 and 05
@@ -725,10 +736,11 @@ async fn concurrent_removal_conflict() {
     // ~~~~~~~~~~~~
 
     let space = bob_manager.space(space_id).await.unwrap().unwrap();
-    let (message_03, message_04) = space
+    let (message_03, space_messages) = space
         .add_persisted(claire_id, Access::read())
         .await
         .unwrap();
+    let message_04 = single_message(space_messages);
     drop(space);
 
     // Alice: process bobs' message
@@ -743,7 +755,8 @@ async fn concurrent_removal_conflict() {
     // ~~~~~~~~~~~~
 
     let space = alice_manager.space(space_id).await.unwrap().unwrap();
-    let (message_05, message_06) = space.add_persisted(dave_id, Access::read()).await.unwrap();
+    let (message_05, space_messages) = space.add_persisted(dave_id, Access::read()).await.unwrap();
+    let message_06 = single_message(space_messages);
 
     let SpacesArgs::Auth { group_action, .. } = message_05.borrow() else {
         panic!("expected auth message");
@@ -1163,9 +1176,11 @@ async fn shared_auth_state() {
     // One auth message, two space messages (one for history, one for the Space 1 create).
     assert_eq!(messages.len(), 3);
 
-    // Make Space 0 aware of this change.
+    // Space 1 is outside Space 0's visible cone, so there is nothing to
+    // repair: auth operations are scoped to their group's cone and Space 0's
+    // copy never needs Space 1's operations.
     let messages = space_0.repair_persisted().await.unwrap();
-    assert_eq!(messages.len(), 1);
+    assert_eq!(messages.len(), 0);
 
     // Create group A
     // ~~~~~~~~~~~~
@@ -1175,35 +1190,41 @@ async fn shared_auth_state() {
         .await
         .unwrap();
 
-    // Make Space 0 and Space 1 aware of this change.
+    // Group A is not a member of either space yet, so it is outside both
+    // visible cones and neither space needs its operations.
     let messages = space_0.repair_persisted().await.unwrap();
-    assert_eq!(messages.len(), 1);
+    assert_eq!(messages.len(), 0);
     let messages = space_1.repair_persisted().await.unwrap();
-    assert_eq!(messages.len(), 1);
+    assert_eq!(messages.len(), 0);
 
     // Add group A to space 0
     // ~~~~~~~~~~~~
 
-    let _ = space_0
+    // Adding the group seeds its history into the space copy: one pointer
+    // for group A's create, plus the membership message for the add itself.
+    let (_, space_messages) = space_0
         .add_persisted(group.id(), Access::read())
         .await
         .unwrap();
+    assert_eq!(space_messages.len(), 2);
 
-    // Make Space 1 aware of this change.
+    // Group A joining Space 0 does not concern Space 1: A is still outside
+    // Space 1's visible cone.
     let messages = space_1.repair_persisted().await.unwrap();
-    assert_eq!(messages.len(), 1);
+    assert_eq!(messages.len(), 0);
 
     // Add group A to space 1
     // ~~~~~~~~~~~~
 
-    let _ = space_1
+    let (_, space_messages) = space_1
         .add_persisted(group.id(), Access::read())
         .await
         .unwrap();
+    assert_eq!(space_messages.len(), 2);
 
-    // Make Space 0 aware of this change.
+    // Group A joining Space 1 does not concern Space 0 either.
     let messages = space_0.repair_persisted().await.unwrap();
-    assert_eq!(messages.len(), 1);
+    assert_eq!(messages.len(), 0);
 
     // Add claire to the group
     // ~~~~~~~~~~~~
@@ -1283,16 +1304,20 @@ async fn events() {
     alice_messages.extend(messages);
 
     // Add dave to space with read access
-    let (auth_message, space_message) = space.add_persisted(dave_id, Access::read()).await.unwrap();
-    alice_messages.extend([auth_message, space_message]);
+    let (auth_message, space_messages) =
+        space.add_persisted(dave_id, Access::read()).await.unwrap();
+    alice_messages.push(auth_message);
+    alice_messages.extend(space_messages);
 
     // Remove dave from space
     let (auth_message, space_message) = space.remove_persisted(dave_id).await.unwrap();
     alice_messages.extend([auth_message, space_message]);
 
     // Add dave back into space with pull access
-    let (auth_message, space_message) = space.add_persisted(dave_id, Access::pull()).await.unwrap();
-    alice_messages.extend([auth_message, space_message]);
+    let (auth_message, space_messages) =
+        space.add_persisted(dave_id, Access::pull()).await.unwrap();
+    alice_messages.push(auth_message);
+    alice_messages.extend(space_messages);
 
     // Remove member group from space
     let (auth_message, space_message) = space.remove_persisted(group.id()).await.unwrap();
