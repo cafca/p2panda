@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use p2panda_core::cbor::{decode_cbor, encode_cbor};
 use p2panda_core::identity::SIGNING_KEY_LEN;
 use p2panda_core::{
-    validate_operation, Body, Hash, Header, Operation, SigningKey, VerifyingKey, RawOperation,
+    validate_operation, Body, Hash, Header, Operation, RawOperation, SigningKey, VerifyingKey,
 };
 use serde::{Deserialize, Serialize};
 

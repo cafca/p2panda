@@ -762,8 +762,7 @@ mod tests {
             .register_profile_author(&profile_id, private_key.verifying_key())
             .await;
 
-        let logs =
-            TopicStore::<Topic, VerifyingKey, DomainLogId>::resolve(&store, &topic).await?;
+        let logs = TopicStore::<Topic, VerifyingKey, DomainLogId>::resolve(&store, &topic).await?;
         let mut resolved = logs
             .get(&private_key.verifying_key())
             .cloned()
@@ -969,8 +968,7 @@ mod tests {
             updated_at: 20,
         };
 
-        let mut source_domain =
-            FileSharingOperationDomain::new(SqliteStore::temporary().await);
+        let mut source_domain = FileSharingOperationDomain::new(SqliteStore::temporary().await);
         let header = source_domain
             .append_operation(&private_key, operation.clone())
             .await?;
@@ -980,8 +978,7 @@ mod tests {
             body: Some(Body::from(encode_cbor(&operation)?)),
         };
 
-        let mut target_domain =
-            FileSharingOperationDomain::new(SqliteStore::temporary().await);
+        let mut target_domain = FileSharingOperationDomain::new(SqliteStore::temporary().await);
         target_domain
             .ingest_remote_operation(replicated_operation.clone())
             .await?;

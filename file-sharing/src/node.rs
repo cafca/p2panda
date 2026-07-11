@@ -7,10 +7,10 @@ use directories::ProjectDirs;
 use p2panda_blobs::{Blobs, FsStore};
 use p2panda_core::identity::SIGNING_KEY_LEN;
 use p2panda_core::SigningKey;
+use p2panda_core::Topic;
 use p2panda_net::iroh_endpoint::RelayUrl;
 use p2panda_net::iroh_mdns::MdnsDiscoveryMode;
 use p2panda_net::supervisor::SupervisorEvent;
-use p2panda_core::Topic;
 use p2panda_net::{AddressBook, Discovery, Endpoint, Gossip, MdnsDiscovery, Supervisor};
 use tokio::sync::broadcast;
 

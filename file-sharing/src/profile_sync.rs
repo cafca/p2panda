@@ -5,12 +5,12 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use futures_util::StreamExt;
 use p2panda_core::cbor::encode_cbor;
+use p2panda_core::Topic;
 use p2panda_core::{Body, Operation, SigningKey, VerifyingKey};
 use p2panda_net::addrs::NodeInfo;
 use p2panda_net::iroh_endpoint::{EndpointAddr, RelayUrl};
-use p2panda_net::utils::from_verifying_key;
 use p2panda_net::sync::{SyncHandle, SyncSubscription};
-use p2panda_core::Topic;
+use p2panda_net::utils::from_verifying_key;
 use p2panda_net::LogSync;
 use p2panda_store::SqliteStore;
 use p2panda_sync::protocols::TopicLogSyncEvent;
@@ -429,8 +429,7 @@ fn spawn_contact_profile_task(
                         "LogSync profile replication failed: {error}"
                     );
                 }
-                TopicLogSyncEvent::SessionStarted
-                | TopicLogSyncEvent::SyncStarted { .. } => {}
+                TopicLogSyncEvent::SessionStarted | TopicLogSyncEvent::SyncStarted { .. } => {}
             }
         }
     })
@@ -497,8 +496,7 @@ fn spawn_local_profile_task(
                         "LogSync local profile replication failed: {error}"
                     );
                 }
-                TopicLogSyncEvent::SessionStarted
-                | TopicLogSyncEvent::SyncStarted { .. } => {}
+                TopicLogSyncEvent::SessionStarted | TopicLogSyncEvent::SyncStarted { .. } => {}
             }
         }
     })

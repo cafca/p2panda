@@ -52,7 +52,10 @@ pub fn ensure_data_schema(data_dir: &Path) -> Result<()> {
 
     if has_store_artifacts(data_dir) {
         warn!(
-            stored_version = stored_version.map(|v| v.to_string()).as_deref().unwrap_or("none"),
+            stored_version = stored_version
+                .map(|v| v.to_string())
+                .as_deref()
+                .unwrap_or("none"),
             current_version = DATA_SCHEMA_VERSION,
             "incompatible data schema; wiping local stores, shares and syncs"
         );

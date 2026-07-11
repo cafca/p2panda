@@ -15,8 +15,8 @@ use p2panda_blobs::Hash as BlobHash;
 use p2panda_net::addrs::{NodeTransportInfo, TransportAddress};
 use p2panda_net::discovery::{DiscoveryEvent, SessionRole};
 use p2panda_net::gossip::GossipEvent;
-use p2panda_net::utils::from_verifying_key;
 use p2panda_net::supervisor::SupervisorEvent;
+use p2panda_net::utils::from_verifying_key;
 use tracing::warn;
 
 use crate::diagnostics::{
