@@ -15,6 +15,20 @@ ignore = [
       id = "RUSTSEC-2026-0173",
       reason = "Advisory is notice / INFO",
     },
+
+    # atomic-polyfill is unmaintained, pulled in via iroh-blobs > postcard > heapless.
+    # No safe upgrade is available.
+    {
+      id = "RUSTSEC-2023-0089",
+      reason = "Unmaintained transitive dependency of iroh-blobs, no upgrade available",
+    },
+
+    # proc-macro-error is unmaintained, pulled in via iroh-blobs > bao-tree > genawaiter.
+    # No safe upgrade is available.
+    {
+      id = "RUSTSEC-2024-0370",
+      reason = "Unmaintained transitive dependency of iroh-blobs, no upgrade available",
+    },
 ]
 
 [licenses]
