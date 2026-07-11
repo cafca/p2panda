@@ -21,5 +21,6 @@ jobs:
       - name: Install cargo-hack
         uses: taiki-e/install-action@cargo-hack
 
+      # The file-sharing app needs Bevy system libraries and has its own workflow.
       - name: Check if feature combinations actually compile
-        run: cargo hack check --feature-powerset --workspace --depth 4
+        run: cargo hack check --feature-powerset --workspace --exclude p2panda-file-sharing-gui --depth 4

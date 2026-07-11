@@ -30,11 +30,23 @@ ignore = [
       reason = "Unmaintained transitive dependency of iroh-blobs, no upgrade available",
     },
 
-    # rsa Marvin attack; pulled in transitively via sqlx's macro support, this
-    # workspace uses SQLite only.
+    # ttf-parser is unmaintained, pulled in via Bevy's text rendering stack.
+    # No upgrade available.
     {
-      id = "RUSTSEC-2023-0071",
-      reason = "MySQL-only code path, unused with SQLite",
+      id = "RUSTSEC-2026-0192",
+      reason = "Unmaintained transitive dependency of Bevy, no upgrade available",
+    },
+
+    # quick-xml DoS advisories, pulled in via wayland-scanner > winit > Bevy and
+    # pinned to 0.39 by wayland-scanner (fix needs >=0.41). Only reached when
+    # parsing local Wayland protocol descriptions on the desktop, not network input.
+    {
+      id = "RUSTSEC-2026-0194",
+      reason = "Bevy/wayland-scanner transitive, not reachable from untrusted input",
+    },
+    {
+      id = "RUSTSEC-2026-0195",
+      reason = "Bevy/wayland-scanner transitive, not reachable from untrusted input",
     },
 ]
 
