@@ -157,6 +157,17 @@ impl AddressBook {
         Ok(result)
     }
 
+    /// Returns the identifiers of all nodes known to the address book.
+    pub async fn node_ids(&self) -> Result<Vec<NodeId>, AddressBookError> {
+        let inner = self.inner.read().await;
+        let result = call!(
+            inner.actor_ref.as_ref().expect("actor spawned in builder"),
+            ToAddressBookActor::AllNodeIds
+        )
+        .map_err(Box::new)?;
+        Ok(result)
+    }
+
     pub async fn set_topics(
         &self,
         node_id: NodeId,
