@@ -9,6 +9,12 @@ Highlights are marked with a pancake 🥞
 
 ## [Unreleased]
 
+### Added
+
+- blobs: Port `p2panda-blobs` to the actor-based networking stack [#6](https://github.com/cafca/p2panda/pull/6)
+- net: Add `Endpoint::accept_raw` for unhashed ALPN registration [#6](https://github.com/cafca/p2panda/pull/6)
+- net: Add `AddressBook::node_ids` to enumerate known nodes [#6](https://github.com/cafca/p2panda/pull/6)
+
 ## [0.7.0] - 07/07/2026
 
 ### Added
