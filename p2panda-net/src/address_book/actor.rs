@@ -27,6 +27,9 @@ pub enum ToAddressBookActor {
     /// given topics in this set.
     NodeInfosByTopics(Vec<Topic>, RpcReplyPort<Vec<NodeInfo>>),
 
+    /// Returns the identifiers of all nodes known to the address book.
+    AllNodeIds(RpcReplyPort<Vec<NodeId>>),
+
     /// Inserts or updates node information into address book. Use this method if adding node
     /// information from a local configuration, trusted, external source, etc.
     ///
@@ -361,6 +364,12 @@ impl ThreadLocalActor for AddressBookActor {
                         .await?
                 });
                 let _ = reply.send(result);
+            }
+            ToAddressBookActor::AllNodeIds(reply) => {
+                let infos = AddressBookStore::<NodeId, NodeInfo>::all_node_infos(&state.store)
+                    .await
+                    .unwrap_or_default();
+                let _ = reply.send(infos.into_iter().map(|info| info.node_id).collect());
             }
             ToAddressBookActor::Store(reply) => {
                 let _ = reply.send(state.store.clone());
