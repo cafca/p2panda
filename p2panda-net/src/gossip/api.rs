@@ -18,7 +18,7 @@ use tracing::{trace, warn};
 use crate::NodeId;
 use crate::address_book::{AddressBook, AddressBookError};
 use crate::gossip::GossipConfig;
-use crate::gossip::actors::ToGossipManager;
+use crate::gossip::actors::{GossipManagerArgs, ToGossipManager};
 use crate::gossip::builder::Builder;
 use crate::gossip::events::GossipEvent;
 use crate::iroh_endpoint::Endpoint;
@@ -111,26 +111,30 @@ type GossipSenders = HashMap<
 /// sending or receiving messages.
 #[derive(Clone, Debug)]
 pub struct Gossip {
+    #[allow(unused, reason = "used by supervisor behind feature flag")]
+    pub(super) args: GossipManagerArgs,
     my_node_id: NodeId,
     address_book: AddressBook,
-    inner: Arc<RwLock<Inner>>,
+    pub(super) inner: Arc<RwLock<Inner>>,
     senders: Arc<RwLock<GossipSenders>>,
     config: GossipConfig,
 }
 
 #[derive(Debug)]
-struct Inner {
-    actor_ref: ActorRef<ToGossipManager>,
+pub(super) struct Inner {
+    pub(super) actor_ref: Option<ActorRef<ToGossipManager>>,
 }
 
 impl Gossip {
     pub(crate) fn new(
-        actor_ref: ActorRef<ToGossipManager>,
+        actor_ref: Option<ActorRef<ToGossipManager>>,
         my_node_id: NodeId,
         address_book: AddressBook,
         config: GossipConfig,
+        args: GossipManagerArgs,
     ) -> Self {
         Self {
+            args,
             my_node_id,
             address_book,
             inner: Arc::new(RwLock::new(Inner { actor_ref })),
@@ -171,7 +175,10 @@ impl Gossip {
 
         // This guard counts the number of active handles and subscriptions for this topic. Like
         // this we can determine if we can leave the overlay.
-        let guard = TopicDropGuard::new(topic, inner.actor_ref.clone());
+        let guard = TopicDropGuard::new(
+            topic,
+            inner.actor_ref.clone().expect("actor spawned in builder"),
+        );
 
         // Identify the initial nodes we can use to bootstrap ourselves into the overlay.
         let node_ids = {
@@ -191,9 +198,13 @@ impl Gossip {
         };
 
         // Register a new session with the gossip actor.
-        let (to_gossip_tx, from_gossip_tx) =
-            call!(inner.actor_ref, ToGossipManager::Subscribe, topic, node_ids)
-                .map_err(Box::new)?;
+        let (to_gossip_tx, from_gossip_tx) = call!(
+            inner.actor_ref.as_ref().expect("actor spawned in builder"),
+            ToGossipManager::Subscribe,
+            topic,
+            node_ids
+        )
+        .map_err(Box::new)?;
 
         // Store the gossip senders.
         //
@@ -218,38 +229,69 @@ impl Gossip {
         ))
     }
 
+    /// Ask an existing gossip session to explicitly connect to the given nodes.
+    pub async fn join_nodes(
+        &self,
+        topic: Topic,
+        nodes: impl IntoIterator<Item = NodeId>,
+    ) -> Result<(), GossipError> {
+        let inner = self.inner.read().await;
+        ractor::cast!(
+            inner.actor_ref.as_ref().expect("actor spawned in builder"),
+            ToGossipManager::JoinNodes(topic, nodes.into_iter().collect())
+        )
+        .map_err(Box::new)?;
+        Ok(())
+    }
+
     /// Subscribe to system events.
     ///
     /// NOTE: only events emitted _after_ calling this method will be received on the returned
     /// channel.
     pub async fn events(&self) -> Result<broadcast::Receiver<GossipEvent>, GossipError> {
         let inner = self.inner.read().await;
-        let result = call!(inner.actor_ref, ToGossipManager::Events).map_err(Box::new)?;
+        let result = call!(
+            inner.actor_ref.as_ref().expect("actor spawned in builder"),
+            ToGossipManager::Events
+        )
+        .map_err(Box::new)?;
         Ok(result)
+    }
+
+    #[cfg(any(test, feature = "test_utils"))]
+    pub async fn crash_for_test(&self) -> Result<(), GossipError> {
+        let inner = self.inner.read().await;
+        ractor::cast!(
+            inner.actor_ref.as_ref().expect("actor spawned in builder"),
+            ToGossipManager::PanicForTest
+        )
+        .map_err(Box::new)?;
+        Ok(())
     }
 }
 
 impl Drop for Inner {
     fn drop(&mut self) {
-        trace!(
-            actor_id = %self.actor_ref.get_id(),
-            "drop gossip actor reference"
-        );
-
         // Stop the gossip manager actor once all references to Gossip have been dropped.
-        //
-        // Process all messages which are already in the inboxes of the gossip actors which are the
-        // children of the gossip manager.
-        self.actor_ref.drain_children();
+        if let Some(actor_ref) = self.actor_ref.take() {
+            trace!(
+                actor_id = %actor_ref.get_id(),
+                "drop gossip actor reference"
+            );
 
-        // Tell the gossip manager to shutdown.
-        if let Err(err) = self.actor_ref.send_message(ToGossipManager::Shutdown) {
-            warn!("failed to send shutdown event to gossip manager: {}", err)
-        }
+            // Process all messages which are already in the inboxes of the gossip actors which are
+            // the children of the gossip manager.
+            actor_ref.drain_children();
 
-        // Proccess all messages in the inbox of the gossip manager before stopping it.
-        if let Err(err) = self.actor_ref.drain() {
-            warn!("failed to drain gossip manager: {}", err)
+            // Tell the gossip manager to shutdown.
+            if let Err(err) = actor_ref.send_message(ToGossipManager::Shutdown) {
+                warn!("failed to send shutdown event to gossip manager: {}", err)
+            }
+
+            // Proccess all messages in the inbox of the gossip manager before stopping it.
+            if let Err(err) = actor_ref.drain() {
+                warn!("failed to drain gossip manager: {}", err)
+            }
         }
     }
 }
@@ -259,6 +301,11 @@ pub enum GossipError {
     /// Spawning the internal actor failed.
     #[error(transparent)]
     ActorSpawn(#[from] ractor::SpawnErr),
+
+    /// Spawning the internal actor as a child actor of a supervisor failed.
+    #[cfg(feature = "supervisor")]
+    #[error(transparent)]
+    ActorLinkedSpawn(#[from] crate::supervisor::SupervisorError),
 
     /// Messaging with internal actor via RPC failed.
     #[error(transparent)]

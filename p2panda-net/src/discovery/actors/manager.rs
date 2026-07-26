@@ -73,6 +73,9 @@ pub enum ToDiscoveryManager {
 
     /// Returns current metrics.
     Metrics(RpcReplyPort<DiscoveryMetrics>),
+
+    #[cfg(any(test, feature = "test_utils"))]
+    PanicForTest,
 }
 
 pub struct DiscoveryManagerState {
@@ -565,6 +568,10 @@ impl ThreadLocalActor for DiscoveryManager {
             }
             ToDiscoveryManager::Metrics(reply) => {
                 let _ = reply.send(state.metrics.clone());
+            }
+            #[cfg(any(test, feature = "test_utils"))]
+            ToDiscoveryManager::PanicForTest => {
+                panic!("discovery manager crash requested by test");
             }
         }
         Ok(())

@@ -59,7 +59,7 @@ p2panda-encryption = { workspace = true, default-features = true, optional = tru
 rand = { workspace = true, optional = true }
 rand_chacha = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
-sqlx = { version = "0.8.6", features = ["runtime-tokio", "sqlite"], optional = true }
+sqlx = { version = "0.8.6", optional = true, default-features = false, features = ["sqlite", "runtime-tokio", "migrate", "macros"] }
 thiserror = { workspace = true, optional = true }
 tokio = { workspace = true, default-features = true, features = ["sync"], optional = true }
 
