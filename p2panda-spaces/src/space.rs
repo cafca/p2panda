@@ -35,7 +35,7 @@ use crate::types::{
     AuthGroup, AuthGroupAction, AuthGroupError, AuthGroupState, AuthResolver,
     EncryptionDirectMessage, EncryptionGroup, EncryptionGroupError, EncryptionGroupState,
 };
-use crate::utils::{added_members, removed_members, secret_members, sort_members};
+use crate::utils::{added_members, removed_members, secret_members, sort_members, visible_cone};
 use crate::{ActorId, GroupId, MemberId, OperationId, SpaceId};
 
 /// A single encryption context with associated group of actors who will participate in the key
@@ -138,16 +138,42 @@ where
 
     /// Add a member to the space with assigned access level.
     ///
-    /// Returns resulting auth and space state and messages for processing.
+    /// Returns resulting auth and space state, the auth message and the space
+    /// messages for processing. Adding an individual yields exactly one space
+    /// message; adding a group additionally yields one membership pointer per
+    /// operation of the group's history that the space was missing.
     pub async fn add(
         &self,
         member: impl Into<ActorId>,
         access: Access<C>,
-    ) -> Result<(AuthGroupState<C>, SpacesState<C>, F::Message, F::Message), SpaceError<F, C, RS>>
-    {
+    ) -> Result<
+        (
+            AuthGroupState<C>,
+            SpacesState<C>,
+            F::Message,
+            Vec<F::Message>,
+        ),
+        SpaceError<F, C, RS>,
+    > {
         let member = member.into();
 
-        let space_y = self.state().await?;
+        let mut space_y = self.state().await?;
+        let mut space_messages = vec![];
+
+        // A group joining the space brings its visible cone with it: the add
+        // operation lists that cone in its dependencies, so any operations
+        // the space copy is missing must be replayed first (creation seeds
+        // history, but only what existed then — see from_group). The replay
+        // publishes membership pointers, so every space member catches up in
+        // the same order before processing the add.
+        let groups_y = self.manager.get_groups_state().await?;
+        if !groups_y.members(member).is_empty() {
+            let cone: HashSet<GroupId> = visible_cone(&groups_y, member).into_iter().collect();
+            let (space_y_i, history) = self.replay_cone_ops(&groups_y, space_y, &cone).await?;
+            space_y = space_y_i;
+            space_messages.extend(history);
+        }
+
         let group = Group::new(self.manager.clone(), space_y.group_id);
         let (groups_y, auth_message) =
             group.add(member, access).await.map_err(SpaceError::Group)?;
@@ -158,8 +184,9 @@ where
             &SpacesMessage::auth(&auth_message),
         )
         .await?;
+        space_messages.push(space_message);
 
-        Ok((groups_y, space_y, auth_message, space_message))
+        Ok((groups_y, space_y, auth_message, space_messages))
     }
 
     /// Remove a member from the space.
@@ -488,10 +515,30 @@ where
 
     pub async fn repair(&self) -> Result<(SpacesState<C>, Vec<F::Message>), SpaceError<F, C, RS>> {
         let groups_y = self.manager.get_groups_state().await?;
-        let mut space_y = self.state().await?;
+        let space_y = self.state().await?;
 
-        // @TODO: here we need to account for the new Groups::heads_filtered(..) approach to
-        // calculating dependencies and only include the ones strictly necessary for this space.
+        // Operations of the space's group and of its transitive member
+        // groups belong in the copy; anything else must stay out. Replaying
+        // an unrelated group's operations would confuse the encryption layer
+        // (an "add us" from another group has no welcome message attached to
+        // this pointer).
+        let cone: HashSet<GroupId> = visible_cone(&groups_y, space_y.group_id)
+            .into_iter()
+            .collect();
+
+        self.replay_cone_ops(&groups_y, space_y, &cone).await
+    }
+
+    /// Replays operations of the given groups from the shared auth state
+    /// into the space copy, in topological order, skipping those already
+    /// present. Publishes a membership pointer for every replayed operation
+    /// so other space members converge in the same order.
+    async fn replay_cone_ops(
+        &self,
+        groups_y: &AuthGroupState<C>,
+        mut space_y: SpacesState<C>,
+        cone: &HashSet<GroupId>,
+    ) -> Result<(SpacesState<C>, Vec<F::Message>), SpaceError<F, C, RS>> {
         let operation_ids =
             toposort(&groups_y.inner.graph, None).expect("auth graph does not contain cycles");
 
@@ -500,6 +547,14 @@ where
         // graph tips and the global auth graph tips. Then we could apply only the missing
         // operations rather than applying all operations as we do here.
         for id in operation_ids {
+            let concerns_this_space = groups_y
+                .inner
+                .operations
+                .get(&id)
+                .is_some_and(|operation| cone.contains(&operation.group_id()));
+            if !concerns_this_space {
+                continue;
+            }
             // This auth message has already been processed by the space.
             if space_y.groups_y.inner.operations.contains_key(&id) {
                 continue;
@@ -701,15 +756,15 @@ where
         &self,
         member: ActorId,
         access: Access<C>,
-    ) -> Result<(F::Message, F::Message), SpaceError<F, C, RS>> {
-        let (groups_y, space_y, auth_message, space_message) = self.add(member, access).await?;
+    ) -> Result<(F::Message, Vec<F::Message>), SpaceError<F, C, RS>> {
+        let (groups_y, space_y, auth_message, space_messages) = self.add(member, access).await?;
 
         self.manager.set_groups_state(&groups_y).await?;
         self.manager
             .set_space_state(&self.id(), &space_y.into())
             .await?;
 
-        Ok((auth_message, space_message))
+        Ok((auth_message, space_messages))
     }
 
     /// Remove a member from the space.

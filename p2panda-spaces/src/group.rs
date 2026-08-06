@@ -6,7 +6,7 @@
 use std::fmt::Debug;
 
 use p2panda_auth::Access;
-use p2panda_auth::group::GroupAction;
+use p2panda_auth::group::{GroupAction, GroupMember};
 use p2panda_auth::traits::{Conditions, Operation};
 use p2panda_store::Transaction;
 use p2panda_store::groups::GroupsStore;
@@ -23,7 +23,7 @@ use crate::manager::{Manager, StoreError};
 use crate::message::{SpacesArgs, SpacesMessage};
 use crate::store::SpacesStoreState;
 use crate::types::{AuthGroup, AuthGroupAction, AuthGroupError, AuthGroupState, AuthResolver};
-use crate::utils::{sort_members, typed_member, typed_members};
+use crate::utils::{sort_members, typed_member, typed_members, visible_cone};
 use crate::{ActorId, GroupId, MemberId, OperationId};
 
 /// A single group which exists in the global auth context.
@@ -85,7 +85,21 @@ where
     ) -> Result<(AuthGroupState<C>, F::Message), GroupError<F, C, RS>> {
         let initial_members = typed_members(&y, initial_members);
 
-        let auth_dependencies = y.inner.heads().into_iter().collect();
+        // Scope dependencies to the new group's visible cone: itself (empty
+        // for a fresh group) plus the cones of any initial member groups.
+        // With global heads, one author's groups chain into each other, and
+        // group copies — which only witness their own cone — end up with
+        // dangling graph references that panic the resolver once a
+        // concurrency bubble touches them. Member groups' cones are part of
+        // the new group's cone, so depending on their current state is sound
+        // and orders the creation after the membership it builds on.
+        let mut cone = vec![group_id];
+        for (member, _) in &initial_members {
+            if let GroupMember::Group(id) = member {
+                cone.extend(visible_cone(&y, *id));
+            }
+        }
+        let auth_dependencies = y.inner.heads_filtered(&cone).into_iter().collect();
         let action = AuthGroupAction::Create {
             initial_members: initial_members.clone(),
         };
@@ -113,7 +127,15 @@ where
         let y = self.manager.get_groups_state().await?;
 
         let member = typed_member(&y, member);
-        let dependencies = y.inner.heads().into_iter().collect();
+        // This group's visible cone, extended by the added group's cone when
+        // a group is added: from now on its operations belong to copies of
+        // this group, and the add must be ordered after the membership state
+        // it welcomes.
+        let mut cone = visible_cone(&y, self.id);
+        if let GroupMember::Group(id) = member {
+            cone.extend(visible_cone(&y, id));
+        }
+        let dependencies = y.inner.heads_filtered(&cone).into_iter().collect();
         let action = AuthGroupAction::Add { member, access };
 
         Self::process_local_control(self.manager.clone(), y, self.id, dependencies, action).await
@@ -129,7 +151,14 @@ where
         let y = self.manager.get_groups_state().await?;
 
         let member = typed_member(&y, member);
-        let dependencies = y.inner.heads().into_iter().collect();
+        // The removed member (group or individual) is still part of this
+        // group's visible cone at this point, so the remove is ordered after
+        // everything it revokes.
+        let dependencies = y
+            .inner
+            .heads_filtered(&visible_cone(&y, self.id))
+            .into_iter()
+            .collect();
         let action = AuthGroupAction::Remove { member };
 
         Self::process_local_control(self.manager.clone(), y, self.id, dependencies, action).await

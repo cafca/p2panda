@@ -32,6 +32,22 @@ pub(crate) fn typed_members<C: Conditions>(
         .collect()
 }
 
+/// The causal cone visible to copies of a group: the group itself plus all
+/// its transitive member groups.
+///
+/// Auth operations may only list dependencies inside their group's visible
+/// cone. Copies of a group — one is held by every member of a space built on
+/// it — witness exactly the operations of these groups, so a dependency
+/// pointing anywhere else could never be resolved there.
+pub(crate) fn visible_cone<C: Conditions>(
+    y: &AuthGroupState<C>,
+    group_id: ActorId,
+) -> Vec<ActorId> {
+    let mut cone = vec![group_id];
+    cone.extend(y.groups(group_id).into_iter().map(|(id, _)| id));
+    cone
+}
+
 pub(crate) fn sort_members<ID: Ord, C>(members: &mut [(ID, Access<C>)]) {
     members.sort_by(|(actor_a, _), (actor_b, _)| actor_a.cmp(actor_b));
 }

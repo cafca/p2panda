@@ -29,6 +29,7 @@ use crate::message::{SpaceMembershipMessage, SpacesArgs, SpacesMessage};
 use crate::space::{Space, SpaceError, SpacesState};
 use crate::store::SpacesStoreState;
 use crate::types::{AuthGroupState, AuthResolver};
+use crate::utils::visible_cone;
 use crate::{ActorId, Config, Credentials, GroupId, SpaceId};
 
 /// Identifier used to store groups state into database.
@@ -413,7 +414,16 @@ where
                 .get_space_state(&id)
                 .await?
                 .expect("space present in store");
-            if space_y.groups_y.inner.heads() != groups_y.inner.heads() {
+            // Auth operations are scoped to their group's visible cone (the
+            // group plus its transitive member groups), so a space only needs
+            // that slice of the shared state; comparing against global heads
+            // would flag every space whenever any unrelated group changed.
+            // Copies seeded at creation may contain extra foreign operations
+            // (see Space::from_group), so only *missing* cone operations
+            // signal a repair.
+            let cone = visible_cone(&groups_y, space_y.group_id);
+            let expected_heads = groups_y.inner.heads_filtered(&cone);
+            if !expected_heads.is_subset(&space_y.groups_y.inner.heads()) {
                 in_need_of_repair.push(id);
             }
         }

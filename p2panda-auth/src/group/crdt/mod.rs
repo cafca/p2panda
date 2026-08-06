@@ -125,27 +125,34 @@ where
             .collect::<HashSet<_>>()
     }
 
-    /// Get graph tips filtered to only those which included "create" operation for passed group
-    /// ids in their causal history.
+    /// Get the current tips of the sub-graph formed by the operations *of* the passed groups.
+    ///
+    /// An operation is a tip when no other operation of the passed groups has it in its causal
+    /// history. Note that this is not simply the global tips filtered by ancestry: an operation
+    /// of an unrelated group may reference a passed group's operations (e.g. a group being added
+    /// as member elsewhere) and thereby shadow that group's own newest operation, which is the
+    /// one its copies can actually resolve.
     pub fn heads_filtered(&self, groups: &[ID]) -> HashSet<OP> {
-        let global_heads = self.heads();
-        global_heads
-            .into_iter()
-            .filter(|id| {
-                let reversed = Reversed(&self.graph);
-                let mut bfs = Bfs::new(&reversed, *id);
-                while let Some(inner_id) = bfs.next(&reversed) {
-                    let operation = self
-                        .operations
-                        .get(&inner_id)
-                        .expect("operation is present in map");
-                    if operation.action().is_create() && groups.contains(&operation.group_id()) {
-                        return true;
-                    }
+        let member_ops: HashSet<OP> = self
+            .operations
+            .iter()
+            .filter(|(_, operation)| groups.contains(&operation.group_id()))
+            .map(|(id, _)| *id)
+            .collect();
+
+        let mut heads = member_ops.clone();
+        for id in &member_ops {
+            let reversed = Reversed(&self.graph);
+            let mut bfs = Bfs::new(&reversed, *id);
+            // The BFS starts at the operation itself; it only rules out its ancestors.
+            bfs.next(&reversed);
+            while let Some(ancestor) = bfs.next(&reversed) {
+                if member_ops.contains(&ancestor) {
+                    heads.remove(&ancestor);
                 }
-                false
-            })
-            .collect()
+            }
+        }
+        heads
     }
 
     /// Current group states.
@@ -426,8 +433,8 @@ where
         self.inner.heads().into_iter().collect()
     }
 
-    /// Get graph tips filtered to only those which included "create" operation for passed group
-    /// ids in their causal history.
+    /// Get the current tips of the sub-graph formed by the operations of the passed groups (see
+    /// [`GroupCrdtInnerState::heads_filtered`]).
     pub fn heads_filtered(&self, groups: &[ID]) -> Vec<OP> {
         self.inner.heads_filtered(groups).into_iter().collect()
     }
