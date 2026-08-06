@@ -1,0 +1,232 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: stable
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Validate tag and read version
+        id: version
+        run: |
+          version="$(bash scripts/release/check-version.sh "$GITHUB_REF_NAME")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Build macOS app bundle and dmg
+        run: bash scripts/release/package-macos.sh "${{ steps.version.outputs.version }}"
+
+      - name: Smoke test binary
+        run: |
+          BIN="dist/macos/p2panda File Sharing.app/Contents/MacOS/p2panda-file-sharing-gui"
+          LOG=$(mktemp)
+          APP_LOG="$HOME/Library/Logs/p2panda-file-sharing/app.log"
+          echo "Starting: $BIN"
+          RUST_LOG=info "$BIN" >"$LOG" 2>&1 &
+          PID=$!
+          sleep 5
+          EXIT=0
+          if kill -0 "$PID" 2>/dev/null; then
+            kill "$PID"; wait "$PID" 2>/dev/null || true
+            echo "--- binary output ---"; cat "$LOG"
+            echo "--- app log ($APP_LOG) ---"; cat "$APP_LOG" 2>/dev/null || echo "(no log file)"
+            echo "--- smoke test passed (ran for 5s) ---"
+          else
+            wait "$PID" || EXIT=$?
+            echo "--- binary output ---"; cat "$LOG"
+            echo "--- app log ($APP_LOG) ---"; cat "$APP_LOG" 2>/dev/null || echo "(no log file)"
+            [ "$EXIT" -eq 0 ] || { echo "--- FAILED (exit $EXIT) ---"; exit 1; }
+            echo "--- smoke test passed (clean exit) ---"
+          fi
+
+      - name: Generate checksums
+        run: |
+          shasum -a 256 dist/p2panda-file-sharing-*.dmg > dist/p2panda-file-sharing-${{ steps.version.outputs.version }}-macos.sha256
+          shasum -a 256 dist/p2panda-file-sharing-*.zip > dist/p2panda-file-sharing-${{ steps.version.outputs.version }}-macos-zip.sha256
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-macos
+          path: |
+            dist/p2panda-file-sharing-*.dmg
+            dist/p2panda-file-sharing-*.zip
+            dist/p2panda-file-sharing-*-macos*.sha256
+
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            libfuse2 \
+            libasound2-dev \
+            libudev-dev \
+            libwayland-dev \
+            libx11-dev \
+            libxcursor-dev \
+            libxi-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-0 \
+            libxrandr-dev \
+            librsvg2-bin \
+            xvfb \
+            mesa-vulkan-drivers
+          cargo install cargo-appimage --locked
+          wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage -O /tmp/appimagetool
+          chmod +x /tmp/appimagetool
+          sudo mv /tmp/appimagetool /usr/local/bin/appimagetool
+
+      - name: Validate tag and read version
+        id: version
+        run: |
+          version="$(bash scripts/release/check-version.sh "$GITHUB_REF_NAME")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Build Linux artifacts
+        run: bash scripts/release/package-linux.sh "${{ steps.version.outputs.version }}"
+
+      - name: Smoke test binary
+        run: |
+          BIN=$(find dist/linux-tar -name 'p2panda-file-sharing-gui' -type f | head -1)
+          LOG=$(mktemp)
+          APP_LOG="$HOME/.local/share/p2panda-file-sharing/logs/app.log"
+          echo "Starting: $BIN"
+          xvfb-run --auto-servernum env RUST_LOG=info "$BIN" >"$LOG" 2>&1 &
+          PID=$!
+          sleep 5
+          EXIT=0
+          if kill -0 "$PID" 2>/dev/null; then
+            kill "$PID"; wait "$PID" 2>/dev/null || true
+            echo "--- binary output ---"; cat "$LOG"
+            echo "--- app log ($APP_LOG) ---"; cat "$APP_LOG" 2>/dev/null || echo "(no log file)"
+            echo "--- smoke test passed (ran for 5s) ---"
+          else
+            wait "$PID" || EXIT=$?
+            echo "--- binary output ---"; cat "$LOG"
+            echo "--- app log ($APP_LOG) ---"; cat "$APP_LOG" 2>/dev/null || echo "(no log file)"
+            [ "$EXIT" -eq 0 ] || { echo "--- FAILED (exit $EXIT) ---"; exit 1; }
+            echo "--- smoke test passed (clean exit) ---"
+          fi
+
+      - name: Generate checksums
+        run: |
+          sha256sum dist/p2panda-file-sharing-*.AppImage > dist/p2panda-file-sharing-${{ steps.version.outputs.version }}-linux-appimage.sha256
+          sha256sum dist/p2panda-file-sharing-*.tar.gz > dist/p2panda-file-sharing-${{ steps.version.outputs.version }}-linux-tar.sha256
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-linux
+          path: |
+            dist/p2panda-file-sharing-*.AppImage
+            dist/p2panda-file-sharing-*.tar.gz
+            dist/p2panda-file-sharing-*-linux-*.sha256
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-wix
+        run: cargo install cargo-wix --locked
+
+      - name: Validate tag and read version
+        id: version
+        shell: bash
+        run: |
+          version="$(bash scripts/release/check-version.sh "$GITHUB_REF_NAME")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Build Windows artifacts
+        shell: pwsh
+        run: scripts/release/package-windows.ps1 -Version "${{ steps.version.outputs.version }}"
+
+      - name: Smoke test binary
+        shell: pwsh
+        run: |
+          $ExePath = (Get-ChildItem -Path "dist\windows" -Filter "p2panda-file-sharing-gui.exe" -Recurse | Select-Object -First 1).FullName
+          $Log = Join-Path $env:TEMP "smoke.log"
+          $AppLog = Join-Path $env:APPDATA "p2panda-file-sharing\logs\app.log"
+          Write-Output "Starting: $ExePath"
+          $proc = Start-Process -FilePath $ExePath -RedirectStandardOutput $Log -RedirectStandardError "$Log.err" -PassThru -Environment @{ RUST_LOG = "info" }
+          Start-Sleep -Seconds 5
+          if (-not $proc.HasExited) {
+            $proc.Kill(); $proc.WaitForExit(3000) | Out-Null
+            Write-Output "--- binary output ---"
+            Get-Content $Log, "$Log.err" -ErrorAction SilentlyContinue
+            Write-Output "--- app log ($AppLog) ---"
+            Get-Content $AppLog -ErrorAction SilentlyContinue
+            Write-Output "--- smoke test passed (ran for 5s) ---"
+          } else {
+            Write-Output "--- binary output ---"
+            Get-Content $Log, "$Log.err" -ErrorAction SilentlyContinue
+            Write-Output "--- app log ($AppLog) ---"
+            Get-Content $AppLog -ErrorAction SilentlyContinue
+            if ($proc.ExitCode -ne 0) { Write-Error "--- FAILED (exit $($proc.ExitCode)) ---"; exit 1 }
+            Write-Output "--- smoke test passed (clean exit) ---"
+          }
+
+      - name: Generate checksums
+        shell: pwsh
+        run: |
+          Get-FileHash dist\p2panda-file-sharing-*.msi -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  $($_.Path | Split-Path -Leaf)" } | Set-Content -Path dist\p2panda-file-sharing-${{ steps.version.outputs.version }}-windows-msi.sha256
+          Get-FileHash dist\p2panda-file-sharing-*.zip -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  $($_.Path | Split-Path -Leaf)" } | Set-Content -Path dist\p2panda-file-sharing-${{ steps.version.outputs.version }}-windows-zip.sha256
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-windows
+          path: |
+            dist/p2panda-file-sharing-*.msi
+            dist/p2panda-file-sharing-*.zip
+            dist/p2panda-file-sharing-*-windows-*.sha256
+
+  release:
+    needs: [macos, linux, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: dist
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          # Tags with a pre-release identifier (e.g. v0.1.0-experimental.binaries.10)
+          # are published as GitHub prereleases.
+          prerelease: ${{ contains(github.ref_name, '-') }}

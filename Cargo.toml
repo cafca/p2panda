@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "file-sharing",
     "fuzz",
     "p2panda",
     "p2panda-auth",

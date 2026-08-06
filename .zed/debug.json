@@ -1,0 +1,23 @@
+[
+  {
+    "label": "Debug tests (current crate)",
+    "adapter": "CodeLLDB",
+    "request": "launch",
+    "sourceLanguages": ["rust"],
+    "build": {
+      "command": "cargo",
+      "args": ["test", "--no-run", "--manifest-path", "$ZED_WORKTREE_ROOT/Cargo.toml"]
+    }
+  },
+  {
+    "label": "Debug specific test",
+    "adapter": "CodeLLDB",
+    "request": "launch",
+    "sourceLanguages": ["rust"],
+    "build": {
+      "command": "cargo",
+      "args": ["test", "--no-run", "--manifest-path", "$ZED_WORKTREE_ROOT/Cargo.toml"]
+    },
+    "args": ["${input:testName}"]
+  }
+]

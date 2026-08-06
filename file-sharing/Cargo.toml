@@ -1,0 +1,85 @@
+[package]
+name = "p2panda-file-sharing-gui"
+version = "0.1.0"
+edition = "2021"
+authors = ["p2panda contributors"]
+license = "MIT OR Apache-2.0"
+
+[[bin]]
+name = "p2panda-file-sharing-gui"
+path = "src/main.rs"
+
+[dependencies]
+p2panda-blobs = { path = "../p2panda-blobs", features = ["fs-store"] }
+p2panda-core = { path = "../p2panda-core" }
+p2panda-net = { path = "../p2panda-net", features = ["supervisor"] }
+p2panda-store = { path = "../p2panda-store", features = ["sqlite"] }
+p2panda-stream = { path = "../p2panda-stream" }
+p2panda-sync = { path = "../p2panda-sync" }
+
+# GUI
+bevy = { version = "0.16", default-features = false, features = ["bevy_core_pipeline", "bevy_render", "bevy_text", "bevy_ui", "bevy_window", "bevy_winit", "multi_threaded", "x11", "wayland"] }
+bevy_egui = { version = "0.34", default-features = false, features = ["default_fonts", "render", "manage_clipboard"] }
+
+# Async
+tokio = { version = "1", features = ["full"] }
+flume = "0.11"
+futures-util = "0.3"
+sqlx = { version = "0.8.3", default-features = false, features = ["sqlite", "runtime-tokio"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_bytes = "0.11"
+serde_json = "1"
+ciborium = "0.2"
+data-encoding = "2"
+bytes = "1"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Platform
+rfd = "0.15"
+directories = "5"
+arboard = "3"
+
+# Observability
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Error handling
+anyhow = "1"
+
+iroh-blobs = "0.103"
+iroh = { version = "1.0", default-features = false }
+flate2 = "1"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+semver = "1"
+self-replace = "1.5"
+sha2 = "0.10"
+tar = "0.4"
+time = { version = "0.3", features = ["formatting", "macros"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+mock_instant = "0.6.1"
+tempfile = "3"
+iroh = { version = "1.0", default-features = false, features = ["test-utils"] }
+p2panda-core = { path = "../p2panda-core", features = ["test_utils"] }
+p2panda-net = { path = "../p2panda-net", features = ["test_utils"] }
+p2panda-store = { path = "../p2panda-store", features = ["sqlite", "test_utils"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[package.metadata.appimage]
+auto_link = true
+
+[package.metadata.bundle]
+name = "p2panda File Sharing"
+identifier = "org.p2panda.file-sharing"
+icon = ["assets/icon.svg"]
+
+[package.metadata.wix]
+upgrade-guid = "B318E301-86C2-4B96-9186-587DFF5E4B5F"
+path-guid = "43D13EF2-9FA1-43F3-B356-B8CC009993E5"
+license = false
